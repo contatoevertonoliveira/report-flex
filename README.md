@@ -41,7 +41,7 @@ Segue abaixo alguma telas:
 
 - Gera relatórios em pdf, xls, docx;
 
-- O relatório fica pronto em segundos, e a resposta ao cliente é quase que imediata.
+- <b>O relatório fica pronto em segundos, e a resposta ao cliente é quase que imediata.</b>
 
   
 
