@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
@@ -61,10 +61,8 @@ namespace WindowsFormsApp1
         {
             con = getConexaoBD();
 
-            cmd = new SqlCommand("SELECT NOME, USUARIO FROM dbo.Login WHERE USUARIO=@user AND SENHA=@senha AND NIVEL=@nivel AND STATUS='Habilitado'", con);
-            cmd.Parameters.Add("@user", SqlDbType.VarChar).Value = txtUsuario.Text;
-            cmd.Parameters.Add("@senha", SqlDbType.VarChar).Value = txtSenha.Text;
-            cmd.Parameters.Add("@nivel", SqlDbType.VarChar).Value = cboNivel.Text;
+            cmd = new SqlCommand("SELECT NOME, USUARIO FROM dbo.Login WHERE TOKEN=@token AND STATUS='Habilitado'", con);
+            cmd.Parameters.Add("@token", SqlDbType.VarChar).Value = txtToken.Text;
 
             con.Open();
             dr = null;
@@ -75,46 +73,85 @@ namespace WindowsFormsApp1
             {
                 while (dr.Read())
                 {
-                    usuarioConectado = txtUsuario.Text;
-                    nivelAcesso = cboNivel.Text;
+                    usuarioConectado = dr["USUARIO"].ToString();
                     nomeConectado = dr["NOME"].ToString();
-                    MessageBox.Show("Usuário conectado com sucesso! | Bem vindo '" + nomeConectado + "'", "Report Flex 1.0 | INFORMA - Login efetuado!", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    
+                    // Definir nível de acesso baseado no range do token
+                    int tokenVal = 0;
+                    if (int.TryParse(txtToken.Text, out tokenVal))
+                    {
+                        if (tokenVal >= 0 && tokenVal <= 10)
+                        {
+                            nivelAcesso = "SuperAdmin";
+                        }
+                        else if (tokenVal >= 11 && tokenVal <= 20)
+                        {
+                            nivelAcesso = "Administrador";
+                        }
+                        else if (tokenVal >= 21 && tokenVal <= 30)
+                        {
+                            nivelAcesso = "Padrão"; // User called "Básico", mapping to Padrão (Level 2)
+                        }
+                        else if (tokenVal >= 31 && tokenVal <= 40)
+                        {
+                            nivelAcesso = "Leitor"; // User called "Leitor", mapping to new Level 4 or existing Básico (Level 3) logic
+                        }
+                        else
+                        {
+                            // Fallback para token fora do range (se houver legado ou erro)
+                             nivelAcesso = "Leitor"; 
+                        }
+                    }
+                    else
+                    {
+                         nivelAcesso = "Leitor";
+                    }
+
+                    MessageBox.Show("Usuário conectado com sucesso! | Bem vindo '" + nomeConectado + "'\nNível: " + nivelAcesso, "Report Flex 1.0 | Login efetuado!", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     PreencherVariaveis();
                     this.Hide();
                 }
             }
             else
             {
-                MessageBox.Show("Usuario e/ou senha não encontrados!", "Report Flex 1.0 | ALERTA - Login!", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                txtUsuario.Clear();
-                txtSenha.Clear();
-                txtUsuario.Focus();
-                cboNivel.SelectedIndex = 0;
+                MessageBox.Show("Token não encontrado ou inválido!", "Report Flex 1.0 | ALERTA - Login!", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                txtToken.Clear();
+                txtToken.Focus();
             }
             con.Close();
         }
 
         private void frmLogin_Load(object sender, EventArgs e)
         {
-            cboNivel.SelectedIndex = 0;
+            try
+            {
+                // Tenta carregar a imagem do logo do disco
+                string imagePath = System.IO.Path.Combine(Application.StartupPath, "images", "Logo_Principal.png");
+                if (System.IO.File.Exists(imagePath))
+                {
+                    PictureBox1.Image = Image.FromFile(imagePath);
+                }
+                
+                // Tenta carregar a imagem do cadeado
+                 string cadeadoPath = System.IO.Path.Combine(Application.StartupPath, "images", "Cadeado.png");
+                if (System.IO.File.Exists(cadeadoPath))
+                {
+                    pictureBox2.Image = Image.FromFile(cadeadoPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Ignora erro de carregamento de imagem para não travar o sistema
+                Console.WriteLine("Erro ao carregar imagens: " + ex.Message);
+            }
         }
 
         private void btnLogin_Click(object sender, EventArgs e)
         {
-            if (txtUsuario.Text.Trim().Length == 0)
+            if (txtToken.Text.Trim().Length == 0)
             {
-                MessageBox.Show("A caixa de texto do usuário está vazia. Por favor digite o usuário!", "Report Flex 1.0 | Usuário!!!", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                txtUsuario.Focus();
-            }
-            else if (txtSenha.Text.Trim().Length == 0)
-            {
-                MessageBox.Show("A caixa de texto da senha está vazia. Por favor digite a senha!", "Report Flex 1.0 | Senha!!!", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                txtSenha.Focus();
-            }
-            else if (cboNivel.SelectedIndex == 0)
-            {
-                MessageBox.Show("Você precisa de um nível. Por favor selecione um!", "Report Flex 1.0 | Nível!!!", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                cboNivel.Focus();
+                MessageBox.Show("A caixa de texto do token está vazia. Por favor digite o token!", "Report Flex 1.0 | Token!!!", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                txtToken.Focus();
             }
             else
             {

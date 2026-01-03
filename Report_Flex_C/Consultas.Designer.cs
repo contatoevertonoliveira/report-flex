@@ -1,4 +1,4 @@
-﻿namespace WindowsFormsApp1
+namespace WindowsFormsApp1
 {
     partial class FrmConsultas
     {
@@ -57,7 +57,7 @@
             this.Ativa = new System.Windows.Forms.RadioButton();
             this.Desativa = new System.Windows.Forms.RadioButton();
             this.btnFiltrar = new System.Windows.Forms.Button();
-            this.rptDados = new Microsoft.Reporting.WinForms.ReportViewer();
+            //this.rptDados = new Microsoft.Reporting.WinForms.ReportViewer();
             this.bsDados = new System.Windows.Forms.BindingSource(this.components);
             this.bsCliente = new System.Windows.Forms.BindingSource(this.components);
             this.bsPrestador = new System.Windows.Forms.BindingSource(this.components);
@@ -77,6 +77,26 @@
             ((System.ComponentModel.ISupportInitialize)(this.bsCliente)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.bsPrestador)).BeginInit();
             this.SuspendLayout();
+            // 
+            // dgvDados
+            // 
+            this.dgvDados = new System.Windows.Forms.DataGridView();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvDados)).BeginInit();
+            this.SuspendLayout();
+            // 
+            // dgvDados
+            // 
+            this.dgvDados.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
+            | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.dgvDados.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.dgvDados.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+            this.dgvDados.Location = new System.Drawing.Point(22, 251);
+            this.dgvDados.Name = "dgvDados";
+            this.dgvDados.Size = new System.Drawing.Size(1136, 443);
+            this.dgvDados.TabIndex = 15;
+            //this.dgvDados.DataSource = this.bsDados;
+            
             // 
             // GroupBox1
             // 
@@ -386,18 +406,18 @@
             // 
             // rptDados
             // 
-            this.rptDados.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
+            /*this.rptDados.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
             | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.rptDados.LocalReport.EnableExternalImages = true;
             this.rptDados.Location = new System.Drawing.Point(20, 251);
             this.rptDados.Name = "rptDados";
             this.rptDados.Size = new System.Drawing.Size(1136, 443);
-            this.rptDados.TabIndex = 15;
+            this.rptDados.TabIndex = 15;*/
             // 
             // bsDados
             // 
-            this.bsDados.CurrentChanged += new System.EventHandler(this.bsDados_CurrentChanged);
+            // this.bsDados.CurrentChanged += new System.EventHandler(this.bsDados_CurrentChanged);
             // 
             // rdbAtivo
             // 
@@ -482,13 +502,15 @@
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1180, 762);
+            this.Controls.Add(this.dgvDados);
+            this.Controls.Add(this.lblStatus);
             this.Controls.Add(this.label1);
             this.Controls.Add(this.rdbInvalido);
             this.Controls.Add(this.rdbExpirado);
             this.Controls.Add(this.rdbInativo);
             this.Controls.Add(this.rdbAtivo);
             this.Controls.Add(this.btnFiltrar);
-            this.Controls.Add(this.rptDados);
+            //this.Controls.Add(this.rptDados);
             this.Controls.Add(this.groupBox2);
             this.Controls.Add(this.GroupBox1);
             this.Controls.Add(this.gpbDescobrirCard);
@@ -513,6 +535,7 @@
             ((System.ComponentModel.ISupportInitialize)(this.bsDados)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.bsCliente)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.bsPrestador)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvDados)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -541,7 +564,7 @@
         private System.Windows.Forms.TextBox txtPesquisa;
         private System.Windows.Forms.Label lblMsg;
         private System.Windows.Forms.ComboBox cboDados;
-        private Microsoft.Reporting.WinForms.ReportViewer rptDados;
+        //private Microsoft.Reporting.WinForms.ReportViewer rptDados;
         private System.Windows.Forms.BindingSource bsDados;
         private System.Windows.Forms.Button btnFiltrar;
         private System.Windows.Forms.BindingSource bsCliente;
@@ -556,5 +579,6 @@
         private System.Windows.Forms.RadioButton rdbInvalido;
         private System.Windows.Forms.Label label1;
         private System.Windows.Forms.Label lblStatus;
+        private System.Windows.Forms.DataGridView dgvDados;
     }
 }

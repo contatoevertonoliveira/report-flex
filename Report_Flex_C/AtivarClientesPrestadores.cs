@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
@@ -191,20 +191,28 @@ namespace WindowsFormsApp1
             {
                 if (cboClientes.SelectedIndex != -1 || cboPrestadores.SelectedIndex != -1)
                 {
-                    if (File.Exists(Application.StartupPath + @"\Logos\Ativos\ClienteAtivo.jpg") || File.Exists(Application.StartupPath + @"\Logos\Ativos\PrestadorAtivo.jpg"))
+                    // Processar Cliente se selecionado
+                    if (cboClientes.SelectedIndex != -1)
                     {
-                        File.Delete(Application.StartupPath + @"\Logos\Ativos\ClienteAtivo.jpg");
-                        File.Delete(Application.StartupPath + @"\Logos\Ativos\PrestadorAtivo.jpg");
-                        DesativaCliente();
-                        DesativaPrestador();
+                        if (File.Exists(Application.StartupPath + @"\Logos\Ativos\ClienteAtivo.jpg"))
+                        {
+                            File.Delete(Application.StartupPath + @"\Logos\Ativos\ClienteAtivo.jpg");
+                            DesativaCliente();
+                        }
                         AtivaCliente();
+                    }
+
+                    // Processar Prestador se selecionado
+                    if (cboPrestadores.SelectedIndex != -1)
+                    {
+                        if (File.Exists(Application.StartupPath + @"\Logos\Ativos\PrestadorAtivo.jpg"))
+                        {
+                            File.Delete(Application.StartupPath + @"\Logos\Ativos\PrestadorAtivo.jpg");
+                            DesativaPrestador();
+                        }
                         AtivaPrestador();
                     }
-                    else
-                    {
-                        AtivaCliente();
-                        AtivaPrestador();
-                    }
+
                     MessageBox.Show("O Cliente e o Prestador foram definidos como Cabeçalho e Rodapé principal da aplicação!", "Report Flex | Definido com Sucesso !!!", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -16,9 +16,49 @@ namespace WindowsFormsApp1
 
         private void frmPrincipal_Load(object sender, EventArgs e)
         {
+            try
+            {
+                // Carregar imagens dos botões e menus
+                string imagesPath = System.IO.Path.Combine(Application.StartupPath, "images");
+                
+                // Helper local function to safely load image
+                Image LoadImg(string fileName) {
+                    string path = System.IO.Path.Combine(imagesPath, fileName);
+                    if (System.IO.File.Exists(path)) return Image.FromFile(path);
+                    return null;
+                }
+
+                // Toolbar
+                btnConectar1.Image = LoadImg("Key.png");
+                btnCadastro1.Image = LoadImg("AddUser_16x.png");
+                btnCabecalho1.Image = LoadImg("Text.png");
+                btnConsultar1.Image = LoadImg("Search.png");
+                btnBanco1.Image = LoadImg("Database.png");
+                btnDefinicao1.Image = LoadImg("Wrench.png");
+                btnLogoff1.Image = LoadImg("Turn off.png");
+
+                // Menu
+                btnConectar.Image = LoadImg("Key.png");
+                btnConsultar.Image = LoadImg("Search.png");
+                btnCadastro.Image = LoadImg("AddUser_16x.png");
+                btnCabecalho.Image = LoadImg("Text.png");
+                btnSair.Image = LoadImg("Close.png");
+                btnBanco.Image = LoadImg("Database.png");
+                btnDefinicao.Image = LoadImg("Wrench.png");
+                btnContent.Image = LoadImg("Help book 3d.png");
+                btnSobre.Image = LoadImg("People.png");
+                btnLogoff.Image = LoadImg("Turn off.png");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Erro ao carregar imagens: " + ex.Message);
+            }
 
             picLogo.Left = (ClientSize.Width - picLogo.Width) / 2;
             picLogo.Top = (ClientSize.Height - picLogo.Height) / 2;
+
+            // Abrir login automaticamente
+            btnConectar1_Click(sender, e);
         }
 
 
@@ -60,9 +100,12 @@ namespace WindowsFormsApp1
             btnLogoff.Enabled = false;
             btnLogoff1.Enabled = false;
 
-            Image Fundo = Properties.Resources.Logo_Principal_Fundo;
-            picLogo.Image = Fundo;
-
+            try
+            {
+                string path = System.IO.Path.Combine(Application.StartupPath, "images", "Logo_Principal_Fundo.png");
+                if (System.IO.File.Exists(path)) picLogo.Image = Image.FromFile(path);
+            }
+            catch { }
         }
 
         public void AbreControles()
@@ -85,9 +128,12 @@ namespace WindowsFormsApp1
             btnLogoff.Enabled = true;
             btnLogoff1.Enabled = true;
 
-            Image Fundo2 = Properties.Resources.Logo_Principal_Fundo2;
-            picLogo.Image = Fundo2;
-
+            try
+            {
+                string path = System.IO.Path.Combine(Application.StartupPath, "images", "Logo_Principal_Fundo2.png");
+                if (System.IO.File.Exists(path)) picLogo.Image = Image.FromFile(path);
+            }
+            catch { }
         }
 
         private void btnConectar1_Click(object sender, EventArgs e)
@@ -157,7 +203,11 @@ namespace WindowsFormsApp1
 
         public void Contador()
         {
-            if (NivelAcesso == "Administrador")
+            if (NivelAcesso == "SuperAdmin")
+            {
+                txtContador.Text = "0";
+            }
+            else if (NivelAcesso == "Administrador")
             {
                 txtContador.Text = "1";
             }
@@ -168,6 +218,10 @@ namespace WindowsFormsApp1
             else if (NivelAcesso == "Básico")
             {
                 txtContador.Text = "3";
+            }
+            else if (NivelAcesso == "Leitor")
+            {
+                txtContador.Text = "4";
             }
         }
 
@@ -180,7 +234,22 @@ namespace WindowsFormsApp1
             else
             {
                 AbreControles();
-                if (txtContador.Text == "1")
+                if (txtContador.Text == "0") // SuperAdmin
+                {
+                    lblStatus.Text = Logado;
+                    lblNivel.Text = "SuperAdmin";
+                    lblConexao.Font = new Font("Tahoma", 10F, FontStyle.Bold);
+                    lblConexao.ForeColor = Color.ForestGreen;
+                    lblConexao.Text = "Conectado";
+                    btnConectar.Enabled = false;
+                    btnConectar1.Enabled = false;
+                    btnPopulacao.Enabled = true;
+                    btnBanco.Enabled = true; // Acesso total
+                    btnDefinicao.Enabled = true;
+                    btnLogoff.Enabled = true;
+                    btnLogoff1.Enabled = true;
+                }
+                else if (txtContador.Text == "1") // Administrador
                 {
                     lblStatus.Text = Logado;
                     lblNivel.Text = "Administrador";
@@ -194,7 +263,7 @@ namespace WindowsFormsApp1
                     btnLogoff.Enabled = true;
                     btnLogoff1.Enabled = true;
                 }
-                else if (txtContador.Text == "2")
+                else if (txtContador.Text == "2") // Padrão
                 {
                     lblStatus.Text = Logado;
                     lblNivel.Text = "Padrão";
@@ -214,7 +283,7 @@ namespace WindowsFormsApp1
                     btnLogoff.Enabled = true;
                     btnLogoff1.Enabled = true;
                 }
-                else if (txtContador.Text == "3")
+                else if (txtContador.Text == "3") // Básico
                 {
                     lblStatus.Text = Logado;
                     lblNivel.Text = "Básico";
@@ -228,6 +297,24 @@ namespace WindowsFormsApp1
                     btnBanco.Enabled = false;
                     btnPopulacao.Enabled = true;
                     btnSobre.Enabled = true;
+                    btnLogoff.Enabled = true;
+                    btnLogoff1.Enabled = true;
+                }
+                else if (txtContador.Text == "4") // Leitor
+                {
+                    lblStatus.Text = Logado;
+                    lblNivel.Text = "Leitor";
+                    lblConexao.Font = new Font("Tahoma", 10F, FontStyle.Bold);
+                    lblConexao.ForeColor = Color.ForestGreen;
+                    lblConexao.Text = "Conectado";
+                    FecharControles();
+                    btnConsultar.Enabled = true;
+                    btnConsultar1.Enabled = true;
+                    btnContent.Enabled = true;
+                    btnSobre.Enabled = true;
+                    // Leitor somente consulta, sem populacao (pode ter edição)
+                    btnPopulacao.Enabled = false; 
+                    btnBanco.Enabled = false;
                     btnLogoff.Enabled = true;
                     btnLogoff1.Enabled = true;
                 }

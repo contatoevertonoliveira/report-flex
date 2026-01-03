@@ -1,4 +1,4 @@
-﻿namespace WindowsFormsApp1
+namespace WindowsFormsApp1
 {
     partial class frmLogin
     {
@@ -30,12 +30,8 @@
         {
             this.GroupBox1 = new System.Windows.Forms.GroupBox();
             this.btnLogin = new System.Windows.Forms.Button();
-            this.label3 = new System.Windows.Forms.Label();
-            this.cboNivel = new System.Windows.Forms.ComboBox();
-            this.Label2 = new System.Windows.Forms.Label();
-            this.txtSenha = new System.Windows.Forms.TextBox();
-            this.Label1 = new System.Windows.Forms.Label();
-            this.txtUsuario = new System.Windows.Forms.TextBox();
+            this.lblToken = new System.Windows.Forms.Label();
+            this.txtToken = new System.Windows.Forms.TextBox();
             this.pictureBox2 = new System.Windows.Forms.PictureBox();
             this.btnSair = new System.Windows.Forms.Button();
             this.PictureBox1 = new System.Windows.Forms.PictureBox();
@@ -49,12 +45,8 @@
             this.GroupBox1.BackColor = System.Drawing.SystemColors.ScrollBar;
             this.GroupBox1.BackgroundImageLayout = System.Windows.Forms.ImageLayout.None;
             this.GroupBox1.Controls.Add(this.btnLogin);
-            this.GroupBox1.Controls.Add(this.label3);
-            this.GroupBox1.Controls.Add(this.cboNivel);
-            this.GroupBox1.Controls.Add(this.Label2);
-            this.GroupBox1.Controls.Add(this.txtSenha);
-            this.GroupBox1.Controls.Add(this.Label1);
-            this.GroupBox1.Controls.Add(this.txtUsuario);
+            this.GroupBox1.Controls.Add(this.lblToken);
+            this.GroupBox1.Controls.Add(this.txtToken);
             this.GroupBox1.Controls.Add(this.pictureBox2);
             this.GroupBox1.Controls.Add(this.btnSair);
             this.GroupBox1.Controls.Add(this.PictureBox1);
@@ -68,71 +60,31 @@
             // 
             // btnLogin
             // 
-            this.btnLogin.Location = new System.Drawing.Point(164, 299);
+            this.btnLogin.Location = new System.Drawing.Point(164, 220);
             this.btnLogin.Name = "btnLogin";
             this.btnLogin.Size = new System.Drawing.Size(114, 37);
-            this.btnLogin.TabIndex = 4;
+            this.btnLogin.TabIndex = 2;
             this.btnLogin.Text = "Entrar";
             this.btnLogin.UseVisualStyleBackColor = true;
             this.btnLogin.Click += new System.EventHandler(this.btnLogin_Click);
             // 
-            // label3
+            // lblToken
             // 
-            this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(164, 243);
-            this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(114, 13);
-            this.label3.TabIndex = 8;
-            this.label3.Text = "Nível de Acesso:";
+            this.lblToken.AutoSize = true;
+            this.lblToken.Location = new System.Drawing.Point(161, 154);
+            this.lblToken.Name = "lblToken";
+            this.lblToken.Size = new System.Drawing.Size(103, 13);
+            this.lblToken.TabIndex = 1;
+            this.lblToken.Text = "Token de Acesso:";
             // 
-            // cboNivel
+            // txtToken
             // 
-            this.cboNivel.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
-            this.cboNivel.FormattingEnabled = true;
-            this.cboNivel.Items.AddRange(new object[] {
-            "Selecione...",
-            "Administrador",
-            "Padrão",
-            "Básico"});
-            this.cboNivel.Location = new System.Drawing.Point(164, 262);
-            this.cboNivel.Name = "cboNivel";
-            this.cboNivel.Size = new System.Drawing.Size(218, 21);
-            this.cboNivel.TabIndex = 7;
-            // 
-            // Label2
-            // 
-            this.Label2.AutoSize = true;
-            this.Label2.Location = new System.Drawing.Point(161, 194);
-            this.Label2.Name = "Label2";
-            this.Label2.Size = new System.Drawing.Size(51, 13);
-            this.Label2.TabIndex = 3;
-            this.Label2.Text = "Senha:";
-            // 
-            // txtSenha
-            // 
-            this.txtSenha.CharacterCasing = System.Windows.Forms.CharacterCasing.Lower;
-            this.txtSenha.Location = new System.Drawing.Point(164, 209);
-            this.txtSenha.Name = "txtSenha";
-            this.txtSenha.PasswordChar = '*';
-            this.txtSenha.Size = new System.Drawing.Size(219, 21);
-            this.txtSenha.TabIndex = 2;
-            // 
-            // Label1
-            // 
-            this.Label1.AutoSize = true;
-            this.Label1.Location = new System.Drawing.Point(161, 154);
-            this.Label1.Name = "Label1";
-            this.Label1.Size = new System.Drawing.Size(122, 13);
-            this.Label1.TabIndex = 1;
-            this.Label1.Text = "Nome de Usuário:";
-            // 
-            // txtUsuario
-            // 
-            this.txtUsuario.CharacterCasing = System.Windows.Forms.CharacterCasing.Lower;
-            this.txtUsuario.Location = new System.Drawing.Point(164, 170);
-            this.txtUsuario.Name = "txtUsuario";
-            this.txtUsuario.Size = new System.Drawing.Size(219, 21);
-            this.txtUsuario.TabIndex = 0;
+            this.txtToken.CharacterCasing = System.Windows.Forms.CharacterCasing.Upper;
+            this.txtToken.Location = new System.Drawing.Point(164, 170);
+            this.txtToken.Name = "txtToken";
+            this.txtToken.PasswordChar = '*';
+            this.txtToken.Size = new System.Drawing.Size(219, 21);
+            this.txtToken.TabIndex = 0;
             // 
             // pictureBox2
             // 
@@ -149,10 +101,10 @@
             // 
             // btnSair
             // 
-            this.btnSair.Location = new System.Drawing.Point(292, 299);
+            this.btnSair.Location = new System.Drawing.Point(292, 220);
             this.btnSair.Name = "btnSair";
             this.btnSair.Size = new System.Drawing.Size(91, 37);
-            this.btnSair.TabIndex = 5;
+            this.btnSair.TabIndex = 3;
             this.btnSair.Text = "Sair";
             this.btnSair.UseVisualStyleBackColor = true;
             this.btnSair.Click += new System.EventHandler(this.btnSair_Click);
@@ -198,13 +150,9 @@
         internal System.Windows.Forms.GroupBox GroupBox1;
         internal System.Windows.Forms.Button btnSair;
         internal System.Windows.Forms.Button btnLogin;
-        internal System.Windows.Forms.Label Label2;
-        internal System.Windows.Forms.TextBox txtSenha;
         internal System.Windows.Forms.PictureBox PictureBox1;
-        internal System.Windows.Forms.Label Label1;
-        internal System.Windows.Forms.TextBox txtUsuario;
+        internal System.Windows.Forms.Label lblToken;
+        internal System.Windows.Forms.TextBox txtToken;
         private System.Windows.Forms.PictureBox pictureBox2;
-        private System.Windows.Forms.Label label3;
-        private System.Windows.Forms.ComboBox cboNivel;
     }
 }

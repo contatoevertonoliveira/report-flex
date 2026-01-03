@@ -1,4 +1,4 @@
-﻿using Microsoft.Reporting.WinForms;
+//using Microsoft.Reporting.WinForms;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -66,11 +66,11 @@ namespace WindowsFormsApp1
                 },
                 Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
             };
-            rptRelatorios.SetPageSettings(ps);
-            rptRelatorios.SetDisplayMode(DisplayMode.PrintLayout);
+            //rptRelatorios.SetPageSettings(ps);
+            //rptRelatorios.SetDisplayMode(DisplayMode.PrintLayout);
     
 
-            this.rptRelatorios.RefreshReport();
+            //this.rptRelatorios.RefreshReport();
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿namespace WindowsFormsApp1
+namespace WindowsFormsApp1
 {
     partial class FrmAtivarClientesPrestadores
     {
@@ -60,20 +60,26 @@
             // btnSair
             // 
             this.btnSair.Image = global::WindowsFormsApp1.Properties.Resources.Turn_off;
+            this.btnSair.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
             this.btnSair.Location = new System.Drawing.Point(270, 181);
             this.btnSair.Name = "btnSair";
             this.btnSair.Size = new System.Drawing.Size(176, 41);
             this.btnSair.TabIndex = 4;
+            this.btnSair.Text = "  Sair";
+            this.btnSair.TextImageRelation = System.Windows.Forms.TextImageRelation.ImageBeforeText;
             this.btnSair.UseVisualStyleBackColor = true;
             this.btnSair.Click += new System.EventHandler(this.btnSair_Click);
             // 
             // btnDefinir
             // 
             this.btnDefinir.Image = global::WindowsFormsApp1.Properties.Resources.Yes;
+            this.btnDefinir.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
             this.btnDefinir.Location = new System.Drawing.Point(26, 181);
             this.btnDefinir.Name = "btnDefinir";
             this.btnDefinir.Size = new System.Drawing.Size(176, 41);
             this.btnDefinir.TabIndex = 3;
+            this.btnDefinir.Text = "  Definir";
+            this.btnDefinir.TextImageRelation = System.Windows.Forms.TextImageRelation.ImageBeforeText;
             this.btnDefinir.UseVisualStyleBackColor = true;
             this.btnDefinir.Click += new System.EventHandler(this.btnDefinir_Click);
             // 

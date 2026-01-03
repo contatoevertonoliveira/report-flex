@@ -1,0 +1,6 @@
+USE CMS;
+SELECT 'Employee' as TableName, COUNT(*) as Count FROM Employee
+UNION ALL
+SELECT 'Card', COUNT(*) FROM Card
+UNION ALL
+SELECT 'HA_TRANSIT', COUNT(*) FROM HA_TRANSIT;

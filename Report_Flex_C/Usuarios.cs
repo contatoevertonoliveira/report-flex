@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Configuration;
 using System.Data;
@@ -292,6 +292,7 @@ namespace WindowsFormsApp1
 
         public void filterRecords(string search)
         {
+            arrumaGRID();
             con = getConexaoBD();
             con.Open();
             string query = "select * from dbo.Login";
@@ -336,18 +337,69 @@ namespace WindowsFormsApp1
 
         private void arrumaGRID()
         {
+            dgvDados.AutoGenerateColumns = false;
+            dgvDados.Columns.Clear();
             dgvDados.AutoResizeColumns();
 
-            dgvDados.Columns.Add("@id", "Id");
-            dgvDados.Columns.Add("@nome", "Nome");
-            dgvDados.Columns.Add("@sobrenome", "Sobrenome");
-            dgvDados.Columns.Add("@cargo", "Cargo");
-            dgvDados.Columns.Add("@empresa", "Empresa");
-            dgvDados.Columns.Add("@nivel", "Nivel");
-            dgvDados.Columns.Add("@status", "Status");
-            dgvDados.Columns.Add("@usuario", "Usuario");
-            dgvDados.Columns.Add("@senha", "Senha");
-            dgvDados.Columns.Add("@email", "Email");
+            DataGridViewTextBoxColumn colId = new DataGridViewTextBoxColumn();
+            colId.Name = "@id";
+            colId.HeaderText = "Id";
+            colId.DataPropertyName = "ID";
+            dgvDados.Columns.Add(colId);
+
+            DataGridViewTextBoxColumn colNome = new DataGridViewTextBoxColumn();
+            colNome.Name = "@nome";
+            colNome.HeaderText = "Nome";
+            colNome.DataPropertyName = "NOME";
+            dgvDados.Columns.Add(colNome);
+
+            DataGridViewTextBoxColumn colSobrenome = new DataGridViewTextBoxColumn();
+            colSobrenome.Name = "@sobrenome";
+            colSobrenome.HeaderText = "Sobrenome";
+            colSobrenome.DataPropertyName = "SOBRENOME";
+            dgvDados.Columns.Add(colSobrenome);
+
+            DataGridViewTextBoxColumn colCargo = new DataGridViewTextBoxColumn();
+            colCargo.Name = "@cargo";
+            colCargo.HeaderText = "Cargo";
+            colCargo.DataPropertyName = "CARGO";
+            dgvDados.Columns.Add(colCargo);
+
+            DataGridViewTextBoxColumn colEmpresa = new DataGridViewTextBoxColumn();
+            colEmpresa.Name = "@empresa";
+            colEmpresa.HeaderText = "Empresa";
+            colEmpresa.DataPropertyName = "EMPRESA";
+            dgvDados.Columns.Add(colEmpresa);
+
+            DataGridViewTextBoxColumn colNivel = new DataGridViewTextBoxColumn();
+            colNivel.Name = "@nivel";
+            colNivel.HeaderText = "Nivel";
+            colNivel.DataPropertyName = "NIVEL";
+            dgvDados.Columns.Add(colNivel);
+
+            DataGridViewTextBoxColumn colStatus = new DataGridViewTextBoxColumn();
+            colStatus.Name = "@status";
+            colStatus.HeaderText = "Status";
+            colStatus.DataPropertyName = "STATUS";
+            dgvDados.Columns.Add(colStatus);
+
+            DataGridViewTextBoxColumn colUsuario = new DataGridViewTextBoxColumn();
+            colUsuario.Name = "@usuario";
+            colUsuario.HeaderText = "Usuario";
+            colUsuario.DataPropertyName = "USUARIO";
+            dgvDados.Columns.Add(colUsuario);
+
+            DataGridViewTextBoxColumn colSenha = new DataGridViewTextBoxColumn();
+            colSenha.Name = "@senha";
+            colSenha.HeaderText = "Senha";
+            colSenha.DataPropertyName = "SENHA";
+            dgvDados.Columns.Add(colSenha);
+
+            DataGridViewTextBoxColumn colEmail = new DataGridViewTextBoxColumn();
+            colEmail.Name = "@email";
+            colEmail.HeaderText = "Email";
+            colEmail.DataPropertyName = "EMAIL";
+            dgvDados.Columns.Add(colEmail);
 
             dgvDados.AllowUserToAddRows = false;
             dgvDados.EditMode = DataGridViewEditMode.EditProgrammatically;
@@ -355,6 +407,8 @@ namespace WindowsFormsApp1
 
         private void dgvDados_CellMouseClick(object sender, DataGridViewCellMouseEventArgs e)
         {
+            if (e.RowIndex < 0) return; // Ignore header clicks or invalid rows
+
             if (dgvDados.RowCount == 0)
             {
                 dgvDados.Enabled = false;
@@ -367,15 +421,27 @@ namespace WindowsFormsApp1
                 btnLimpar.Text = "Excluir Usuário";
                 int index = e.RowIndex;
                 DataGridViewRow selectedRow = dgvDados.Rows[index];
-                txtNome.Text = selectedRow.Cells[1].Value.ToString();
-                txtSobreNome.Text = selectedRow.Cells[2].Value.ToString();
-                txtCargo.Text = selectedRow.Cells[3].Value.ToString();
-                txtEmpresa.Text = selectedRow.Cells[4].Value.ToString();
-                cboNivel.Text = selectedRow.Cells[5].Value.ToString();
-                txtUsuario.Text = selectedRow.Cells[6].Value.ToString();
-                txtSenha.Text = selectedRow.Cells[7].Value.ToString();
-                cboStatus.Text = selectedRow.Cells[8].Value.ToString();
-                txtEmail.Text = selectedRow.Cells[9].Value.ToString();
+                
+                // Use safe column access by name instead of index
+                try 
+                {
+                    txtNome.Text = Convert.ToString(selectedRow.Cells["@nome"].Value);
+                    txtSobreNome.Text = Convert.ToString(selectedRow.Cells["@sobrenome"].Value);
+                    txtCargo.Text = Convert.ToString(selectedRow.Cells["@cargo"].Value);
+                    txtEmpresa.Text = Convert.ToString(selectedRow.Cells["@empresa"].Value);
+                    cboNivel.Text = Convert.ToString(selectedRow.Cells["@nivel"].Value);
+                    txtUsuario.Text = Convert.ToString(selectedRow.Cells["@usuario"].Value);
+                    txtSenha.Text = Convert.ToString(selectedRow.Cells["@senha"].Value);
+                    cboStatus.Text = Convert.ToString(selectedRow.Cells["@status"].Value);
+                    txtEmail.Text = Convert.ToString(selectedRow.Cells["@email"].Value);
+                }
+                catch (Exception ex)
+                {
+                    // Fallback to indices if column names fail, or log error
+                    // But usually names are safer. If names fail, indices likely fail too or are wrong.
+                    // For now, suppress or show error to help debugging
+                    MessageBox.Show("Erro ao ler dados da linha: " + ex.Message);
+                }
 
 
                 lblProcesso.Visible = false;
@@ -450,15 +516,24 @@ namespace WindowsFormsApp1
 
                 int index = e.RowIndex;
                 DataGridViewRow selectedRow = dgvDados.Rows[index];
-                txtNome.Text = selectedRow.Cells[1].Value.ToString();
-                txtSobreNome.Text = selectedRow.Cells[2].Value.ToString();
-                txtCargo.Text = selectedRow.Cells[3].Value.ToString();
-                txtEmpresa.Text = selectedRow.Cells[4].Value.ToString();
-                cboNivel.Text = selectedRow.Cells[5].Value.ToString();
-                txtUsuario.Text = selectedRow.Cells[6].Value.ToString();
-                txtSenha.Text = selectedRow.Cells[7].Value.ToString();
-                cboStatus.Text = selectedRow.Cells[8].Value.ToString();
-                txtEmail.Text = selectedRow.Cells[9].Value.ToString();
+                
+                try
+                {
+                    txtNome.Text = Convert.ToString(selectedRow.Cells["@nome"].Value);
+                    txtSobreNome.Text = Convert.ToString(selectedRow.Cells["@sobrenome"].Value);
+                    txtCargo.Text = Convert.ToString(selectedRow.Cells["@cargo"].Value);
+                    txtEmpresa.Text = Convert.ToString(selectedRow.Cells["@empresa"].Value);
+                    cboNivel.Text = Convert.ToString(selectedRow.Cells["@nivel"].Value);
+                    txtUsuario.Text = Convert.ToString(selectedRow.Cells["@usuario"].Value);
+                    txtSenha.Text = Convert.ToString(selectedRow.Cells["@senha"].Value);
+                    cboStatus.Text = Convert.ToString(selectedRow.Cells["@status"].Value);
+                    txtEmail.Text = Convert.ToString(selectedRow.Cells["@email"].Value);
+                }
+                catch (Exception ex)
+                {
+                     MessageBox.Show("Erro ao ler dados da linha (Double Click): " + ex.Message);
+                }
+                
                 dgvDados.Enabled = false;
             }
         }

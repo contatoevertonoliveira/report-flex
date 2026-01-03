@@ -1,4 +1,4 @@
-﻿using Microsoft.Reporting.WinForms;
+//using Microsoft.Reporting.WinForms;
 using System;
 using System.Configuration;
 using System.Data;
@@ -404,7 +404,7 @@ namespace WindowsFormsApp1
                 {
                     consulta_TODOS_Nivel_Acesso();
 
-                    if (bsDados.Count > 0)
+                    if (dgvDados.Rows.Count > 0)
                     {
                         txtPesquisa.Enabled = true;
                         btnConsultar.Enabled = false;
@@ -971,17 +971,17 @@ UNION
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados níveis. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados níveis. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -992,20 +992,19 @@ UNION
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsNiveis", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\NRelatorios.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
-                        rptDados.RefreshReport();
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsNiveis", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\NRelatorios.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1068,18 +1067,17 @@ UNION
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1090,22 +1088,21 @@ UNION
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
 
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
-                        rptDados.RefreshReport();
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1180,18 +1177,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1202,22 +1198,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsTdsAcessos", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsTdsAcessos", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\TdsAcessosRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\TdsAcessosRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1280,18 +1275,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1302,22 +1296,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1380,18 +1373,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1402,22 +1394,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1495,18 +1486,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1517,22 +1507,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsTdsAcessos", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsTdsAcessos", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\TdsAcessosRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\TdsAcessosRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1595,18 +1584,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1617,22 +1605,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsFiltros", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\FiltroAcessosRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1676,19 +1663,18 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados visitantes para este DOCUMENTO. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        btnConsultar.Enabled = true;
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados visitantes para este DOCUMENTO. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    btnConsultar.Enabled = true;
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1699,22 +1685,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsVisitantes", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsVisitantes", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\VisitaRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\VisitaRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1752,19 +1737,18 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados visitantes para este DOCUMENTO. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        btnConsultar.Enabled = true;
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados visitantes para este DOCUMENTO. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    btnConsultar.Enabled = true;
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1775,22 +1759,21 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsVisitantes", bsDados);
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsVisitantes", bsDados);
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\VisitaRelatorio.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\VisitaRelatorio.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
 
-                        rptDados.RefreshReport();
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
-                }
             }
             catch (Exception ex)
             {
@@ -1852,18 +1835,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para esta EMPRESA. Verifique se realmente existe essa empresa!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para esta EMPRESA. Verifique se realmente existe essa empresa!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -1874,23 +1856,22 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
 
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
-                        rptDados.RefreshReport();
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
                 }
-            }
             catch (Exception ex)
             {
                 MessageBox.Show("Erro: " + ex.Message, "Consultar Registros");
@@ -2021,18 +2002,16 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = tabela;
-                    }
+                    MessageBox.Show("Não foram encontrados dados para este CRACHÁ. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    dgvDados.DataSource = tabela;
                 }
             }
             catch (Exception ex)
@@ -2096,18 +2075,17 @@ UNION ALL
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = null;
-                        bsDados.DataSource = tabela;
+                    MessageBox.Show("Não foram encontrados dados para esta MATRICULA. Verifique se realmente houve acessos!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    //bsDados.DataSource = null;
+                    dgvDados.DataSource = tabela;
 
                         System.Drawing.Printing.PageSettings ps = new System.Drawing.Printing.PageSettings
                         {
@@ -2118,23 +2096,22 @@ UNION ALL
                             },
                             Margins = new System.Drawing.Printing.Margins(10, 10, 10, 10)
                         };
-                        rptDados.SetPageSettings(ps);
-                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
-                        rptDados.ZoomMode = ZoomMode.PageWidth;
+//                        rptDados.SetPageSettings(ps);
+//                        rptDados.SetDisplayMode(DisplayMode.PrintLayout);
+//                        rptDados.ZoomMode = ZoomMode.PageWidth;
 
-                        rptDados.LocalReport.DataSources.Clear();
-                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
+//                        rptDados.LocalReport.DataSources.Clear();
+//                        ReportDataSource rds = new ReportDataSource("DsInfoCadastro", bsDados);
 
-                        rptDados.ProcessingMode = ProcessingMode.Local;
-                        rptDados.LocalReport.EnableExternalImages = true;
+//                        rptDados.ProcessingMode = ProcessingMode.Local;
+//                        rptDados.LocalReport.EnableExternalImages = true;
 
-                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
-                        rptDados.LocalReport.DataSources.Add(rds);
-                        rptDados.RefreshReport();
+//                        rptDados.LocalReport.ReportPath = @"C:\Report_Flex\Report_Flex_C\Relatorios\InfoRelatorios.rdlc";
+//                        rptDados.LocalReport.DataSources.Add(rds);
+//                        rptDados.RefreshReport();
                         btnConsultar.Enabled = true;
                     }
                 }
-            }
             catch (Exception ex)
             {
                 MessageBox.Show("Erro: " + ex.Message, "Consultar Registros");
@@ -2205,18 +2182,16 @@ dbo.Employee.PreferredName = @Pesquisa";
                 cmd.Connection = con;
                 cmd.CommandText = strsql;
 
-                using (SqlDataReader reader = cmd.ExecuteReader())
+                SqlDataAdapter adapter = new SqlDataAdapter(cmd);
+                adapter.Fill(tabela);
+
+                if (tabela.Rows.Count == 0)
                 {
-                    tabela.Load(reader);
-                    if (tabela.Rows.Count == 0)
-                    {
-                        MessageBox.Show("Não foram encontrados dados para este CPF. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        tabela.Load(reader);
-                        bsDados.DataSource = tabela;
-                    }
+                    MessageBox.Show("Não foram encontrados dados para este CPF. Verifique se realmente existe!", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    dgvDados.DataSource = tabela;
                 }
             }
             catch (Exception ex)
@@ -2276,8 +2251,17 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+            
+            if (Table.Rows.Count > 0 && cboPesquisa.Text == "Nível de Acesso")
+            {
+                rdbAtivo.Enabled = true;
+                rdbInativo.Enabled = true;
+                rdbExpirado.Enabled = true;
+                rdbInvalido.Enabled = true;
+                btnFiltrar.Enabled = true;
+            }
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2330,8 +2314,8 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2383,8 +2367,8 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2435,8 +2419,8 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2487,8 +2471,8 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2529,8 +2513,8 @@ dbo.Employee.PreferredName = @Pesquisa";
             SqlDataAdapter adapter = new SqlDataAdapter(command);
             DataTable Table = new DataTable();
             adapter.Fill(Table);
-            bsDados.DataSource = Table;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = Table;
+//            rptDados.RefreshReport();
             con.Close();
         }
 
@@ -2603,9 +2587,9 @@ dbo.Employee.PreferredName = @Pesquisa";
             Desativa.Checked = false;
             cboDados.Items.Clear();
             cboObter.Items.Clear();
-            bsDados.DataSource = null;
-            rptDados.LocalReport.ReportPath = null;
-            rptDados.RefreshReport();
+            dgvDados.DataSource = null;
+//            rptDados.LocalReport.ReportPath = null;
+//            rptDados.RefreshReport();
         }
 
         private void txtDataInicio_KeyPress(object sender, KeyPressEventArgs e)
