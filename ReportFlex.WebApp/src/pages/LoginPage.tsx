@@ -17,7 +17,19 @@ export function LoginPage() {
           <button className="btn btn-secondary" onClick={async ()=>{
             try{
               const res = await api.signinToken(tokenInput)
-              if (res?.token){ setToken(res.token); navigate('/clientes') }
+              if (res?.token){
+                setToken(res.token)
+                if (res?.nivel) localStorage.setItem('rf_level', res.nivel)
+                if (res?.clientId){
+                  localStorage.setItem('rf_client_id', String(res.clientId))
+                  if (res?.clientName) localStorage.setItem('rf_client_name', res.clientName)
+                } else {
+                  localStorage.removeItem('rf_client_id')
+                  localStorage.removeItem('rf_client_name')
+                }
+                localStorage.setItem('rf_last_activity', Date.now().toString())
+                navigate('/consultas')
+              }
               else setError('Token inválido')
             }catch{ setError('Falha de autenticação') }
           }}>Entrar</button>

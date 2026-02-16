@@ -1,12 +1,24 @@
 *{box-sizing:border-box}
 body,html,#root{height:100%}
 .layout{display:flex; height:100%}
-.sidebar{width:64px; background:#1f2633; color:#fff; padding:8px; transition: width .2s}
+.sidebar{width:64px; background:#1f2633; color:#fff; padding:8px; transition: width .2s; display:flex; flex-direction:column}
 .sidebar.expanded{width:220px}
+.sidebar-top{flex:1; display:flex; flex-direction:column}
+.sidebar-logo{display:flex; justify-content:center; align-items:center; margin-bottom:12px}
+.sidebar-logo img{max-width:100%; max-height:48px; object-fit:contain}
 .sidebar-header{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px}
-.sidebar nav{display:flex; flex-direction:column}
+.sidebar nav{display:flex; flex-direction:column; gap:6px}
 .sidebar nav a{color:#cbd5e1; text-decoration:none; padding:8px; border-radius:4px}
 .sidebar nav a:hover{background:#334155}
+.sidebar-divider{border-top:1px solid #334155; margin-top:8px; padding-top:8px}
+.sidebar-footer{display:flex; justify-content:flex-end; margin-top:8px}
+
+/* Sidebar recolhida: centraliza ícones */
+.sidebar:not(.expanded) nav a,
+.sidebar:not(.expanded) nav button{
+  justify-content:center;
+}
+
 main{flex:1; padding:16px; overflow:auto}
 section{margin-bottom:16px}
 .row{display:flex; gap:8px; align-items:center}
@@ -17,3 +29,32 @@ th{background:#f8fafc}
 .login-card{max-width:420px; width:90%; background:#fff; padding:24px; border:1px solid #e2e8f0; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.08)}
 .login-brand{display:flex; justify-content:center; margin-bottom:16px}
 .login-actions{display:flex; flex-direction:column; gap:8px}
+
+@media (max-width: 768px){
+  .layout{flex-direction:column}
+  .sidebar,.sidebar.expanded{width:100%; flex-direction:row; align-items:center}
+  .sidebar-top{flex:1; flex-direction:row; align-items:center}
+  .sidebar-logo{margin-bottom:0; margin-right:8px}
+  .sidebar nav{flex-direction:row; flex-wrap:wrap}
+  main{padding:12px}
+}
+
+/* Professional UI: Queries */
+.queries-card .card-header{display:flex; align-items:center; justify-content:space-between}
+.queries-toolbar{display:flex; gap:12px; flex-wrap:wrap}
+.queries-form .input-group .input-group-text{background:#f1f5f9}
+.queries-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.queries-row{display:flex; align-items:flex-end; gap:8px; flex-wrap:nowrap; overflow-x:auto}
+.queries-row .input-group,.queries-row .form-select{min-width:140px}
+.queries-ready-options{display:flex; gap:12px; flex-wrap:wrap}
+.queries-ready-option{flex:1; min-width:180px; padding:10px 12px; border:1px solid #e2e8f0; border-radius:8px; display:flex; align-items:center; justify-content:space-between; background:#0f172a; color:#e2e8f0}
+.queries-ready-option.active{border-color:#3b82f6; box-shadow:0 0 0 1px rgba(59,130,246,0.5); background:#020617}
+.queries-ready-option label{margin:0; font-weight:500}
+.queries-cols-row{display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap}
+.queries-cols-list{flex:1; display:flex; flex-wrap:wrap; gap:6px}
+.queries-col-pill{border:1px solid #e2e8f0; border-radius:999px; padding:4px 10px; display:flex; align-items:center; gap:6px; background:#f8fafc}
+.btn-icon{display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0}
+.export-group{display:flex; gap:6px}
+.pro-table thead th{position:sticky; top:0; z-index:1; background:#f8fafc}
+.pro-table tbody tr:hover{background:#f1f5f9}
+.pro-table td,.pro-table th{vertical-align:middle}
