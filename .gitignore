@@ -1,0 +1,10 @@
+ReportFlex.WebApp/node_modules/
+ReportFlex.WebApp/dist/
+ReportFlex.WebApi/bin/
+ReportFlex.WebApi/obj/
+.DS_Store
+Thumbs.db
+*.user
+*.suo
+*.swp
+/.vs/
