@@ -286,6 +286,7 @@ export function QueriesPage(){
 
   return (
     <section className="queries">
+      <h2>Consultas</h2>
       <div className="card queries-card">
         <div className="card-header">
           <div className="d-flex align-items-center" style={{gap:8}}>

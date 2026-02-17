@@ -5,6 +5,7 @@ using System.Data;
 using System.Data.SqlClient;
 using System.Drawing;
 using System.Windows.Forms;
+using ReportFlex.WinForms;
 
 namespace WindowsFormsApp1
 {
@@ -128,7 +129,7 @@ namespace WindowsFormsApp1
                     cboObter.Items.Clear();
                     cboObter.Items.Add("Selecione...");
                     cboObter.Items.Add("Informação de Cadastro");
-                    //cboObter.Items.Add("Todos Acessos");
+                    cboObter.Items.Add("Todos os acessos");
                     //cboObter.Items.Add("Somente Catracas");
                     //cboObter.Items.Add("Somente Cancelas");
                     //cboObter.Items.Add("Primeira Entrada e Última Saída de cada dia");
@@ -459,6 +460,25 @@ namespace WindowsFormsApp1
                         btnConsultar.Enabled = true;
                         txtPesquisa.Clear();
                         txtPesquisa.Focus();
+                    }
+                }
+                else if (cboObter.Text == "Todos os acessos")
+                {
+                    if (!txtDataInicio.MaskCompleted)
+                    {
+                        MessageBox.Show("Você precisa digitar a data inicial!", "Report Flex | Data...", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        btnConsultar.Enabled = true;
+                        txtDataInicio.Focus();
+                    }
+                    else if (!txtDataFim.MaskCompleted)
+                    {
+                        MessageBox.Show("Você precisa digitar a data final!", "Report Flex | Data...", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        btnConsultar.Enabled = true;
+                        txtDataFim.Focus();
+                    }
+                    else
+                    {
+                        Consulta_Transito_PorPeriodo_API();
                     }
                 }
             }
@@ -2531,6 +2551,55 @@ dbo.Employee.PreferredName = @Pesquisa";
             cboPesquisa.Items.Add("Nível de Acesso");
             cboPesquisa.Items.Add("Visitantes");
             cboPesquisa.SelectedIndex = 0;
+        }
+
+        public void Consulta_Transito_PorPeriodo_API()
+        {
+            DateTime dataInicio, dataFim;
+            if (!DateTime.TryParse(txtDataInicio.Text, out dataInicio) || !DateTime.TryParse(txtDataFim.Text, out dataFim))
+            {
+                MessageBox.Show("Datas inválidas. Verifique os campos de data.", "Report Flex | Datas", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                btnConsultar.Enabled = true;
+                return;
+            }
+            dataFim = dataFim.AddDays(1);
+            string empresa = txtPesquisa.Text.Trim();
+            try
+            {
+                var resp = ApiClient.GetTransitByPeriod(dataInicio, dataFim, empresa, null, 1, 5000);
+                var tabela = new DataTable();
+                tabela.Columns.Add("CÓDIGO", typeof(int));
+                tabela.Columns.Add("NOME", typeof(string));
+                tabela.Columns.Add("EMPRESA", typeof(string));
+                tabela.Columns.Add("TERMINAL", typeof(string));
+                tabela.Columns.Add("DESCRIÇÃO", typeof(string));
+                tabela.Columns.Add("TRÂNSITO", typeof(DateTime));
+                if (resp != null && resp.items != null)
+                {
+                    foreach (var x in resp.items)
+                    {
+                        var row = tabela.NewRow();
+                        row["CÓDIGO"] = x.SbiID;
+                        row["NOME"] = x.Name;
+                        row["EMPRESA"] = x.Empresa;
+                        row["TERMINAL"] = x.Terminal;
+                        row["DESCRIÇÃO"] = x.TerminalDescription;
+                        row["TRÂNSITO"] = x.TransitDate;
+                        tabela.Rows.Add(row);
+                    }
+                }
+                if (tabela.Rows.Count == 0)
+                {
+                    MessageBox.Show("Nenhum trânsito encontrado para o período informado.", "REPORT Flex 1.0 | Informativo !", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                dgvDados.DataSource = tabela;
+                btnConsultar.Enabled = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao consultar trânsitos na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                btnConsultar.Enabled = true;
+            }
         }
 
         private void btnFiltrar_Click(object sender, EventArgs e)

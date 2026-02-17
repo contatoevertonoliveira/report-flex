@@ -8,6 +8,8 @@ export function SettingsPage(){
   const [err, setErr] = useState<string | null>(null)
   const [seedCount, setSeedCount] = useState(100)
   const [realPath, setRealPath] = useState('')
+  const [dbInfo, setDbInfo] = useState<any | null>(null)
+  const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
 
   useEffect(() => {
     (async () => {
@@ -20,6 +22,13 @@ export function SettingsPage(){
         if (c?.CMS){
           setRealPath(c.CMS)
         }
+        setDbInfoErr(null)
+        try{
+          const info = await api.getDbInfo()
+          setDbInfo(info)
+        }catch{
+          setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+        }
       }catch{}
     })()
   }, [])
@@ -30,6 +39,13 @@ export function SettingsPage(){
       const r = await api.setDbMode(next)
       setMode(r.mode || next)
       setMsg(`Modo alterado para ${r.mode || next}`)
+      setDbInfoErr(null)
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+      }catch{
+        setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+      }
     }catch{
       setErr('Falha ao alterar modo')
     }
@@ -53,7 +69,7 @@ export function SettingsPage(){
   }
 
   async function saveRealPath(){
-    setErr(null); setMsg(null)
+    setErr(null); setMsg(null); setDbInfoErr(null)
     try{
       let cms = realPath
       let logins = realPath
@@ -67,7 +83,17 @@ export function SettingsPage(){
         logins = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*CMS/i, '$1=Logins')
       }
       const r = await api.setConnections({ CMS: cms, Logins: logins })
+      if (r?.CMS){
+        setRealPath(r.CMS)
+      }
       setMsg('Configuração de conexão salva')
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+        setDbInfoErr(null)
+      }catch{
+        setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+      }
     }catch{
       setErr('Falha ao salvar configuração')
     }
@@ -116,6 +142,75 @@ export function SettingsPage(){
           )}
           {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
           {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
+        </div>
+      </div>
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header d-flex align-items-center" style={{gap:8}}>
+          <i className="bi bi-database-gear" /> Banco de dados em uso
+        </div>
+        <div className="card-body">
+          {dbInfo && (
+            <>
+              <p className="text-muted" style={{fontSize:12, marginBottom:8}}>
+                Estas informações mostram qual modo está ativo e para quais bancos (Logins e CMS) as conexões estão apontando, incluindo uma lista resumida de tabelas encontradas em cada base.
+              </p>
+              <div className="mb-2">
+                <strong>Modo atual:</strong> {dbInfo.mode || mode}
+              </div>
+              <div className="row">
+                <div className="col-md-6">
+                  <h6>Base CMS</h6>
+                  {dbInfo.databases?.CMS ? (
+                    <>
+                      <div style={{wordBreak:'break-all'}}>
+                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
+                        <code style={{fontSize:12}}>{dbInfo.databases.CMS.connection}</code>
+                      </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.CMS.tables || []).slice(0,20).map((t:string)=>(
+                            <li key={t}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base CMS com as configurações atuais.</div>
+                  )}
+                </div>
+                <div className="col-md-6">
+                  <h6>Base Logins</h6>
+                  {dbInfo.databases?.Logins ? (
+                    <>
+                      <div style={{wordBreak:'break-all'}}>
+                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
+                        <code style={{fontSize:12}}>{dbInfo.databases.Logins.connection}</code>
+                      </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.Logins.tables || []).slice(0,20).map((t:string)=>(
+                            <li key={t}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base Logins com as configurações atuais.</div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          {!dbInfo && !dbInfoErr && (
+            <div className="text-muted" style={{fontSize:12}}>Carregando informações do banco...</div>
+          )}
+          {dbInfoErr && (
+            <div className="alert alert-warning d-flex align-items-center mt-2" style={{gap:8}}>
+              <i className="bi bi-exclamation-triangle" /> {dbInfoErr}
+            </div>
+          )}
         </div>
       </div>
     </section>

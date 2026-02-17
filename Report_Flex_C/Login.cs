@@ -6,6 +6,8 @@ using System.Data.SqlClient;
 using System.Threading;
 using System.Windows.Forms;
 using System.Drawing;
+using ReportFlex.WinForms;
+using System.Web.Script.Serialization;
 
 namespace WindowsFormsApp1
 {
@@ -24,12 +26,6 @@ namespace WindowsFormsApp1
         SqlConnection con = null;
         SqlCommand cmd = null;
         SqlDataReader dr = null;
-
-        private SqlConnection getConexaoBD()
-        {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
-            return new SqlConnection(strConexao);
-        }
 
         private void RegisterFocusEvents(Control.ControlCollection controls)
         {
@@ -59,66 +55,45 @@ namespace WindowsFormsApp1
 
         public void VerificaLogin()
         {
-            con = getConexaoBD();
-
-            cmd = new SqlCommand("SELECT NOME, USUARIO FROM dbo.Login WHERE TOKEN=@token AND STATUS='Habilitado'", con);
-            cmd.Parameters.Add("@token", SqlDbType.VarChar).Value = txtToken.Text;
-
-            con.Open();
-            dr = null;
-
-            dr = cmd.ExecuteReader();
-
-            if (dr.HasRows)
+            try
             {
-                while (dr.Read())
+                var resp = ApiClient.PostJson<Dictionary<string, object>>("/api/login/signin-token", new { token = txtToken.Text });
+                if (resp == null || !resp.ContainsKey("token"))
                 {
-                    usuarioConectado = dr["USUARIO"].ToString();
-                    nomeConectado = dr["NOME"].ToString();
-                    
-                    // Definir nível de acesso baseado no range do token
-                    int tokenVal = 0;
-                    if (int.TryParse(txtToken.Text, out tokenVal))
-                    {
-                        if (tokenVal >= 0 && tokenVal <= 10)
-                        {
-                            nivelAcesso = "SuperAdmin";
-                        }
-                        else if (tokenVal >= 11 && tokenVal <= 20)
-                        {
-                            nivelAcesso = "Administrador";
-                        }
-                        else if (tokenVal >= 21 && tokenVal <= 30)
-                        {
-                            nivelAcesso = "Padrão"; // User called "Básico", mapping to Padrão (Level 2)
-                        }
-                        else if (tokenVal >= 31 && tokenVal <= 40)
-                        {
-                            nivelAcesso = "Leitor"; // User called "Leitor", mapping to new Level 4 or existing Básico (Level 3) logic
-                        }
-                        else
-                        {
-                            // Fallback para token fora do range (se houver legado ou erro)
-                             nivelAcesso = "Leitor"; 
-                        }
-                    }
-                    else
-                    {
-                         nivelAcesso = "Leitor";
-                    }
-
-                    MessageBox.Show("Usuário conectado com sucesso! | Bem vindo '" + nomeConectado + "'\nNível: " + nivelAcesso, "Report Flex 1.0 | Login efetuado!", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    PreencherVariaveis();
-                    this.Hide();
+                    throw new Exception("Resposta inválida da API");
                 }
+                Session.Token = resp["token"] as string;
+                Session.Nome = resp.ContainsKey("nome") ? (resp["nome"] as string) : null;
+                Session.Usuario = resp.ContainsKey("usuario") ? (resp["usuario"] as string) : null;
+                Session.Nivel = resp.ContainsKey("nivel") ? (resp["nivel"] as string) : null;
+                if (resp.ContainsKey("clientId") && resp["clientId"] != null)
+                {
+                    int cid;
+                    if (int.TryParse(resp["clientId"].ToString(), out cid))
+                    {
+                        Session.ClientId = cid;
+                    }
+                }
+                Session.ClientName = resp.ContainsKey("clientName") ? (resp["clientName"] as string) : null;
+
+                usuarioConectado = Session.Usuario ?? "";
+                nomeConectado = Session.Nome ?? "";
+                nivelAcesso = Session.Nivel ?? "";
+
+                MessageBox.Show("Usuário conectado com sucesso! | Bem vindo '" + nomeConectado + "'\nNível: " + nivelAcesso, "Report Flex 1.0 | Login efetuado!", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                PreencherVariaveis();
+                this.Hide();
             }
-            else
+            catch (UnauthorizedAccessException)
             {
                 MessageBox.Show("Token não encontrado ou inválido!", "Report Flex 1.0 | ALERTA - Login!", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 txtToken.Clear();
                 txtToken.Focus();
             }
-            con.Close();
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao autenticar via API: " + ex.Message, "Report Flex 1.0 | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void frmLogin_Load(object sender, EventArgs e)

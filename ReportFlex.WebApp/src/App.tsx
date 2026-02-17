@@ -50,7 +50,12 @@ export default function App() {
   return (
     <div className="layout">
       {showSidebar && <Sidebar expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
-      <main style={{ overflow: showSidebar ? 'auto' : 'hidden' }}>
+      <main style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
+        {location.pathname !== '/login' && (
+          <div className="page-logo-mark">
+            <img src="http://localhost:5000/images-legacy/Logo_Principal_Fundo2.png" alt="Report Flex" />
+          </div>
+        )}
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/consultas" element={<RequireAuth><QueriesPage /></RequireAuth>} />

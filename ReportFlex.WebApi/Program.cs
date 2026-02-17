@@ -1,4 +1,5 @@
 using System.Data;
+using System.Linq;
 using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
@@ -42,6 +43,68 @@ builder.Services.AddAuthentication().AddJwtBearer(opt =>
         IssuerSigningKey = key
     };
 });
+
+var envPath = Path.Combine(AppContext.BaseDirectory, ".env");
+var envLock = new object();
+Dictionary<string,string> LoadEnv()
+{
+    var dict = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+    try
+    {
+        if (File.Exists(envPath))
+        {
+            foreach (var line in File.ReadAllLines(envPath))
+            {
+                var trimmed = line.Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#", StringComparison.Ordinal)) continue;
+                var idx = trimmed.IndexOf('=');
+                if (idx <= 0) continue;
+                var key = trimmed.Substring(0, idx).Trim();
+                var val = trimmed.Substring(idx + 1).Trim();
+                dict[key] = val;
+            }
+        }
+    }
+    catch
+    {
+    }
+    return dict;
+}
+
+void SaveEnv(IDictionary<string,string> values)
+{
+    lock (envLock)
+    {
+        var existing = LoadEnv();
+        foreach (var kv in values)
+        {
+            existing[kv.Key] = kv.Value ?? "";
+        }
+        var lines = existing.Select(kv => kv.Key + "=" + kv.Value).ToArray();
+        try
+        {
+            File.WriteAllLines(envPath, lines);
+        }
+        catch
+        {
+        }
+    }
+}
+
+var initialEnv = LoadEnv();
+var dbMode = initialEnv.TryGetValue("DB_MODE", out var m) && !string.IsNullOrWhiteSpace(m)
+    ? (string.Equals(m, "Real", StringComparison.OrdinalIgnoreCase) ? "Real" : "Demo")
+    : "Demo";
+var realOverrides = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+if (initialEnv.TryGetValue("DB_CMS_CONN", out var envCms) && !string.IsNullOrWhiteSpace(envCms))
+{
+    realOverrides["CMS"] = envCms;
+}
+if (initialEnv.TryGetValue("DB_LOGINS_CONN", out var envLogins) && !string.IsNullOrWhiteSpace(envLogins))
+{
+    realOverrides["Logins"] = envLogins;
+}
+
 var app = builder.Build();
 app.UseResponseCompression();
 app.UseCors();
@@ -51,8 +114,6 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 ImagesStatic.MapLegacyImages(app);
 
-var dbMode = "Demo";
-var realOverrides = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
 string GetConn(string name)
 {
     if (string.Equals(dbMode, "Demo", StringComparison.OrdinalIgnoreCase))
@@ -128,22 +189,93 @@ app.MapPost("/api/admin/db-mode", async (HttpContext ctx) =>
         return Results.BadRequest(new { error = "Modo inválido. Use Real ou Demo." });
     }
     dbMode = char.ToUpperInvariant(mode[0]) + mode.Substring(1).ToLowerInvariant();
+    SaveEnv(new Dictionary<string,string>
+    {
+        ["DB_MODE"] = dbMode
+    });
     return Results.Ok(new { mode = dbMode });
 }).RequireAuthorization("NotCliente");
 
 app.MapGet("/api/admin/connections", () =>
 {
-    var cms = realOverrides.TryGetValue("CMS", out var c) ? c : null;
-    var logins = realOverrides.TryGetValue("Logins", out var l) ? l : null;
+    var cms = realOverrides.TryGetValue("CMS", out var c) ? c : builder.Configuration.GetConnectionString("CMS") ?? null;
+    var logins = realOverrides.TryGetValue("Logins", out var l) ? l : builder.Configuration.GetConnectionString("Logins") ?? null;
     return Results.Ok(new { CMS = cms, Logins = logins, mode = dbMode });
+}).RequireAuthorization("NotCliente");
+
+app.MapGet("/api/admin/db-info", async () =>
+{
+    try
+    {
+        var cmsConn = GetConn("CMS");
+        var loginsConn = GetConn("Logins");
+        var result = new Dictionary<string, object?>();
+
+        try
+        {
+            using var cnCms = new SqlConnection(cmsConn);
+            await cnCms.OpenAsync();
+            using var cmdCms = cnCms.CreateCommand();
+            cmdCms.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME";
+            using var rCms = await cmdCms.ExecuteReaderAsync();
+            var tablesCms = new List<string>();
+            while (await rCms.ReadAsync())
+            {
+                tablesCms.Add(rCms.GetString(0));
+            }
+            result["CMS"] = new { connection = cmsConn, tables = tablesCms };
+        }
+        catch
+        {
+            result["CMS"] = null;
+        }
+
+        try
+        {
+            using var cnLogins = new SqlConnection(loginsConn);
+            await cnLogins.OpenAsync();
+            using var cmdLogins = cnLogins.CreateCommand();
+            cmdLogins.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME";
+            using var rLogins = await cmdLogins.ExecuteReaderAsync();
+            var tablesLogins = new List<string>();
+            while (await rLogins.ReadAsync())
+            {
+                tablesLogins.Add(rLogins.GetString(0));
+            }
+            result["Logins"] = new { connection = loginsConn, tables = tablesLogins };
+        }
+        catch
+        {
+            result["Logins"] = null;
+        }
+
+        return Results.Ok(new { mode = dbMode, databases = result });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { mode = dbMode, databases = (object?)null, error = ex.Message });
+    }
 }).RequireAuthorization("NotCliente");
 
 app.MapPost("/api/admin/connections", async (HttpContext ctx) =>
 {
     var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string,string>>();
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
-    if (dto.TryGetValue("CMS", out var cms) && !string.IsNullOrWhiteSpace(cms)) realOverrides["CMS"] = cms;
-    if (dto.TryGetValue("Logins", out var logins) && !string.IsNullOrWhiteSpace(logins)) realOverrides["Logins"] = logins;
+    var changed = new Dictionary<string,string>();
+    if (dto.TryGetValue("CMS", out var cms) && !string.IsNullOrWhiteSpace(cms))
+    {
+        realOverrides["CMS"] = cms;
+        changed["DB_CMS_CONN"] = cms;
+    }
+    if (dto.TryGetValue("Logins", out var logins) && !string.IsNullOrWhiteSpace(logins))
+    {
+        realOverrides["Logins"] = logins;
+        changed["DB_LOGINS_CONN"] = logins;
+    }
+    if (changed.Count > 0)
+    {
+        SaveEnv(changed);
+    }
     return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins") });
 }).RequireAuthorization("NotCliente");
 
