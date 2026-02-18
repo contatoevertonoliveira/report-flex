@@ -9,6 +9,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using ReportFlex.WinForms;
 
 namespace WindowsFormsApp1
 {
@@ -39,7 +40,7 @@ namespace WindowsFormsApp1
 
         private SqlConnection getConexaoBD()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 
@@ -89,7 +90,9 @@ namespace WindowsFormsApp1
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro ao efetuar a conexão com o Banco de Dados: " + ex.Message, "Buscar Clientes...");
+                string diag = "";
+                try { diag = ReportFlex.WinForms.DbEnv.GetDiagnosticsFor("Logins"); } catch { }
+                MessageBox.Show("Erro ao efetuar a conexão com o Banco de Dados: " + ex.Message + (string.IsNullOrEmpty(diag) ? "" : ("\n\n" + diag)), "Buscar Clientes...");
             }
             finally
             {

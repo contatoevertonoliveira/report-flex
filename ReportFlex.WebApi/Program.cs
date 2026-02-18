@@ -43,17 +43,16 @@ builder.Services.AddAuthentication().AddJwtBearer(opt =>
         IssuerSigningKey = key
     };
 });
-
-var envPath = Path.Combine(AppContext.BaseDirectory, ".env");
+var envPathRepoRoot = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 var envLock = new object();
 Dictionary<string,string> LoadEnv()
 {
     var dict = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
     try
     {
-        if (File.Exists(envPath))
+        if (File.Exists(envPathRepoRoot))
         {
-            foreach (var line in File.ReadAllLines(envPath))
+            foreach (var line in File.ReadAllLines(envPathRepoRoot))
             {
                 var trimmed = line.Trim();
                 if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#", StringComparison.Ordinal)) continue;
@@ -83,7 +82,9 @@ void SaveEnv(IDictionary<string,string> values)
         var lines = existing.Select(kv => kv.Key + "=" + kv.Value).ToArray();
         try
         {
-            File.WriteAllLines(envPath, lines);
+            var dir = Path.GetDirectoryName(envPathRepoRoot);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllLines(envPathRepoRoot, lines);
         }
         catch
         {
@@ -468,6 +469,128 @@ INSERT INTO Card(SbiID,CardNumber) VALUES(@id,@card)";
         return Results.Ok(result);
     }).RequireAuthorization("NotCliente");
 }
+
+// Seed específico com empresas solicitadas e acessos dos últimos 30 dias (dias úteis)
+app.MapPost("/api/dev/seed-companies", async () =>
+{
+    var companies = new[] { "Bain Company", "Santander", "Bradesco", "Itau", "HSBC", "XP Investimentos" };
+    var firstNames = new[] { "Ana", "Bruno", "Carla", "Diego", "Eduarda", "Felipe", "Gabriela", "Henrique", "Isabela", "João", "Karen", "Lucas", "Mariana", "Nicolas", "Olivia", "Paulo", "Renata", "Sergio", "Tatiana", "Vinicius", "Yasmin", "Zeca" };
+    var lastNames = new[] { "Silva", "Souza", "Oliveira", "Pereira", "Costa", "Almeida", "Ferreira", "Gomes", "Rodrigues", "Santana", "Barbosa", "Carvalho", "Mendes", "Ribeiro" };
+
+    try
+    {
+        using var cn = new SqlConnection(GetConn("CMS"));
+        await cn.OpenAsync();
+
+        // Garantir terminais de catraca
+        foreach (var (k, d) in new[] { ("T1", "Catraca T1"), ("T2", "Catraca T2") })
+        {
+            using var cmdV = cn.CreateCommand();
+            cmdV.CommandText = @"IF NOT EXISTS(SELECT 1 FROM AC_VTERMINAL WHERE VTERMINAL_KEY=@k)
+INSERT INTO AC_VTERMINAL(VTERMINAL_KEY,DESCRIPTION) VALUES(@k,@d)";
+            cmdV.Parameters.Add(new SqlParameter("@k", SqlDbType.VarChar, 50) { Value = k });
+            cmdV.Parameters.Add(new SqlParameter("@d", SqlDbType.VarChar, 200) { Value = d });
+            await cmdV.ExecuteNonQueryAsync();
+        }
+
+        // Criar ~20 funcionários ligados às empresas
+        var createdEmployees = 0;
+        var createdFields = 0;
+        var createdCards = 0;
+        var rnd = new Random();
+        var totalEmployees = 20;
+        var baseSbi = 20000;
+        var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < totalEmployees; i++)
+        {
+            var sbi = baseSbi + i + 1;
+            var company = companies[i % companies.Length];
+            string name;
+            for (;;)
+            {
+                name = $"{firstNames[rnd.Next(firstNames.Length)]} {lastNames[rnd.Next(lastNames.Length)]}";
+                if (usedNames.Add(name)) break;
+            }
+
+            using (var cmdE = cn.CreateCommand())
+            {
+                cmdE.CommandText = @"IF NOT EXISTS(SELECT 1 FROM Employee WHERE SbiID=@id)
+INSERT INTO Employee(SbiID,Name) VALUES(@id,@n)";
+                cmdE.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = sbi });
+                cmdE.Parameters.Add(new SqlParameter("@n", SqlDbType.VarChar, 200) { Value = name });
+                createdEmployees += await cmdE.ExecuteNonQueryAsync();
+            }
+            using (var cmdEU = cn.CreateCommand())
+            {
+                cmdEU.CommandText = @"IF NOT EXISTS(SELECT 1 FROM EmployeeUserFields WHERE SbiID=@id)
+INSERT INTO EmployeeUserFields(SbiID,UF2) VALUES(@id,@c)";
+                cmdEU.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = sbi });
+                cmdEU.Parameters.Add(new SqlParameter("@c", SqlDbType.VarChar, 100) { Value = company });
+                createdFields += await cmdEU.ExecuteNonQueryAsync();
+            }
+            using (var cmdC = cn.CreateCommand())
+            {
+                cmdC.CommandText = @"IF NOT EXISTS(SELECT 1 FROM Card WHERE SbiID=@id)
+INSERT INTO Card(SbiID,CardNumber) VALUES(@id,@card)";
+                cmdC.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = sbi });
+                cmdC.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar, 50) { Value = $"7{sbi:D7}" });
+                createdCards += await cmdC.ExecuteNonQueryAsync();
+            }
+        }
+
+        // Acessos por dia útil nos últimos 30 dias: 4 eventos (entrada, saída almoço, volta, saída final)
+        var createdTransits = 0;
+        var endDate = DateTime.Today;
+        var startDate = endDate.AddDays(-30);
+        var employees = Enumerable.Range(1, totalEmployees).Select(i => baseSbi + i).ToArray();
+
+        // Limpa possíveis duplicatas anteriores no intervalo para esses SBIs
+        using (var cmdDel = cn.CreateCommand())
+        {
+            cmdDel.CommandText = @"DELETE FROM HA_TRANSIT WHERE TRANSIT_DATE >= @start AND TRANSIT_DATE < @end AND SBI_ID BETWEEN @sbiStart AND @sbiEnd";
+            cmdDel.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDate });
+            cmdDel.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDate.AddDays(1) });
+            cmdDel.Parameters.Add(new SqlParameter("@sbiStart", SqlDbType.Int) { Value = baseSbi + 1 });
+            cmdDel.Parameters.Add(new SqlParameter("@sbiEnd", SqlDbType.Int) { Value = baseSbi + totalEmployees });
+            await cmdDel.ExecuteNonQueryAsync();
+        }
+
+        for (var d = startDate; d <= endDate; d = d.AddDays(1))
+        {
+            if (d.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
+            foreach (var sbi in employees)
+            {
+                DateTime tIn = new DateTime(d.Year, d.Month, d.Day, 8, 0, 0).AddMinutes(rnd.Next(0, 10));
+                DateTime tLunchOut = new DateTime(d.Year, d.Month, d.Day, 12, 0, 0).AddMinutes(rnd.Next(0, 10));
+                DateTime tLunchIn = new DateTime(d.Year, d.Month, d.Day, 13, 0, 0).AddMinutes(rnd.Next(0, 10));
+                DateTime tOut = new DateTime(d.Year, d.Month, d.Day, 17, 30, 0).AddMinutes(rnd.Next(0, 15));
+
+                foreach (var (dt, dir, term) in new (DateTime dt, string dir, string term)[] {
+                    (tIn, "IN", "T1"),
+                    (tLunchOut, "OUT", "T2"),
+                    (tLunchIn, "IN", "T1"),
+                    (tOut, "OUT", "T2")
+                })
+                {
+                    using var cmdT = cn.CreateCommand();
+                    cmdT.CommandText = @"INSERT INTO HA_TRANSIT(SBI_ID,TERMINAL,STR_DIRECTION,USER_TYPE,TRANSIT_DATE) VALUES(@sbi,@term,@dir,@ut,@dt)";
+                    cmdT.Parameters.Add(new SqlParameter("@sbi", SqlDbType.Int) { Value = sbi });
+                    cmdT.Parameters.Add(new SqlParameter("@term", SqlDbType.VarChar, 50) { Value = term });
+                    cmdT.Parameters.Add(new SqlParameter("@dir", SqlDbType.VarChar, 8) { Value = dir });
+                    cmdT.Parameters.Add(new SqlParameter("@ut", SqlDbType.VarChar, 8) { Value = "EMP" });
+                    cmdT.Parameters.Add(new SqlParameter("@dt", SqlDbType.DateTime) { Value = dt });
+                    createdTransits += await cmdT.ExecuteNonQueryAsync();
+                }
+            }
+        }
+
+        return Results.Ok(new { employees = createdEmployees, fields = createdFields, cards = createdCards, transits = createdTransits, companies = companies.Length });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization("NotCliente");
 
 app.MapGet("/api/login/check", async (string token) =>
 {
@@ -1390,20 +1513,46 @@ app.MapGet("/api/cms/transit/by-card", async (string card) =>
     using var cmd = cn.CreateCommand();
     cmd.CommandText = @"
 SELECT TOP 100
-    e.SbiID,
-    e.Name,
-    c.CardNumber,
-    t.STR_DIRECTION,
-    t.USER_TYPE,
-    t.TERMINAL,
-    v.DESCRIPTION,
-    t.TRANSIT_DATE
-FROM Employee e
-INNER JOIN Card c ON c.SbiID = e.SbiID
-INNER JOIN HA_TRANSIT t ON t.SBI_ID = e.SbiID
-INNER JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE c.CardNumber = @card
-ORDER BY t.TRANSIT_DATE DESC";
+    q.SbiID,
+    q.Name,
+    q.CardNumber,
+    q.STR_DIRECTION,
+    q.USER_TYPE,
+    q.TERMINAL,
+    q.DESCRIPTION,
+    q.TRANSIT_DATE
+FROM (
+    SELECT
+        e.SbiID,
+        e.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM Employee e
+    INNER JOIN Card c ON c.SbiID = e.SbiID
+    INNER JOIN HA_TRANSIT t ON t.SBI_ID = e.SbiID
+    INNER JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE c.CardNumber = @card
+    UNION ALL
+    SELECT
+        x.SbiID,
+        x.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM ExternalRegular x
+    INNER JOIN Card c ON c.SbiID = x.SbiID
+    INNER JOIN HA_TRANSIT t ON t.SBI_ID = x.SbiID
+    INNER JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE c.CardNumber = @card
+) q
+ORDER BY q.TRANSIT_DATE DESC";
     cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
@@ -1422,6 +1571,667 @@ ORDER BY t.TRANSIT_DATE DESC";
         });
     }
     return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/card/by-cpf", async (string cpf) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    c.CardNumber,
+    'Employee' AS UserType
+FROM Employee e
+INNER JOIN Card c ON c.SbiID = e.SbiID
+WHERE e.PreferredName = @cpf
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    c.CardNumber,
+    'External' AS UserType
+FROM ExternalRegular x
+INNER JOIN Card c ON c.SbiID = x.SbiID
+WHERE x.PreferredName = @cpf";
+    cmd.Parameters.Add(new SqlParameter("@cpf", SqlDbType.VarChar) { Value = cpf });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<object>();
+    while (await r.ReadAsync())
+    {
+        list.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
+            UserType = r.IsDBNull(3) ? null : r.GetString(3)
+        });
+    }
+    return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/person/by-card-info", async (string card) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    uf.UF2 AS Empresa,
+    'Employee' AS Tipo,
+    c.CardNumber,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+INNER JOIN Card c ON c.SbiID = e.SbiID
+WHERE c.CardNumber = @card
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    ux.UF2 AS Empresa,
+    'External' AS Tipo,
+    c.CardNumber,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira
+FROM ExternalRegular x
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+INNER JOIN Card c ON c.SbiID = x.SbiID
+WHERE c.CardNumber = @card";
+    cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<object>();
+    while (await r.ReadAsync())
+    {
+        list.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CPF = r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula = r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
+            Tipo = r.IsDBNull(5) ? null : r.GetString(5),
+            CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+        });
+    }
+    return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/person/by-matricula-info", async (string matricula) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    uf.UF2 AS Empresa,
+    'Employee' AS Tipo,
+    c.CardNumber,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+LEFT JOIN Card c ON c.SbiID = e.SbiID
+WHERE e.Identifier = @matricula
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    ux.UF2 AS Empresa,
+    'External' AS Tipo,
+    c.CardNumber,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira
+FROM ExternalRegular x
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN Card c ON c.SbiID = x.SbiID
+WHERE x.Identifier = @matricula";
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<object>();
+    while (await r.ReadAsync())
+    {
+        list.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CPF = r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula = r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
+            Tipo = r.IsDBNull(5) ? null : r.GetString(5),
+            CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+        });
+    }
+    return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-matricula", async (string matricula, DateTime start, DateTime end, bool onlyTurnstiles, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var whereEmployee = "WHERE e.Identifier = @matricula AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    var whereExternal = "WHERE x.Identifier = @matricula AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    if (onlyTurnstiles)
+    {
+        whereEmployee += " AND v.DESCRIPTION LIKE '%Catraca%'";
+        whereExternal += " AND v.DESCRIPTION LIKE '%Catraca%'";
+    }
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.CommandText = $@"
+SELECT q.SbiID,q.Name,q.CardNumber,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        e.SbiID,
+        e.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT
+        x.SbiID,
+        x.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) q
+ORDER BY q.TRANSIT_DATE DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1) FROM (
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) z";
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
+            Direction = r.IsDBNull(3) ? null : r.GetString(3),
+            UserType = r.IsDBNull(4) ? null : r.GetString(4),
+            Terminal = r.IsDBNull(5) ? null : r.GetString(5),
+            TerminalDescription = r.IsDBNull(6) ? null : r.GetString(6),
+            TransitDate = r.GetDateTime(7)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-card-period", async (string card, DateTime start, DateTime end, bool onlyTurnstiles, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var whereEmployee = "WHERE c.CardNumber = @card AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    var whereExternal = "WHERE c.CardNumber = @card AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    if (onlyTurnstiles)
+    {
+        whereEmployee += " AND v.DESCRIPTION LIKE '%Catraca%'";
+        whereExternal += " AND v.DESCRIPTION LIKE '%Catraca%'";
+    }
+    cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    cmd.CommandText = $@"
+SELECT q.SbiID,q.Name,q.CardNumber,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        e.SbiID,
+        e.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT
+        x.SbiID,
+        x.Name,
+        c.CardNumber,
+        t.STR_DIRECTION,
+        t.USER_TYPE,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) q
+ORDER BY q.TRANSIT_DATE DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1) FROM (
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) z";
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
+            Direction = r.IsDBNull(3) ? null : r.GetString(3),
+            UserType = r.IsDBNull(4) ? null : r.GetString(4),
+            Terminal = r.IsDBNull(5) ? null : r.GetString(5),
+            TerminalDescription = r.IsDBNull(6) ? null : r.GetString(6),
+            TransitDate = r.GetDateTime(7)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/access/by-level-period", async (DateTime start, DateTime end) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT b.BEHAVIOR_ID, b.DESCRIPTION, COUNT(*) AS Total
+FROM HA_TRANSIT t
+INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
+INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+GROUP BY b.BEHAVIOR_ID, b.DESCRIPTION
+ORDER BY b.BEHAVIOR_ID";
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new { LevelId = r.GetInt32(0), Level = r.GetString(1), Total = r.GetInt32(2) });
+    }
+    return Results.Ok(items);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-level", async (int? levelId, string? levelName, DateTime start, DateTime end, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var whereLevel = "";
+    if (levelId.HasValue) { whereLevel = "AND b.BEHAVIOR_ID = @levelId"; cmd.Parameters.Add(new SqlParameter("@levelId", SqlDbType.Int) { Value = levelId.Value }); }
+    else if (!string.IsNullOrWhiteSpace(levelName)) { whereLevel = "AND b.DESCRIPTION = @levelName"; cmd.Parameters.Add(new SqlParameter("@levelName", SqlDbType.VarChar) { Value = levelName }); }
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    cmd.CommandText = $@"
+SELECT q.SbiID,q.Name,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE,q.LevelId,q.Level
+FROM (
+    SELECT
+        e.SbiID,
+        e.Name,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE,
+        b.BEHAVIOR_ID AS LevelId,
+        b.DESCRIPTION AS Level
+    FROM HA_TRANSIT t
+    INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
+    INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
+    UNION ALL
+    SELECT
+        x.SbiID,
+        x.Name,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE,
+        b.BEHAVIOR_ID AS LevelId,
+        b.DESCRIPTION AS Level
+    FROM HA_TRANSIT t
+    INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
+    INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
+) q
+ORDER BY q.TRANSIT_DATE DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1) FROM (
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
+    INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
+    UNION ALL
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
+    INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
+) z";
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            Terminal = r.IsDBNull(2) ? null : r.GetString(2),
+            TerminalDescription = r.IsDBNull(3) ? null : r.GetString(3),
+            TransitDate = r.GetDateTime(4),
+            LevelId = r.GetInt32(5),
+            Level = r.IsDBNull(6) ? null : r.GetString(6)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/company/by-name-info", async (string empresa) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    uf.UF2 AS Empresa,
+    'Employee' AS Tipo
+FROM Employee e
+INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+WHERE uf.UF2 = @empresa
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    ux.UF2 AS Empresa,
+    'External' AS Tipo
+FROM ExternalRegular x
+INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+WHERE ux.UF2 = @empresa";
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<object>();
+    while (await r.ReadAsync())
+    {
+        list.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CPF = r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula = r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
+            Tipo = r.IsDBNull(5) ? null : r.GetString(5)
+        });
+    }
+    return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-empresa", async (string empresa, DateTime start, DateTime end, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    cmd.CommandText = @"
+SELECT q.SbiID,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        e.SbiID,
+        e.Name,
+        uf.UF2 AS Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE uf.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+    UNION ALL
+    SELECT
+        x.SbiID,
+        x.Name,
+        ux.UF2 AS Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE ux.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+ORDER BY q.TRANSIT_DATE DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1) FROM (
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    WHERE uf.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+    UNION ALL
+    SELECT t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    WHERE ux.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) z";
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            Empresa = r.IsDBNull(2) ? null : r.GetString(2),
+            Terminal = r.IsDBNull(3) ? null : r.GetString(3),
+            TerminalDescription = r.IsDBNull(4) ? null : r.GetString(4),
+            TransitDate = r.GetDateTime(5)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/visitors/by-document", async (string documento, DateTime start, DateTime end, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT
+    hv.Name + ' ' + hv.Surname AS Nome,
+    hv.VISIT_DOCUMENT AS Documento,
+    hv.CONTACT_NAME + ' ' + hv.CONTACT_SURNAME AS Contato,
+    hv.SOCIETY AS Visitou,
+    v.Telephone AS Telefone,
+    v.EMail AS Email,
+    hv.VISIT_START AS Entrada,
+    hv.VISIT_END AS Saida
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.VISIT_DOCUMENT = @documento AND hv.VISIT_START >= @start AND hv.VISIT_START < @end
+ORDER BY hv.VISIT_START
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1)
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.VISIT_DOCUMENT = @documento AND hv.VISIT_START >= @start AND hv.VISIT_START < @end";
+    cmd.Parameters.Add(new SqlParameter("@documento", SqlDbType.VarChar) { Value = documento });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            Nome = r.IsDBNull(0) ? null : r.GetString(0),
+            Documento = r.IsDBNull(1) ? null : r.GetString(1),
+            Contato = r.IsDBNull(2) ? null : r.GetString(2),
+            Visitou = r.IsDBNull(3) ? null : r.GetString(3),
+            Telefone = r.IsDBNull(4) ? null : r.GetString(4),
+            Email = r.IsDBNull(5) ? null : r.GetString(5),
+            Entrada = r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
+            Saida = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/visitors/by-company", async (string empresa, DateTime start, DateTime end, int page, int pageSize) =>
+{
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT
+    hv.Name + ' ' + hv.Surname AS Nome,
+    hv.VISIT_DOCUMENT AS Documento,
+    hv.CONTACT_NAME + ' ' + hv.CONTACT_SURNAME AS Contato,
+    hv.SOCIETY AS Visitou,
+    v.Telephone AS Telefone,
+    v.EMail AS Email,
+    hv.VISIT_START AS Entrada,
+    hv.VISIT_END AS Saida
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.SOCIETY = @empresa AND hv.VISIT_START >= @start AND hv.VISIT_START < @end
+ORDER BY hv.VISIT_START
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+SELECT COUNT(1)
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.SOCIETY = @empresa AND hv.VISIT_START >= @start AND hv.VISIT_START < @end";
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new
+        {
+            Nome = r.IsDBNull(0) ? null : r.GetString(0),
+            Documento = r.IsDBNull(1) ? null : r.GetString(1),
+            Contato = r.IsDBNull(2) ? null : r.GetString(2),
+            Visitou = r.IsDBNull(3) ? null : r.GetString(3),
+            Telefone = r.IsDBNull(4) ? null : r.GetString(4),
+            Email = r.IsDBNull(5) ? null : r.GetString(5),
+            Entrada = r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
+            Saida = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7)
+        });
+    }
+    int total = 0;
+    if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/employees/by-matricula", async (string matricula, int page, int pageSize, string? sort, string? dir) =>

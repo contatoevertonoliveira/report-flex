@@ -40,6 +40,18 @@ export const api = {
   clientes: async () => withAuth(apiFetch('/api/clientes', { headers: headers() })),
   prestadores: async () => withAuth(apiFetch('/api/prestadores', { headers: headers() })),
   transitByCard: async (card: string) => withAuth(apiFetch('/api/cms/transit/by-card?card=' + encodeURIComponent(card), { headers: headers() })),
+  cardByCpf: async (cpf: string) => withAuth(apiFetch('/api/cms/card/by-cpf?cpf=' + encodeURIComponent(cpf), { headers: headers() })),
+  personByCardInfo: async (card: string) => withAuth(apiFetch('/api/cms/person/by-card-info?card=' + encodeURIComponent(card), { headers: headers() })),
+  personByMatriculaInfo: async (matricula: string) => withAuth(apiFetch('/api/cms/person/by-matricula-info?matricula=' + encodeURIComponent(matricula), { headers: headers() })),
+  transitByMatricula: async (p: { matricula: string, start: string, end: string, onlyTurnstiles?: boolean, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/transit/by-matricula?' + qs, { headers: headers() }))
+  },
+  companyByNameInfo: async (empresa: string) => withAuth(apiFetch('/api/cms/company/by-name-info?empresa=' + encodeURIComponent(empresa), { headers: headers() })),
+  transitByEmpresa: async (p: { empresa: string, start: string, end: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/transit/by-empresa?' + qs, { headers: headers() }))
+  },
   signin: async (usuario: string, senha: string) => (await apiFetch('/api/login/signin', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ usuario, senha }) })).json(),
   signinToken: async (token: string) => {
     const r = await apiFetch('/api/login/signin-token?token=' + encodeURIComponent(token))
@@ -63,6 +75,26 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/cms/access/by-level?' + qs, { headers: headers() }))
   },
+  reportsAccessByLevelPeriod: async (p: { start: string, end: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/access/by-level-period?' + qs, { headers: headers() }))
+  },
+  transitByLevel: async (p: { levelId?: number, levelName?: string, start: string, end: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/transit/by-level?' + qs, { headers: headers() }))
+  },
+  visitorsByDocument: async (p: { documento: string, start: string, end: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/visitors/by-document?' + qs, { headers: headers() }))
+  },
+  visitorsByCompany: async (p: { empresa: string, start: string, end: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/visitors/by-company?' + qs, { headers: headers() }))
+  },
+  transitByCardPeriod: async (p: { card: string, start: string, end: string, onlyTurnstiles?: boolean, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/cms/transit/by-card-period?' + qs, { headers: headers() }))
+  },
   transitByPeriod: async (p: { start: string, end: string, card?: string, terminal?: string, userType?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/cms/transit/by-period?' + qs, { headers: headers() }))
@@ -78,6 +110,7 @@ export const api = {
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
   },
+  seedCompanies: async () => withAuth(apiFetch('/api/dev/seed-companies', { method:'POST', headers: headers() })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),

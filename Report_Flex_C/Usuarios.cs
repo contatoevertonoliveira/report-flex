@@ -5,6 +5,7 @@ using System.Data;
 using System.Data.SqlClient;
 using System.Drawing;
 using System.Windows.Forms;
+using ReportFlex.WinForms;
 
 namespace WindowsFormsApp1
 {
@@ -24,7 +25,7 @@ namespace WindowsFormsApp1
 
         private SqlConnection getConexaoBD()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 

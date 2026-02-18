@@ -1,0 +1,189 @@
+
+**Backend (ReportFlex.WebApi)** - ASP.NET Core em .NET 10.0 | .NET Framework 4.8
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Projeto: [ReportFlex.WebApi](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/ReportFlex.WebApi.csproj)
+
+- **ASP.NET Core (SDK Web)**
+  - Vem do próprio SDK: `<Project Sdk="Microsoft.NET.Sdk.Web">` e `TargetFramework>net10.0</TargetFramework>`.
+  - Como usamos **Minimal APIs**, você vê tudo concentrado em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs):
+    - Mapeamento de rotas `/api/...`
+    - CORS, autenticação, autorização
+    - Servir arquivos estáticos do WebApp (SPA)
+
+- **Microsoft.Data.SqlClient (5.2.0)**
+  - Pacote: `Microsoft.Data.SqlClient`.
+  - Uso principal:
+    - Conexão com SQL Server (bases CMS e Logins).
+    - Execução de comandos SQL, leitura de dados.
+  - Onde aparece:
+    - `using Microsoft.Data.SqlClient;` em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs#L1-L3).
+    - Função `GetConn` monta a connection string real/demos, inclusive lendo override de `.env`.
+    - Endpoints como `/api/cms/...`, `/api/admin/db-info` e `/api/dev/seed` abrem `SqlConnection` e fazem `SqlCommand`.
+
+- **Microsoft.AspNetCore.Authentication.JwtBearer (8.0.8)**
+  - Pacote: `Microsoft.AspNetCore.Authentication.JwtBearer`.
+  - Uso principal:
+    - Autenticação por **JWT** (token).
+    - Validação de token em cima de chave simétrica, emissor, audiência etc.
+  - Onde aparece:
+    - `using Microsoft.IdentityModel.Tokens;` e `using System.IdentityModel.Tokens.Jwt;` em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs#L3-L5).
+    - Configuração:
+      ```csharp
+      builder.Services.AddAuthentication().AddJwtBearer(opt =>
+      {
+          opt.TokenValidationParameters = new TokenValidationParameters
+          {
+              ValidateIssuer = true,
+              ValidateAudience = true,
+              ValidateIssuerSigningKey = true,
+              ValidIssuer = jwtIssuer,
+              ValidAudience = jwtAudience,
+              IssuerSigningKey = key
+          };
+      });
+      ```
+    - Políticas de autorização:
+      - `SuperAdminOnly`
+      - `NotCliente` (bloqueia quem tem nível "Cliente" para rotas administrativas, por exemplo `/api/admin/db-info`)
+
+- **DocumentFormat.OpenXml (3.0.2)**
+  - Pacote: `DocumentFormat.OpenXml`.
+  - Uso principal:
+    - Geração/leitura de **planilhas Excel (XLSX)** e outros documentos Office via OpenXML.
+  - Onde aparece:
+    - `using DocumentFormat.OpenXml;`
+    - `using DocumentFormat.OpenXml.Packaging;`
+    - `using DocumentFormat.OpenXml.Spreadsheet;`
+  - É utilizado em rotas de relatórios relacionados a Excel (não olhamos todos os endpoints aqui, mas o pacote está pronto para gerar arquivos .xlsx em memória).
+
+- **QuestPDF (2024.10.0)**
+  - Pacote: `QuestPDF`.
+  - Uso principal:
+    - Geração de **PDFs** de forma programática.
+  - Onde aparece:
+    - `using QuestPDF.Fluent;`
+    - `using QuestPDF.Infrastructure;`
+  - É o motor que monta relatórios PDF para os endpoints `/api/reports/...` (novamente, a base está em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs) ou em arquivos auxiliares, dependendo da organização).
+
+- **Outras utilidades .NET (sem pacotes externos)**
+  - `System.Text.RegularExpressions` → usado para tratar/validar strings, por exemplo processamento de dados e filtros.
+  - `System.Security.Claims` → usado junto com JWT para ler claims de nível, client-id etc.
+  - Leitura/gravação de `.env`:
+    - Implementado manualmente em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs#L47-L92):
+      - `LoadEnv()` e `SaveEnv()` usam `System.IO.File` para persistir:
+        - `DB_MODE` (Demo/Real)
+        - `DB_CMS_CONN`
+        - `DB_LOGINS_CONN`
+
+Resumo do backend:
+- **Stack:** ASP.NET Core Minimal API + SQL Server + JWT + geração de PDF/Excel.
+- **Persistência de configuração:** `.env` local na pasta da WebApi.
+- **Autorização:** baseada em nível do usuário (claims de `nivel`).
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+**Frontend Web (ReportFlex.WebApp)** - React/TypeScript (sem .NET)
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Projeto: [ReportFlex.WebApp](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp)
+
+- **Vite (5.4.0)**
+  - Ferramenta de build/dev.
+  - Scripts em [package.json](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/package.json#L6-L10):
+    - `npm run dev` → servidor de desenvolvimento.
+    - `npm run build` → build de produção.
+    - `npm run preview` → preview do build.
+
+- **React (18.3.x)**
+  - Bibliotecas:
+    - `react`
+    - `react-dom`
+  - Uso principal:
+    - Toda a aplicação web é uma SPA React.
+  - Exemplo:
+    - `SettingsPage`, `LoginPage`, `Sidebar`, etc., em `src/pages` e `src/components`.
+
+- **React Router DOM (7.13.0)**
+  - Biblioteca: `react-router-dom`.
+  - Uso principal:
+    - Rotas internas da SPA (`/`, `/configuracoes`, `/consultas`, etc.).
+    - Proteção de rotas via componente `RequireAuth.tsx`.
+  - Você vê `BrowserRouter`, `Routes`, `Route`, `Navigate` sendo usados em [App.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/App.tsx).
+
+- **TypeScript (5.6.x)**
+  - Fornece tipagem estática para o código do front.
+  - O projeto é TypeScript puro (`.tsx`/`.ts`), e está configurado junto com Vite.
+
+- **Bootstrap 5.3.2 (via CDN)**
+  - Adicionado em [index.html](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/index.html#L11):
+    ```html
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    ```
+  - Uso:
+    - Layout de cards, grids (`row`, `col-md-*`).
+    - Botões (`btn`, `btn-outline-primary`, etc.).
+    - Formulários (`form-control`, `input-group`).
+  - Não usamos JS do Bootstrap, só o CSS.
+
+- **Bootstrap Icons (1.11.3)**
+  - Adicionado em [index.html](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/index.html#L12):
+    ```html
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    ```
+  - Uso:
+    - Ícones na interface: `bi bi-gear`, `bi bi-database-gear`, `bi bi-hdd-network`, etc.
+    - Ajuda a dar feedback visual em botões e cards.
+
+- **Google Fonts – Poppins**
+  - Adicionado em [index.html](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/index.html#L8-L10):
+    ```html
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+    ```
+  - Uso:
+    - Define a fonte padrão da aplicação (`font-family`) no CSS global.
+
+- **Camada de API customizada**
+  - Arquivo: [src/api.ts](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/api.ts)
+  - Não é uma biblioteca externa, mas é importante para entender “como estamos trabalhando”:
+    - Função `apiFetch` para montar as chamadas HTTP e lidar com base da API (`rf_api_base`, localhost:5000, fallback para rota relativa).
+    - Funções de acesso:
+      - `getDbMode`, `setDbMode`, `getConnections`, `setConnections`, `getDbInfo` para as configurações de banco.
+      - Diversas funções para consultas (`employeesSearch`, `transitByPeriod`, etc.).
+    - Cabeçalhos de autenticação:
+      - JWT em `Authorization: Bearer ...`
+      - `X-Client-Id` quando há client-id no localStorage.
+
+- **CSS custom (styles.css)**
+  - Arquivo: [src/styles.css](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/styles.css)
+  - Ajustes importantes:
+    - Layout da sidebar (`.sidebar` e `.sidebar.expanded`) com as larguras 80px/250px.
+    - Cores, espaçamentos e ajustes específicos do visual do sistema.
+
+Resumo do frontend:
+- **Stack:** React + React Router + Vite + TypeScript.
+- **UI:** Bootstrap + Bootstrap Icons + fonte Poppins.
+- **Integração com API:** `api.ts` faz todas as chamadas HTTP, aplicando token JWT e roteando para os endpoints da WebApi.
+
+---
+
+**Visão geral de “como estamos trabalhando”**
+
+- **Backend**
+  - Minimal API em .NET 10, com rotas bem diretas (sem controllers).
+  - SQL Server com `Microsoft.Data.SqlClient`.
+  - Configuração dinâmica de banco (Demo/Real) persistida em `.env` da WebApi:
+    - `DB_MODE`, `DB_CMS_CONN`, `DB_LOGINS_CONN`.
+  - Segurança:
+    - JWT para login e autorização.
+    - Políticas que separam Cliente de Administrador/SuperAdmin.
+  - Geração de relatórios:
+    - PDF com QuestPDF.
+    - Excel com DocumentFormat.OpenXml.
+
+- **Frontend**
+  - SPA React com roteamento interno e proteção de rotas.
+  - Bootstrap para layout, sem dependência de JS de terceiros pesado.
+  - Comunicação com backend centralizada em `api.ts`, usando fetch e token JWT guardado em `localStorage`.
+
+Se quiser, no próximo passo posso montar um “mapa” visual simples: quais telas chamam quais endpoints principais, e como isso se conecta com as bibliotecas que listei.

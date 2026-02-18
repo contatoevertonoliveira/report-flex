@@ -51,6 +51,28 @@ export function SettingsPage(){
     }
   }
 
+  async function seedCompanies(){
+    setErr(null); setMsg(null); setLoading(true)
+    try{
+      const r = await api.seedCompanies()
+      if (r?.error){
+        setErr(r.error)
+      }else{
+        const summary = Object.entries(r || {}).map(([k,v])=> `${k}:${v}`).join(', ')
+        setMsg(`Empresas/funcionários/acessos gerados • ${summary}`)
+      }
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+      }catch{
+        // ignore
+      }
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao gerar dados')
+    }finally{
+      setLoading(false)
+    }
+  }
   async function seed(){
     setErr(null); setMsg(null); setLoading(true)
     try{
@@ -140,6 +162,12 @@ export function SettingsPage(){
               <div className="text-muted" style={{fontSize:12}}>Adiciona registros de teste nas principais tabelas</div>
             </div>
           )}
+          <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
+            <button className="btn btn-outline-secondary d-flex align-items-center" onClick={seedCompanies} disabled={loading}>
+              {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Gerando...</> : <><i className="bi bi-people-fill me-1" /> Gerar empresas/funcionários (últimos 30 dias)</>}
+            </button>
+            <div className="text-muted" style={{fontSize:12}}>Cria empresas solicitadas, 20 funcionários e acessos em dias úteis</div>
+          </div>
           {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
           {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
         </div>

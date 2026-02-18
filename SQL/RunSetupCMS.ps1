@@ -1,5 +1,5 @@
 $connectionString = "Server=(localdb)\MSSQLLocalDB;Integrated Security=True;MultipleActiveResultSets=True"
-$sqlFile = "SetupCMSDatabase.sql"
+$sqlFile = Join-Path $PSScriptRoot "SetupCMSDatabase.sql"
 
 try {
     $sqlContent = Get-Content $sqlFile -Raw

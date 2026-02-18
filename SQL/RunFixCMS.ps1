@@ -1,5 +1,5 @@
-$connectionString = "Server=(localdb)\MSSQLLocalDB;Database=Logins;Integrated Security=True;MultipleActiveResultSets=True"
-$sqlFile = "FixDatabaseSchema.sql"
+$connectionString = "Server=(localdb)\MSSQLLocalDB;Database=CMS;Integrated Security=True;MultipleActiveResultSets=True"
+$sqlFile = Join-Path $PSScriptRoot "FixCMSDatabase.sql"
 
 try {
     $sqlContent = Get-Content $sqlFile -Raw
@@ -20,7 +20,7 @@ try {
     }
 
     $connection.Close()
-    Write-Host "Database schema fix completed successfully."
+    Write-Host "CMS Database schema fix completed successfully."
 }
 catch {
     Write-Error $_.Exception.Message

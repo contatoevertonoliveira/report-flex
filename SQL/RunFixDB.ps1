@@ -1,5 +1,5 @@
 $connectionString = "Server=(localdb)\MSSQLLocalDB;Database=Logins;Integrated Security=True;MultipleActiveResultSets=True"
-$sqlFile = "PopulatePrestadores.sql"
+$sqlFile = Join-Path $PSScriptRoot "FixDatabaseSchema.sql"
 
 try {
     $sqlContent = Get-Content $sqlFile -Raw
@@ -20,7 +20,7 @@ try {
     }
 
     $connection.Close()
-    Write-Host "Prestadores population completed successfully."
+    Write-Host "Database schema fix completed successfully."
 }
 catch {
     Write-Error $_.Exception.Message

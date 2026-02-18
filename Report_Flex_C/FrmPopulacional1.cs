@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using System.Data.SqlClient;
 using System.Configuration;
 using System.Windows.Forms.DataVisualization.Charting;
+using ReportFlex.WinForms;
 
 namespace WindowsFormsApp1
 {
@@ -35,12 +36,12 @@ namespace WindowsFormsApp1
 
         private SqlConnection getConexaoBD()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao1"].ConnectionString;
+            string strConexao = DbEnv.GetCmsConnectionString();
             return new SqlConnection(strConexao);
         }
         private SqlConnection getConexaoBD2()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 

@@ -79,6 +79,7 @@
       <DependentUpon>AppConfig.cs</DependentUpon>
     </Compile>
     <Compile Include="ApiClient.cs" />
+    <Compile Include="DbEnv.cs" />
     <Compile Include="Session.cs" />
     <Compile Include="AtivarClientesPrestadores.cs">
       <SubType>Form</SubType>

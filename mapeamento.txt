@@ -1,0 +1,190 @@
+---
+
+**Autenticação e acesso**
+
+- **LoginPage**
+  - Arquivo: [LoginPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/LoginPage.tsx)
+  - Chama:
+    - `api.signin(usuario, senha)` → `POST /api/login/signin`
+      - Backend:
+        - ASP.NET Core Minimal API.
+        - Gera JWT com `Microsoft.AspNetCore.Authentication.JwtBearer` + `System.IdentityModel.Tokens.Jwt`.
+      - Uso:
+        - Recebe token, salva em `localStorage` via `setToken`, e grava também `rf_level` (nível do usuário).
+    - (Opcional) `api.signinToken(token)` → `GET /api/login/signin-token?token=...`
+      - Backend:
+        - Valida um token de cliente e emite JWT de acesso.
+  - Proteção de rotas:
+    - [RequireAuth.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/components/RequireAuth.tsx) usa o JWT do `localStorage`:
+      - Decodifica o payload (`decodeJwtPayloadSegment`) para checar expiração.
+      - Redireciona para `/login` se token inválido.
+    - Depende do middleware JWT do backend (biblioteca JwtBearer).
+
+- **RequireNotClient / RequireSuperAdmin**
+  - Também em [RequireAuth.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/components/RequireAuth.tsx)
+  - Funcionamento:
+    - Lê `rf_level` do `localStorage`.
+    - Se nível = `Cliente`, bloqueia acesso a rotas de administração (ex.: Configurações, Clientes, etc.).
+  - Backend:
+    - Política `NotCliente` em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs#L20-L27) aplicada em rotas como `/api/admin/*`.
+
+---
+
+**Menu lateral (Sidebar)**
+
+- **Sidebar**
+  - Arquivo: [Sidebar.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/components/Sidebar.tsx)
+  - Chama:
+    - `api.currentClientInfo()` → `GET /api/client/current`
+      - Backend:
+        - Minimal API + SQL (SqlClient).
+        - Usa o client-id no header `X-Client-Id` para identificar o cliente.
+      - Uso:
+        - Traz nome, responsável e logo do cliente para exibir no topo do menu.
+  - Bibliotecas:
+    - React Router para destacar item ativo.
+    - Bootstrap para layout.
+    - Bootstrap Icons para ícones.
+
+---
+
+**Configurações de Banco (tudo que mexe em .env)**
+
+- **SettingsPage (Configurações)**
+  - Arquivo: [SettingsPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/SettingsPage.tsx)
+  - Chama:
+    - `api.getDbMode()` → `GET /api/admin/db-mode`
+      - Backend:
+        - Lê `DB_MODE` da memória (carregado de `.env`).
+    - `api.setDbMode('Real' | 'Demo')` → `POST /api/admin/db-mode`
+      - Backend:
+        - Atualiza `dbMode`.
+        - Grava `DB_MODE` no `.env` via `SaveEnv` em [Program.cs](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApi/Program.cs#L74-L92).
+    - `api.getConnections()` → `GET /api/admin/connections`
+      - Backend:
+        - Junta:
+          - Override em memória (`realOverrides["CMS"/"Logins"]`) se existir.
+          - Ou connection strings padrão do `appsettings.json`.
+        - Usa `Microsoft.Data.SqlClient` só para validar e uso indireto (construção de `GetConn`).
+    - `api.setConnections({ CMS, Logins })` → `POST /api/admin/connections`
+      - Backend:
+        - Atualiza `realOverrides["CMS"]` e `realOverrides["Logins"]`.
+        - Persiste `DB_CMS_CONN` e `DB_LOGINS_CONN` no `.env`.
+        - Usa I/O de arquivos (`System.IO`) e `LoadEnv/SaveEnv`.
+    - `api.getDbInfo()` → `GET /api/admin/db-info`
+      - Backend:
+        - Abre duas conexões SQL:
+          - `SqlConnection(GetConn("CMS"))`
+          - `SqlConnection(GetConn("Logins"))`
+        - Lista tabelas com:
+          ```sql
+          SELECT TABLE_NAME
+          FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_TYPE='BASE TABLE'
+          ORDER BY TABLE_NAME
+          ```
+        - Retorno: `{ mode, databases: { CMS: { connection, tables }, Logins: {...} } }`
+      - Bibliotecas:
+        - `Microsoft.Data.SqlClient` para conexão.
+        - ASP.NET Core Minimal API para montar resposta.
+  - Resultado:
+    - Essa tela é o “painel central” de configuração e diagnóstico de banco, tudo em cima de `.env` + SQL.
+
+---
+
+**Consultas e relatórios de trânsito/acesso**
+
+- **TransitPage (Trânsito)**  
+  - Arquivo: [TransitPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/TransitPage.tsx)
+  - Chama:
+    - `api.transitByPeriod(...)` → `GET /api/cms/transit/by-period?...`
+      - Backend:
+        - Usa SQL para buscar registros de passagem (Cartão, Terminal, Tipo de usuário, Período).
+      - Bibliotecas:
+        - `Microsoft.Data.SqlClient` no backend.
+        - No front: React para state, Bootstrap para layout.
+
+- **AccessPage (Acessos por nível)**  
+  - Arquivo: [AccessPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/AccessPage.tsx)
+  - Chama:
+    - `api.accessByLevel(...)` → `GET /api/cms/access/by-level?...`
+      - Backend:
+        - Consulta SQL agregando acessos por nível (tabela AC_BEHAVIOR/Equivalentes).
+    - `api.reportsAccessAggregated()` → `GET /api/reports/access/aggregated`
+      - Backend:
+        - Pode usar SQL + possivelmente QuestPDF/OpenXML para relatórios, dependendo de como o endpoint foi implementado.
+      - Bibliotecas:
+        - `Microsoft.Data.SqlClient` + `QuestPDF`/OpenXML em endpoints de relatório.
+
+- **ReportsPage (Opções de relatórios)**  
+  - Arquivo: [ReportsPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/ReportsPage.tsx)
+  - Chama:
+    - `api.reportsTransit(...)` → `GET /api/reports/transit?...`
+      - Backend:
+        - Traz linhas detalhadas de trânsito para exibir em tabela.
+    - `api.reportsTransitAggregated(...)` → `GET /api/reports/transit/aggregated?...`
+      - Backend:
+        - Agrega dados por empresa/período.
+      - Bibliotecas backend:
+        - SQL (SqlClient).
+        - QuestPDF/OpenXML para geração de arquivos (quando exporta PDF/Excel).
+
+- **QueriesPage (Consultas avançadas)**  
+  - Arquivo: [QueriesPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/QueriesPage.tsx)
+  - Chama (dependendo do “tipo de consulta” selecionado):
+    - `api.reportsAccessAggregated()` (dataset `access-agg`)
+      - `/api/reports/access/aggregated`
+    - `api.transitByPeriod(...)` (dataset `transit`)
+      - `/api/cms/transit/by-period`
+    - `api.employeesSearch(...)` (dataset `employees`)
+      - `/api/cms/employees/search`
+    - `api.externalSearch(...)` (dataset `external`)
+      - `/api/cms/external/search`
+  - É como um “painel de BI simplificado” reaproveitando os endpoints já descritos.
+
+---
+
+**Cadastro de entidades**
+
+- **ClientesPage (Administração de clientes)**  
+  - Arquivo: [ClientesPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/ClientesPage.tsx)
+  - Chama:
+    - `api.clientes()` → `GET /api/clientes`
+      - Lista todos os clientes.
+    - `api.adminClientsCreate(...)` → `POST /api/admin/clients`
+      - Cria cliente.
+    - `api.adminClientsUpdate(id, ...)` → `PUT /api/admin/clients/{id}`
+      - Atualiza cliente.
+    - `api.adminClientsDelete(id)` → `DELETE /api/admin/clients/{id}`
+      - Exclui cliente.
+    - `api.adminClientsGenerateToken(id)` → `POST /api/admin/clients/{id}/token`
+      - Gera token de acesso (para SPA do cliente).
+    - `api.adminClientsUploadLogo(id, file)` → `POST /api/admin/clients/{id}/logo`
+      - Upload de logo.
+  - Backend:
+    - ASP.NET Core Minimal API + SQL (SqlClient).
+    - JWT + política `SuperAdminOnly` ou `NotCliente`.
+
+- **PrestadoresPage (Prestadores)**  
+  - Arquivo: [PrestadoresPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/PrestadoresPage.tsx)
+  - Chama:
+    - `api.prestadores()` → `GET /api/prestadores`
+      - Backend:
+        - SQL simples para trazer prestadores de serviço.
+
+- **EmployeesPage (Funcionários/colaboradores)**  
+  - Arquivo: [EmployeesPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/EmployeesPage.tsx)
+  - Chama:
+    - `api.employeesSearch(...)` → `GET /api/cms/employees/search`
+      - Faz busca por Matrícula, Empresa, etc.
+  - Backend:
+    - SQL em cima das tabelas `Employee`, `EmployeeUserFields`, `Card`, etc.
+
+- **ExternalPage (Visitantes/externos)**  
+  - Arquivo: [ExternalPage.tsx](file:///c:/Users/EvertonOliveira/Documents/Systems/Csharp/report-flex/ReportFlex.WebApp/src/pages/ExternalPage.tsx)
+  - Chama:
+    - `api.externalSearch(...)` → `GET /api/cms/external/search`
+      - Backend:
+        - SQL para base de externos (provavelmente outra visão/tabela ligada aos cartões/funcionários).
+
+---

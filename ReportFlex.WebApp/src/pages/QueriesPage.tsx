@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react'
 import { api } from '../api'
 
-type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external'
+type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes'
 type Mode = 'prontas' | 'personalizadas'
-type Dataset = 'access-agg' | 'transit' | 'employees' | 'external'
+type Dataset = 'access-agg' | 'transit' | 'employees' | 'external' | 'card-by-cpf' | 'matricula-info' | 'empresa-info' | 'cracha-info' | 'visitors'
 
 const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'access-agg': [
@@ -28,6 +28,52 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'Empresa', label: 'Empresa' }
+  ],
+  'card-by-cpf': [
+    { key: 'SbiID', label: 'SbiID' },
+    { key: 'Name', label: 'Nome' },
+    { key: 'CardNumber', label: 'Crachá' },
+    { key: 'UserType', label: 'Tipo' }
+  ],
+  'matricula-info': [
+    { key: 'SbiID', label: 'SbiID' },
+    { key: 'Name', label: 'Nome' },
+    { key: 'CPF', label: 'CPF' },
+    { key: 'Matricula', label: 'Matrícula' },
+    { key: 'Empresa', label: 'Empresa' },
+    { key: 'Tipo', label: 'Tipo' },
+    { key: 'CardNumber', label: 'Crachá' },
+    { key: 'Cadastro', label: 'Cadastro' },
+    { key: 'Expira', label: 'Expira' }
+  ],
+  'empresa-info': [
+    { key: 'SbiID', label: 'SbiID' },
+    { key: 'Name', label: 'Nome' },
+    { key: 'CPF', label: 'CPF' },
+    { key: 'Matricula', label: 'Matrícula' },
+    { key: 'Empresa', label: 'Empresa' },
+    { key: 'Tipo', label: 'Tipo' }
+  ],
+  'cracha-info': [
+    { key: 'SbiID', label: 'SbiID' },
+    { key: 'Name', label: 'Nome' },
+    { key: 'CPF', label: 'CPF' },
+    { key: 'Matricula', label: 'Matrícula' },
+    { key: 'Empresa', label: 'Empresa' },
+    { key: 'Tipo', label: 'Tipo' },
+    { key: 'CardNumber', label: 'Crachá' },
+    { key: 'Cadastro', label: 'Cadastro' },
+    { key: 'Expira', label: 'Expira' }
+  ],
+  'visitors': [
+    { key: 'Nome', label: 'Nome' },
+    { key: 'Documento', label: 'Documento' },
+    { key: 'Contato', label: 'Contato' },
+    { key: 'Visitou', label: 'Visitou' },
+    { key: 'Telefone', label: 'Telefone' },
+    { key: 'Email', label: 'Email' },
+    { key: 'Entrada', label: 'Entrada' },
+    { key: 'Saida', label: 'Saída' }
   ]
 }
 
@@ -48,6 +94,11 @@ export function QueriesPage(){
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
   const maxPreview = 1000
+  const [matriculaObter, setMatriculaObter] = useState<'info'|'todos'|'catracas'>('info')
+  const [empresaObter, setEmpresaObter] = useState<'info'|'todos'>('info')
+  const [crachaObter, setCrachaObter] = useState<'info'|'todos'|'catracas'>('info')
+  const [nivelObter, setNivelObter] = useState<'todos'|'acessos'>('todos')
+  const [visitantesObter, setVisitantesObter] = useState<'documento'|'empresa'>('documento')
 
   const canExport = useMemo(() => {
     if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period')) {
@@ -65,6 +116,12 @@ export function QueriesPage(){
     if (k === 'transit-period') return 'transit'
     if (k === 'employees') return 'employees'
     if (k === 'external') return 'external'
+    if (k === 'card-by-cpf') return 'card-by-cpf'
+    if (k === 'matricula') return matriculaObter === 'info' ? 'matricula-info' : 'transit'
+    if (k === 'empresa') return empresaObter === 'info' ? 'empresa-info' : 'transit'
+    if (k === 'cracha') return crachaObter === 'info' ? 'cracha-info' : 'transit'
+    if (k === 'nivel') return nivelObter === 'todos' ? 'access-agg' : 'transit'
+    if (k === 'visitantes') return 'visitors'
     return 'access-agg'
   }
 
@@ -114,6 +171,93 @@ export function QueriesPage(){
           return Array.isArray(items) ? items : []
         })
         setData(collected)
+      }else if (quickKind === 'card-by-cpf'){
+        const { cpf } = filters as any
+        if (!cpf){ setError('Informe o CPF'); setLoading(false); return }
+        const res = await api.cardByCpf(cpf)
+        const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
+        setData(list)
+      }else if (quickKind === 'matricula'){
+        const { matricula, start, end } = filters as any
+        if (!matricula){ setError('Informe a matrícula'); setLoading(false); return }
+        if (matriculaObter === 'info'){
+          const res = await api.personByMatriculaInfo(matricula)
+          const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
+          setData(list)
+        }else{
+          if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const onlyTurnstiles = matriculaObter === 'catracas'
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.transitByMatricula({ matricula, start, end, onlyTurnstiles, page, pageSize: ps })
+            return r?.items ?? []
+          })
+          setData(collected)
+        }
+      }else if (quickKind === 'empresa'){
+        const { empresa, start, end } = filters as any
+        if (!empresa){ setError('Informe a empresa'); setLoading(false); return }
+        if (empresaObter === 'info'){
+          const res = await api.companyByNameInfo(empresa)
+          const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
+          setData(list)
+        }else{
+          if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.transitByEmpresa({ empresa, start, end, page, pageSize: ps })
+            return r?.items ?? []
+          })
+          setData(collected)
+        }
+      }else if (quickKind === 'cracha'){
+        const { cracha, start, end } = filters as any
+        if (!cracha){ setError('Informe o crachá'); setLoading(false); return }
+        if (crachaObter === 'info'){
+          const res = await api.personByCardInfo(cracha)
+          const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
+          setData(list)
+        }else{
+          if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const onlyTurnstiles = crachaObter === 'catracas'
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.transitByCardPeriod({ card: cracha, start, end, onlyTurnstiles, page, pageSize: ps })
+            return r?.items ?? []
+          })
+          setData(collected)
+        }
+      }else if (quickKind === 'nivel'){
+        const { levelId, levelName, start, end } = filters as any
+        if (nivelObter === 'todos'){
+          if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const res = await api.reportsAccessByLevelPeriod({ start, end })
+          setData(Array.isArray(res) ? res : [])
+        }else{
+          if ((!levelId && !levelName) || !start || !end){ setError('Informe o nível e o período'); setLoading(false); return }
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.transitByLevel({ levelId: levelId? Number(levelId):undefined, levelName, start, end, page, pageSize: ps })
+            return r?.items ?? []
+          })
+          setData(collected)
+        }
+      }else if (quickKind === 'visitantes'){
+        const { documento, empresa, start, end } = filters as any
+        if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+        if (visitantesObter === 'documento'){
+          if (!documento){ setError('Informe o documento'); setLoading(false); return }
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.visitorsByDocument({ documento, start, end, page, pageSize: ps })
+            const items = (r as any)?.items ?? r ?? []
+            return Array.isArray(items) ? items : []
+          })
+          setData(collected)
+        }else{
+          if (!empresa){ setError('Informe a empresa'); setLoading(false); return }
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.visitorsByCompany({ empresa, start, end, page, pageSize: ps })
+            const items = (r as any)?.items ?? r ?? []
+            return Array.isArray(items) ? items : []
+          })
+          setData(collected)
+        }
       }
     }catch{
       setError('Falha na consulta')
@@ -321,7 +465,13 @@ export function QueriesPage(){
               { key:'access-agg', label:'Acessos Agregados' },
               { key:'transit-period', label:'Trânsito por Período' },
               { key:'employees', label:'Funcionários' },
-              { key:'external', label:'Externos' }
+              { key:'external', label:'Externos' },
+              { key:'card-by-cpf', label:'Buscar Crachá por CPF' },
+              { key:'matricula', label:'Matrícula' },
+              { key:'empresa', label:'Empresa' },
+              { key:'cracha', label:'Crachá' },
+              { key:'nivel', label:'Nível de Acesso' },
+              { key:'visitantes', label:'Visitantes' }
             ] as {key:QuickKind,label:string}[]).map(opt => (
               <button
                 key={opt.key}
@@ -365,6 +515,157 @@ export function QueriesPage(){
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-building" /></span>
                   <input className="form-control" placeholder="Empresa (opcional)" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
+                </div>
+              </>
+            )}
+            {quickKind === 'card-by-cpf' && (
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
+                <input className="form-control" placeholder="CPF" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
+              </div>
+            )}
+            {quickKind === 'matricula' && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={matriculaObter} onChange={e=> setMatriculaObter(e.target.value as any)}>
+                    <option value="info">Informação de Cadastro</option>
+                    <option value="todos">Todos os Acessos</option>
+                    <option value="catracas">Somente Catracas</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-person-badge" /></span>
+                  <input className="form-control" placeholder="Matrícula" value={filters.matricula || ''} onChange={e=> setFilters({...filters, matricula: e.target.value})} />
+                </div>
+                {(matriculaObter !== 'info') && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.start || ''} onChange={e=> setFilters({...filters, start: e.target.value})} placeholder="Início" />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            {quickKind === 'empresa' && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={empresaObter} onChange={e=> setEmpresaObter(e.target.value as any)}>
+                    <option value="info">Informação de Cadastro</option>
+                    <option value="todos">Todos os Acessos</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-building" /></span>
+                  <input className="form-control" placeholder="Empresa" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
+                </div>
+                {empresaObter === 'todos' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.start || ''} onChange={e=> setFilters({...filters, start: e.target.value})} placeholder="Início" />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            {quickKind === 'cracha' && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={crachaObter} onChange={e=> setCrachaObter(e.target.value as any)}>
+                    <option value="info">Informação de Cadastro</option>
+                    <option value="todos">Todos os Acessos</option>
+                    <option value="catracas">Somente Catracas</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-credit-card-2-front" /></span>
+                  <input className="form-control" placeholder="Crachá" value={filters.cracha || ''} onChange={e=> setFilters({...filters, cracha: e.target.value})} />
+                </div>
+                {crachaObter !== 'info' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.start || ''} onChange={e=> setFilters({...filters, start: e.target.value})} placeholder="Início" />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            {quickKind === 'nivel' && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={nivelObter} onChange={e=> setNivelObter(e.target.value as any)}>
+                    <option value="todos">Todos os Níveis (Agregado)</option>
+                    <option value="acessos">Acessos por Nível</option>
+                  </select>
+                </div>
+                {nivelObter === 'acessos' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-hash" /></span>
+                      <input className="form-control" type="number" placeholder="LevelId (opcional)" value={filters.levelId || ''} onChange={e=> setFilters({...filters, levelId: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-tag" /></span>
+                      <input className="form-control" placeholder="Nome do Nível (opcional)" value={filters.levelName || ''} onChange={e=> setFilters({...filters, levelName: e.target.value})} />
+                    </div>
+                  </>
+                )}
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" type="date" value={filters.start || ''} onChange={e=> setFilters({...filters, start: e.target.value})} placeholder="Início" />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
+                </div>
+              </>
+            )}
+            {quickKind === 'visitantes' && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={visitantesObter} onChange={e=> setVisitantesObter(e.target.value as any)}>
+                    <option value="documento">Acessos por Documento</option>
+                    <option value="empresa">Acessos por Empresa</option>
+                  </select>
+                </div>
+                {visitantesObter === 'documento' && (
+                  <div className="input-group">
+                    <span className="input-group-text"><i className="bi bi-file-earmark-text" /></span>
+                    <input className="form-control" placeholder="Documento" value={filters.documento || ''} onChange={e=> setFilters({...filters, documento: e.target.value})} />
+                  </div>
+                )}
+                {visitantesObter === 'empresa' && (
+                  <div className="input-group">
+                    <span className="input-group-text"><i className="bi bi-building" /></span>
+                    <input className="form-control" placeholder="Empresa" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
+                  </div>
+                )}
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" type="date" value={filters.start || ''} onChange={e=> setFilters({...filters, start: e.target.value})} placeholder="Início" />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
                 </div>
               </>
             )}

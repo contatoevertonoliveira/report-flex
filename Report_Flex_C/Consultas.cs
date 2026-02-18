@@ -1,9 +1,9 @@
-//using Microsoft.Reporting.WinForms;
 using System;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 using ReportFlex.WinForms;
 
@@ -35,19 +35,19 @@ namespace WindowsFormsApp1
 
         private SqlConnection getConexaoBD()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao1"].ConnectionString;
+            string strConexao = DbEnv.GetCmsConnectionString();
             return new SqlConnection(strConexao);
         }
 
         private SqlConnection getConexaoBD1()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 
         private SqlConnection getConexaoBD2()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 
@@ -390,9 +390,18 @@ namespace WindowsFormsApp1
         {
             btnConsultar.BackColor = Color.ForestGreen;
             btnBuscar.BackColor = Color.Gray;
-            con = getConexaoBD();
-            con.Open();
-            carregaCombos();
+            try
+            {
+                con = getConexaoBD();
+                con.Open();
+                carregaCombos();
+            }
+            catch (Exception ex)
+            {
+                var diag = "";
+                try { diag = ReportFlex.WinForms.DbEnv.GetDiagnosticsFor("CMS"); } catch { }
+                MessageBox.Show("Não foi possível conectar ao banco de dados CMS. Algumas consultas podem não funcionar.\n\n" + ex.Message + (string.IsNullOrEmpty(diag) ? "" : ("\n\n" + diag)), "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void btnConsultar_Click(object sender, EventArgs e)

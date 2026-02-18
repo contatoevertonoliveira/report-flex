@@ -8,3 +8,6 @@ Thumbs.db
 *.suo
 *.swp
 /.vs/
+.env
+ReportFlex.WebApi/.env
+**/.env

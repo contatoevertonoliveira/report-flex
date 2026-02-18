@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Configuration;
 using System.Data;
@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using ReportFlex.WinForms;
 
 namespace WindowsFormsApp1
 {
@@ -35,7 +36,7 @@ namespace WindowsFormsApp1
 
         private SqlConnection getConexaoBD()
         {
-            string strConexao = ConfigurationManager.ConnectionStrings["StringConexao"].ConnectionString;
+            string strConexao = DbEnv.GetLoginsConnectionString();
             return new SqlConnection(strConexao);
         }
 
