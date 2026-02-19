@@ -12,6 +12,20 @@ export function ExternalPage(){
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean }>({ csv: true })
+  React.useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try{
+        const opts = await api.getReportOptions()
+        if (!mounted) return
+        setReportOptions({
+          csv: !!opts.csv
+        })
+      }catch{}
+    })()
+    return () => { mounted = false }
+  }, [])
   async function load(){
     try{
       setLoading(true); setError(null)
@@ -44,7 +58,9 @@ export function ExternalPage(){
         <input className="form-control" type="number" value={page} onChange={e=>setPage(parseInt(e.target.value || '1'))} style={{width:80}} />
         <input className="form-control" type="number" value={pageSize} onChange={e=>setPageSize(parseInt(e.target.value || '20'))} style={{width:80}} />
         <button className="btn btn-primary" onClick={load}>Buscar</button>
-        <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','Surname','PreferredName','Identifier','Empresa','CardNumber'])}>Exportar CSV</button>
+        {reportOptions.csv && (
+          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','Surname','PreferredName','Identifier','Empresa','CardNumber'])}>Exportar CSV</button>
+        )}
       </div>
       {loading && <div>Carregando...</div>}
       {error && <div style={{color:'red'}}>{error}</div>}

@@ -159,6 +159,46 @@ catch
 {
 }
 
+app.MapGet("/api/admin/report-options", () =>
+{
+    var env = LoadEnv();
+    bool GetFlag(string key) => env.TryGetValue(key, out var v) && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
+    return Results.Ok(new
+    {
+        txt = GetFlag("REPORT_TXT"),
+        xlsx = GetFlag("REPORT_XLSX"),
+        pdf = GetFlag("REPORT_PDF"),
+        word = GetFlag("REPORT_WORD"),
+        excel = GetFlag("REPORT_EXCEL"),
+        csv = GetFlag("REPORT_CSV")
+    });
+}).RequireAuthorization("NotCliente");
+
+app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, bool>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    var values = new Dictionary<string, string>
+    {
+        ["REPORT_TXT"] = dto.TryGetValue("txt", out var txt) && txt ? "1" : "0",
+        ["REPORT_XLSX"] = dto.TryGetValue("xlsx", out var xlsx) && xlsx ? "1" : "0",
+        ["REPORT_PDF"] = dto.TryGetValue("pdf", out var pdf) && pdf ? "1" : "0",
+        ["REPORT_WORD"] = dto.TryGetValue("word", out var word) && word ? "1" : "0",
+        ["REPORT_EXCEL"] = dto.TryGetValue("excel", out var excel) && excel ? "1" : "0",
+        ["REPORT_CSV"] = dto.TryGetValue("csv", out var csv) && csv ? "1" : "0"
+    };
+    SaveEnv(values);
+    return Results.Ok(new
+    {
+        txt = values["REPORT_TXT"] == "1",
+        xlsx = values["REPORT_XLSX"] == "1",
+        pdf = values["REPORT_PDF"] == "1",
+        word = values["REPORT_WORD"] == "1",
+        excel = values["REPORT_EXCEL"] == "1",
+        csv = values["REPORT_CSV"] == "1"
+    });
+}).RequireAuthorization("NotCliente");
+
 static string ToOrderDir(string? dir) => string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
 static int ToPage(int page) => page <= 0 ? 1 : page;
 static int ToPageSize(int pageSize) => (pageSize <= 0 || pageSize > 200) ? 20 : pageSize;
@@ -701,9 +741,40 @@ app.MapGet("/api/client/current", async (HttpContext ctx) =>
 
 app.MapPost("/api/admin/clients", async (HttpContext ctx) =>
 {
-    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string?>>();
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
-    if (string.IsNullOrWhiteSpace(dto.GetValueOrDefault("nome") ?? "")) return Results.BadRequest(new { error = "Nome é obrigatório" });
+    static string? GetDtoString(Dictionary<string, System.Text.Json.JsonElement> d, string key)
+    {
+        if (!d.TryGetValue(key, out var el)) return null;
+        try
+        {
+            if (el.ValueKind == System.Text.Json.JsonValueKind.String) return el.GetString();
+            if (el.ValueKind == System.Text.Json.JsonValueKind.Number) return el.ToString();
+            if (el.ValueKind == System.Text.Json.JsonValueKind.True) return "1";
+            if (el.ValueKind == System.Text.Json.JsonValueKind.False) return "0";
+        }
+        catch
+        {
+        }
+        return null;
+    }
+    static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string key, int defaultValue)
+    {
+        if (!d.TryGetValue(key, out var el)) return defaultValue;
+        try
+        {
+            if (el.ValueKind == System.Text.Json.JsonValueKind.Number && el.TryGetInt32(out var n)) return n;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(el.GetString(), out var n2)) return n2;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.True) return 1;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.False) return 0;
+        }
+        catch
+        {
+        }
+        return defaultValue;
+    }
+    var nomeDto = GetDtoString(dto, "nome");
+    if (string.IsNullOrWhiteSpace(nomeDto ?? "")) return Results.BadRequest(new { error = "Nome é obrigatório" });
     using var cn = new SqlConnection(GetConn("Logins"));
     try
     {
@@ -713,8 +784,7 @@ app.MapPost("/api/admin/clients", async (HttpContext ctx) =>
     {
         return Results.BadRequest(new { error = "Falha ao conectar ao banco Logins. Ajuste em Configurações > Banco Real ou instale o LocalDB.", detail = ex.Message });
     }
-    // Gera token único se não informado ou já existente
-    string token = (dto.GetValueOrDefault("token") ?? "").Trim();
+    string token = (GetDtoString(dto, "token") ?? "").Trim();
     bool needGen = string.IsNullOrEmpty(token);
     if (!needGen)
     {
@@ -742,14 +812,21 @@ app.MapPost("/api/admin/clients", async (HttpContext ctx) =>
 INSERT INTO dbo.ClientesPortal (NOME,ENDERECO,FONE,EMAIL,SITE,ATIVO,CAMINHOIMG,RESPONSAVEL,CLIENT_TOKEN)
 OUTPUT INSERTED.Id
 VALUES (@NOME,@ENDERECO,@FONE,@EMAIL,@SITE,@ATIVO,@CAMINHOIMG,@RESPONSAVEL,@CLIENT_TOKEN)";
-    cmd.Parameters.Add(new SqlParameter("@NOME", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("nome") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@ENDERECO", SqlDbType.VarChar, 200) { Value = dto.GetValueOrDefault("endereco") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@FONE", SqlDbType.VarChar, 50) { Value = dto.GetValueOrDefault("fone") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@EMAIL", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("email") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@SITE", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("site") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@ATIVO", SqlDbType.Int) { Value = int.TryParse(dto.GetValueOrDefault("ativo"), out var a) ? a : 1 });
-    cmd.Parameters.Add(new SqlParameter("@CAMINHOIMG", SqlDbType.VarChar, 255) { Value = dto.GetValueOrDefault("logoPath") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@RESPONSAVEL", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("responsavel") ?? (object)DBNull.Value });
+    var enderecoDto = GetDtoString(dto, "endereco");
+    var foneDto = GetDtoString(dto, "fone");
+    var emailDto = GetDtoString(dto, "email");
+    var siteDto = GetDtoString(dto, "site");
+    var ativoDto = GetDtoInt(dto, "ativo", 1);
+    var logoDto = GetDtoString(dto, "logoPath");
+    var respDto = GetDtoString(dto, "responsavel");
+    cmd.Parameters.Add(new SqlParameter("@NOME", SqlDbType.VarChar, 100) { Value = (object?)nomeDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ENDERECO", SqlDbType.VarChar, 200) { Value = (object?)enderecoDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@FONE", SqlDbType.VarChar, 50) { Value = (object?)foneDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@EMAIL", SqlDbType.VarChar, 100) { Value = (object?)emailDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@SITE", SqlDbType.VarChar, 100) { Value = (object?)siteDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ATIVO", SqlDbType.Int) { Value = ativoDto });
+    cmd.Parameters.Add(new SqlParameter("@CAMINHOIMG", SqlDbType.VarChar, 255) { Value = (object?)logoDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@RESPONSAVEL", SqlDbType.VarChar, 100) { Value = (object?)respDto ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@CLIENT_TOKEN", SqlDbType.VarChar, 10) { Value = string.IsNullOrEmpty(token) ? (object)DBNull.Value : token });
     try
     {
@@ -764,7 +841,7 @@ VALUES (@NOME,@ENDERECO,@FONE,@EMAIL,@SITE,@ATIVO,@CAMINHOIMG,@RESPONSAVEL,@CLIE
 
 app.MapPut("/api/admin/clients/{id:int}", async (int id, HttpContext ctx) =>
 {
-    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string?>>();
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
     using var cn = new SqlConnection(GetConn("Logins"));
     await cn.OpenAsync();
@@ -774,14 +851,22 @@ UPDATE dbo.ClientesPortal SET
 NOME=@NOME, ENDERECO=@ENDERECO, FONE=@FONE, EMAIL=@EMAIL, SITE=@SITE, ATIVO=@ATIVO, CAMINHOIMG=@CAMINHOIMG, RESPONSAVEL=@RESPONSAVEL
 WHERE Id=@ID";
     cmd.Parameters.Add(new SqlParameter("@ID", SqlDbType.Int) { Value = id });
-    cmd.Parameters.Add(new SqlParameter("@NOME", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("nome") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@ENDERECO", SqlDbType.VarChar, 200) { Value = dto.GetValueOrDefault("endereco") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@FONE", SqlDbType.VarChar, 50) { Value = dto.GetValueOrDefault("fone") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@EMAIL", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("email") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@SITE", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("site") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@ATIVO", SqlDbType.Int) { Value = int.TryParse(dto.GetValueOrDefault("ativo"), out var a) ? a : 1 });
-    cmd.Parameters.Add(new SqlParameter("@CAMINHOIMG", SqlDbType.VarChar, 255) { Value = dto.GetValueOrDefault("logoPath") ?? (object)DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@RESPONSAVEL", SqlDbType.VarChar, 100) { Value = dto.GetValueOrDefault("responsavel") ?? (object)DBNull.Value });
+    var nomeU = GetDtoString(dto, "nome");
+    var enderecoU = GetDtoString(dto, "endereco");
+    var foneU = GetDtoString(dto, "fone");
+    var emailU = GetDtoString(dto, "email");
+    var siteU = GetDtoString(dto, "site");
+    var ativoU = GetDtoInt(dto, "ativo", 1);
+    var logoU = GetDtoString(dto, "logoPath");
+    var respU = GetDtoString(dto, "responsavel");
+    cmd.Parameters.Add(new SqlParameter("@NOME", SqlDbType.VarChar, 100) { Value = (object?)nomeU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ENDERECO", SqlDbType.VarChar, 200) { Value = (object?)enderecoU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@FONE", SqlDbType.VarChar, 50) { Value = (object?)foneU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@EMAIL", SqlDbType.VarChar, 100) { Value = (object?)emailU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@SITE", SqlDbType.VarChar, 100) { Value = (object?)siteU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ATIVO", SqlDbType.Int) { Value = ativoU });
+    cmd.Parameters.Add(new SqlParameter("@CAMINHOIMG", SqlDbType.VarChar, 255) { Value = (object?)logoU ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@RESPONSAVEL", SqlDbType.VarChar, 100) { Value = (object?)respU ?? DBNull.Value });
     var n = await cmd.ExecuteNonQueryAsync();
     return Results.Ok(new { updated = n });
 }).RequireAuthorization("SuperAdminOnly");

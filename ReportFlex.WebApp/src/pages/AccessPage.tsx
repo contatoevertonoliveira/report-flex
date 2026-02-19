@@ -8,6 +8,22 @@ export function AccessPage(){
   const [pageSize, setPageSize] = useState(20)
   const [rows, setRows] = useState<any[]>([])
   const [agg, setAgg] = useState<any[]>([])
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: true, xlsx: true, pdf: true })
+  React.useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try{
+        const opts = await api.getReportOptions()
+        if (!mounted) return
+        setReportOptions({
+          csv: !!opts.csv,
+          xlsx: !!opts.xlsx || !!opts.excel,
+          pdf: !!opts.pdf
+        })
+      }catch{}
+    })()
+    return () => { mounted = false }
+  }, [])
   return (
     <section>
       <h2>Acessos por Nível</h2>
@@ -24,9 +40,15 @@ export function AccessPage(){
           const data = await api.reportsAccessAggregated()
           setAgg(data ?? [])
         }}>Agregados</button>
-        <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=csv','_blank')}>Exportar CSV</button>
-        <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=xlsx','_blank')}>Exportar XLSX</button>
-        <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=pdf','_blank')}>Exportar PDF</button>
+        {reportOptions.csv && (
+          <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=csv','_blank')}>Exportar CSV</button>
+        )}
+        {reportOptions.xlsx && (
+          <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=xlsx','_blank')}>Exportar XLSX</button>
+        )}
+        {reportOptions.pdf && (
+          <button className="btn btn-outline-secondary" onClick={()=> window.open('/api/reports/access/aggregated/export?format=pdf','_blank')}>Exportar PDF</button>
+        )}
       </div>
       <table className="table table-sm">
         <thead><tr>{['SbiID','Name','LevelId','Level'].map(c=> <th key={c}>{c}</th>)}</tr></thead>

@@ -9,7 +9,6 @@ import { ExternalPage } from './pages/ExternalPage'
 import { AccessPage } from './pages/AccessPage'
 import { LoginPage } from './pages/LoginPage'
 import { RequireAuth, RequireSuperAdmin, RequireNotClient } from './components/RequireAuth'
-import { ReportsPage } from './pages/ReportsPage'
 import { useLocation } from 'react-router-dom'
 import { QueriesPage } from './pages/QueriesPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -66,7 +65,6 @@ export default function App() {
           <Route path="/employees" element={<RequireAuth><EmployeesPage /></RequireAuth>} />
           <Route path="/external" element={<RequireAuth><ExternalPage /></RequireAuth>} />
           <Route path="/access" element={<RequireAuth><AccessPage /></RequireAuth>} />
-          <Route path="/reports" element={<RequireAuth><ReportsPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/login" />} />
         </Routes>
       </main>

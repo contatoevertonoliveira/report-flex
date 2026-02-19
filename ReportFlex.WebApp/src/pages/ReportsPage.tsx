@@ -14,6 +14,22 @@ export function ReportsPage(){
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: true, xlsx: true, pdf: true })
+  React.useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try{
+        const opts = await api.getReportOptions()
+        if (!mounted) return
+        setReportOptions({
+          csv: !!opts.csv,
+          xlsx: !!opts.xlsx || !!opts.excel,
+          pdf: !!opts.pdf
+        })
+      }catch{}
+    })()
+    return () => { mounted = false }
+  }, [])
   async function load(){
     try{
       setLoading(true); setError(null)
@@ -62,9 +78,15 @@ export function ReportsPage(){
         <input type="number" value={page} onChange={e=>setPage(parseInt(e.target.value || '1'))} style={{width:80}} />
         <input type="number" value={pageSize} onChange={e=>setPageSize(parseInt(e.target.value || '20'))} style={{width:80}} />
         <button className="btn btn-primary" onClick={load}>Buscar</button>
-        <button className="btn btn-outline-secondary" onClick={()=> exportFormat('csv')}>Exportar CSV</button>
-        <button className="btn btn-outline-secondary" onClick={()=> exportFormat('xlsx')}>Exportar XLSX</button>
-        <button className="btn btn-outline-secondary" onClick={()=> exportFormat('pdf')}>Exportar PDF</button>
+        {reportOptions.csv && (
+          <button className="btn btn-outline-secondary" onClick={()=> exportFormat('csv')}>Exportar CSV</button>
+        )}
+        {reportOptions.xlsx && (
+          <button className="btn btn-outline-secondary" onClick={()=> exportFormat('xlsx')}>Exportar XLSX</button>
+        )}
+        {reportOptions.pdf && (
+          <button className="btn btn-outline-secondary" onClick={()=> exportFormat('pdf')}>Exportar PDF</button>
+        )}
       </div>
       <div className="row" style={{marginTop:8}}>
         <button className="btn btn-sm btn-light" onClick={()=> setPreset('hoje')}>Hoje</button>

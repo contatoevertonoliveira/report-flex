@@ -70,6 +70,9 @@ export function ClientesPage(){
         toast('info','Salvando alterações...')
         const r = await api.adminClientsUpdate(selectedId, form)
         if (r !== undefined){
+          if (logoFile){
+            await uploadLogo(logoFile, selectedId)
+          }
           setStatus('Atualizado')
           toast('success', 'Cliente atualizado')
         } else {
@@ -121,9 +124,6 @@ export function ClientesPage(){
   function handleLogoChange(file: File){
     setLogoFile(file)
     setForm((f:any)=> ({ ...f, logoPath: URL.createObjectURL(file) }))
-    if (selectedId != null){
-      uploadLogo(file)
-    }
   }
   async function confirmDelete(){
     if (selectedId == null) return
@@ -191,8 +191,35 @@ export function ClientesPage(){
         <div className="mb-2">
           <label>Logomarca</label>
           <div className="d-flex align-items-center gap-2">
-            <input ref={fileRef} type="file" accept="image/*" onChange={e=> e.target.files && handleLogoChange(e.target.files[0])} />
-            {form.logoPath && <img alt="logo" src={form.logoPath} style={{height:40}} />}
+            <div
+              onClick={()=> fileRef.current?.click()}
+              style={{
+                width:64, height:64, borderRadius:'50%', overflow:'hidden',
+                background:'#e9ecef', display:'flex', alignItems:'center', justifyContent:'center',
+                cursor:'pointer', border:'2px dashed #adb5bd', flexShrink:0
+              }}
+            >
+              {form.logoPath
+                ? <img alt="logo" src={form.logoPath} style={{width:'100%', height:'100%', objectFit:'cover'}} />
+                : <span style={{fontSize:18, color:'#6c757d'}}>{(form.nome || '?').toString().charAt(0).toUpperCase()}</span>}
+            </div>
+            <div className="d-flex flex-column" style={{gap:4}}>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary"
+                onClick={()=> fileRef.current?.click()}
+              >
+                Escolher imagem
+              </button>
+              <small className="text-muted">Clique na bola ou no botão para selecionar uma foto.</small>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              style={{display:'none'}}
+              onChange={e=> e.target.files && handleLogoChange(e.target.files[0])}
+            />
           </div>
         </div>
         <div className="d-flex gap-2">

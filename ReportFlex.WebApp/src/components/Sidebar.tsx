@@ -33,7 +33,6 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   }, [])
   const links = [
     { label: 'Consultas', href: '/consultas', icon: 'bi-search' },
-    { label: 'Opções Relatórios', href: '/reports', icon: 'bi-file-earmark-bar-graph' },
     ...(isClient ? [] : [{ label: 'Configurações', href: '/configuracoes', icon: 'bi-gear' }]),
     ...(isSuperAdmin ? [{ label: 'Clientes', href: '/clientes', icon: 'bi-people' }] : [])
   ]
@@ -92,17 +91,17 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
         {(clientName || clientResp) && (
           <div className="d-flex align-items-center" style={{gap:8}}>
             <div style={{
-              width:36, height:36, borderRadius:'50%', overflow:'hidden',
-              background:'rgb(0, 149, 66)', display:'flex', alignItems:'center', justifyContent:'center', color:'#ffffff', fontSize:14, flexShrink:0
+              width:40, height:40, borderRadius:'50%', overflow:'hidden',
+              background:'rgb(0, 149, 66)', display:'flex', alignItems:'center', justifyContent:'center', color:'#ffffff', fontSize:16, flexShrink:0, border:'2px solid rgba(255,255,255,0.7)'
             }}>
               {clientLogo
-                ? <img src={clientLogo} alt="Cliente" style={{width:'100%', height:'100%', objectFit:'cover'}} />
-                : (clientResp ? clientResp.charAt(0).toUpperCase() : (clientName ? clientName.charAt(0).toUpperCase() : '?'))}
+                ? <img src={clientLogo} alt={clientName || 'Cliente'} style={{width:'100%', height:'100%', objectFit:'cover'}} />
+                : (clientName ? clientName.charAt(0).toUpperCase() : (clientResp ? clientResp.charAt(0).toUpperCase() : '?'))}
             </div>
             {!compact && (
               <div style={{fontSize:12, lineHeight:1.3, color:'#ffffff'}}>
-                {clientResp && <div>Responsável: <strong>{clientResp}</strong></div>}
-                {clientName && <div>Empresa: <strong>{clientName}</strong></div>}
+                {clientResp && <div><strong>{clientResp}</strong></div>}
+                {clientName && <div style={{opacity:0.85}}>{clientName}</div>}
               </div>
             )}
           </div>

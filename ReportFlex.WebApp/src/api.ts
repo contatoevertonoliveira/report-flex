@@ -111,6 +111,9 @@ export const api = {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
   },
   seedCompanies: async () => withAuth(apiFetch('/api/dev/seed-companies', { method:'POST', headers: headers() })),
+  getReportOptions: async () => withAuth(apiFetch('/api/admin/report-options', { headers: headers() })),
+  setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }) =>
+    withAuth(apiFetch('/api/admin/report-options', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),

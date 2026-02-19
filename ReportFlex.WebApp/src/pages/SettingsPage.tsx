@@ -10,6 +10,10 @@ export function SettingsPage(){
   const [realPath, setRealPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
+  const [reportOptions, setReportOptions] = useState<{ txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }>({
+    txt: false, xlsx: true, pdf: true, word: false, excel: true, csv: true
+  })
+  const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
 
   useEffect(() => {
     (async () => {
@@ -29,6 +33,17 @@ export function SettingsPage(){
         }catch{
           setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
         }
+        try{
+          const opts = await api.getReportOptions()
+          setReportOptions({
+            txt: !!opts.txt,
+            xlsx: !!opts.xlsx,
+            pdf: !!opts.pdf,
+            word: !!opts.word,
+            excel: !!opts.excel,
+            csv: !!opts.csv
+          })
+        }catch{}
       }catch{}
     })()
   }, [])
@@ -118,6 +133,27 @@ export function SettingsPage(){
       }
     }catch{
       setErr('Falha ao salvar configuração')
+    }
+  }
+
+  async function saveReportOptions(){
+    setErr(null); setMsg(null)
+    setReportOptionsLoading(true)
+    try{
+      const r = await api.setReportOptions(reportOptions)
+      setReportOptions({
+        txt: !!r.txt,
+        xlsx: !!r.xlsx,
+        pdf: !!r.pdf,
+        word: !!r.word,
+        excel: !!r.excel,
+        csv: !!r.csv
+      })
+      setMsg('Opções de formatos de relatórios salvas')
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao salvar opções de relatórios')
+    }finally{
+      setReportOptionsLoading(false)
     }
   }
 
@@ -239,6 +275,47 @@ export function SettingsPage(){
               <i className="bi bi-exclamation-triangle" /> {dbInfoErr}
             </div>
           )}
+        </div>
+      </div>
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header d-flex align-items-center" style={{gap:8}}>
+          <i className="bi bi-filetype-pdf" /> Formatos de relatórios disponíveis
+        </div>
+        <div className="card-body d-flex flex-column" style={{gap:12}}>
+          <p className="text-muted" style={{fontSize:12, marginBottom:4}}>
+            Os formatos ativados aqui aparecerão como botões de sugestão quando uma consulta retornar dados.
+          </p>
+          <div className="d-flex flex-wrap" style={{gap:12}}>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repTxt" checked={reportOptions.txt} onChange={e=> setReportOptions(o=> ({...o, txt: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repTxt">TXT</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repCsv" checked={reportOptions.csv} onChange={e=> setReportOptions(o=> ({...o, csv: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repCsv">CSV</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repXlsx" checked={reportOptions.xlsx} onChange={e=> setReportOptions(o=> ({...o, xlsx: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repXlsx">XLSX</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repExcel" checked={reportOptions.excel} onChange={e=> setReportOptions(o=> ({...o, excel: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repExcel">Excel (compatível)</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repPdf" checked={reportOptions.pdf} onChange={e=> setReportOptions(o=> ({...o, pdf: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repPdf">PDF</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repWord" checked={reportOptions.word} onChange={e=> setReportOptions(o=> ({...o, word: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repWord">Word</label>
+            </div>
+          </div>
+          <div>
+            <button className="btn btn-outline-primary d-flex align-items-center" onClick={saveReportOptions} disabled={reportOptionsLoading}>
+              {reportOptionsLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Salvando...</> : <><i className="bi bi-save me-1" /> Salvar formatos</>}
+            </button>
+          </div>
         </div>
       </div>
     </section>

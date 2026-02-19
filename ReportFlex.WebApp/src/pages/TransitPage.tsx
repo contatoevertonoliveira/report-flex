@@ -13,6 +13,20 @@ export function TransitPage(){
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean }>({ csv: true })
+  React.useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try{
+        const opts = await api.getReportOptions()
+        if (!mounted) return
+        setReportOptions({
+          csv: !!opts.csv
+        })
+      }catch{}
+    })()
+    return () => { mounted = false }
+  }, [])
   return (
     <section>
       <h2>Trânsito</h2>
@@ -32,7 +46,9 @@ export function TransitPage(){
             setRows(res.items ?? []); setTotal(res.total ?? 0)
           }catch{ setError('Falha ao buscar trânsitos') } finally{ setLoading(false) }
         }}>Consultar</button>
-        <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','CardNumber','Direction','UserType','Terminal','TerminalDescription','TransitDate'])}>Exportar CSV</button>
+        {reportOptions.csv && (
+          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','CardNumber','Direction','UserType','Terminal','TerminalDescription','TransitDate'])}>Exportar CSV</button>
+        )}
       </div>
       <div className="row" style={{marginTop:8}}>
         <button className="btn btn-sm btn-light" onClick={()=> {
