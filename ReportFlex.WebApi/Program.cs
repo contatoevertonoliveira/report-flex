@@ -115,6 +115,38 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 ImagesStatic.MapLegacyImages(app);
 
+static string? GetDtoString(Dictionary<string, System.Text.Json.JsonElement> d, string key)
+{
+    if (!d.TryGetValue(key, out var el)) return null;
+    try
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.String) return el.GetString();
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Number) return el.ToString();
+        if (el.ValueKind == System.Text.Json.JsonValueKind.True) return "1";
+        if (el.ValueKind == System.Text.Json.JsonValueKind.False) return "0";
+    }
+    catch
+    {
+    }
+    return null;
+}
+
+static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string key, int defaultValue)
+{
+    if (!d.TryGetValue(key, out var el)) return defaultValue;
+    try
+    {
+        if (el.ValueKind == System.Text.Json.JsonValueKind.Number && el.TryGetInt32(out var n)) return n;
+        if (el.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(el.GetString(), out var n2)) return n2;
+        if (el.ValueKind == System.Text.Json.JsonValueKind.True) return 1;
+        if (el.ValueKind == System.Text.Json.JsonValueKind.False) return 0;
+    }
+    catch
+    {
+    }
+    return defaultValue;
+}
+
 string GetConn(string name)
 {
     if (string.Equals(dbMode, "Demo", StringComparison.OrdinalIgnoreCase))
@@ -682,7 +714,7 @@ app.MapGet("/api/login/check", async (string token) =>
     return Results.Ok(new { nome, usuario, nivel });
 });
 
-app.MapGet("/api/clientes", async () =>
+app.MapGet("/api/clientes", async (HttpContext ctx) =>
 {
     var list = new List<object>();
     try
@@ -694,6 +726,15 @@ app.MapGet("/api/clientes", async () =>
         using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
         {
+            string? img = r.IsDBNull(7) ? null : r.GetString(7);
+            if (!string.IsNullOrEmpty(img) && !img.Contains("://", StringComparison.Ordinal))
+            {
+                var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
+                if (img.StartsWith("/", StringComparison.Ordinal))
+                    img = baseUrl + img;
+                else
+                    img = baseUrl + "/" + img;
+            }
             list.Add(new
             {
                 SBID = r.GetInt32(0),
@@ -703,7 +744,7 @@ app.MapGet("/api/clientes", async () =>
                 EMAIL = r.IsDBNull(4) ? null : r.GetString(4),
                 SITE = r.IsDBNull(5) ? null : r.GetString(5),
                 ATIVO = r.IsDBNull(6) ? (int?)null : r.GetInt32(6),
-                CAMINHOIMG = r.IsDBNull(7) ? null : r.GetString(7),
+                CAMINHOIMG = img,
                 RESPONSAVEL = r.IsDBNull(8) ? null : r.GetString(8),
                 TOKEN = r.IsDBNull(9) ? null : r.GetString(9)
             });
@@ -718,9 +759,14 @@ app.MapGet("/api/clientes", async () =>
 app.MapGet("/api/client/current", async (HttpContext ctx) =>
 {
     var clientIdHeader = ctx.Request.Headers.TryGetValue("X-Client-Id", out var vals) ? vals.ToString() : null;
-    if (!int.TryParse(clientIdHeader, out var cid) || cid <= 0)
+    int cid;
+    if (!int.TryParse(clientIdHeader, out cid) || cid <= 0)
     {
-        return Results.Ok(new { id = (int?)null, nome = (string?)null, responsavel = (string?)null, logoPath = (string?)null });
+        var claim = ctx.User?.FindFirst("clientId");
+        if (claim == null || !int.TryParse(claim.Value, out cid) || cid <= 0)
+        {
+            return Results.Ok(new { id = (int?)null, nome = (string?)null, responsavel = (string?)null, logoPath = (string?)null });
+        }
     }
     using var cn = new SqlConnection(GetConn("Logins"));
     await cn.OpenAsync();
@@ -736,6 +782,14 @@ app.MapGet("/api/client/current", async (HttpContext ctx) =>
     var nome = r.IsDBNull(1) ? null : r.GetString(1);
     var resp = r.IsDBNull(2) ? null : r.GetString(2);
     var logo = r.IsDBNull(3) ? null : r.GetString(3);
+    if (!string.IsNullOrEmpty(logo) && !logo.Contains("://", StringComparison.Ordinal))
+    {
+        var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
+        if (logo.StartsWith("/", StringComparison.Ordinal))
+            logo = baseUrl + logo;
+        else
+            logo = baseUrl + "/" + logo;
+    }
     return Results.Ok(new { id, nome, responsavel = resp, logoPath = logo });
 }).RequireAuthorization();
 
@@ -743,36 +797,6 @@ app.MapPost("/api/admin/clients", async (HttpContext ctx) =>
 {
     var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
-    static string? GetDtoString(Dictionary<string, System.Text.Json.JsonElement> d, string key)
-    {
-        if (!d.TryGetValue(key, out var el)) return null;
-        try
-        {
-            if (el.ValueKind == System.Text.Json.JsonValueKind.String) return el.GetString();
-            if (el.ValueKind == System.Text.Json.JsonValueKind.Number) return el.ToString();
-            if (el.ValueKind == System.Text.Json.JsonValueKind.True) return "1";
-            if (el.ValueKind == System.Text.Json.JsonValueKind.False) return "0";
-        }
-        catch
-        {
-        }
-        return null;
-    }
-    static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string key, int defaultValue)
-    {
-        if (!d.TryGetValue(key, out var el)) return defaultValue;
-        try
-        {
-            if (el.ValueKind == System.Text.Json.JsonValueKind.Number && el.TryGetInt32(out var n)) return n;
-            if (el.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(el.GetString(), out var n2)) return n2;
-            if (el.ValueKind == System.Text.Json.JsonValueKind.True) return 1;
-            if (el.ValueKind == System.Text.Json.JsonValueKind.False) return 0;
-        }
-        catch
-        {
-        }
-        return defaultValue;
-    }
     var nomeDto = GetDtoString(dto, "nome");
     if (string.IsNullOrWhiteSpace(nomeDto ?? "")) return Results.BadRequest(new { error = "Nome é obrigatório" });
     using var cn = new SqlConnection(GetConn("Logins"));
@@ -1265,6 +1289,8 @@ app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
     var input = (req.Query.ContainsKey("token") ? req.Query["token"].ToString() : "").Trim();
     if (input.StartsWith("TOKEN", StringComparison.OrdinalIgnoreCase)) input = input.Substring(5).Trim();
     string? usuario = null, nome = null, nivel = null;
+    int? clientId = null;
+    string? clientName = null;
     var fallback = new Dictionary<string, (string usuario, string nome, string nivel)>(StringComparer.OrdinalIgnoreCase)
     {
         ["0001"] = ("superadmin","SUPERADMIN","SuperAdmin"),
@@ -1284,16 +1310,34 @@ app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
         {
             using var cn = new SqlConnection(GetConn("Logins"));
             await cn.OpenAsync();
-            using var cmd = cn.CreateCommand();
-            cmd.CommandText = "SELECT USUARIO,NOME,NIVEL FROM dbo.Login WHERE RTRIM(LTRIM(TOKEN))=@t AND STATUS='Habilitado'";
-            cmd.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
-            using var r = await cmd.ExecuteReaderAsync();
-            if (r.HasRows)
+            using (var cmdCli = cn.CreateCommand())
             {
-                await r.ReadAsync();
-                usuario = r.GetString(0);
-                nome = r.GetString(1);
-                nivel = r.GetString(2);
+                cmdCli.CommandText = "SELECT Id,NOME FROM dbo.ClientesPortal WHERE RTRIM(LTRIM(CLIENT_TOKEN))=@t AND ISNULL(ATIVO,1)=1";
+                cmdCli.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
+                using var rCli = await cmdCli.ExecuteReaderAsync();
+                if (rCli.HasRows)
+                {
+                    await rCli.ReadAsync();
+                    clientId = rCli.GetInt32(0);
+                    clientName = rCli.IsDBNull(1) ? null : rCli.GetString(1);
+                    usuario = "cliente";
+                    nome = clientName ?? "Cliente";
+                    nivel = "Cliente";
+                }
+            }
+            if (usuario == null)
+            {
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = "SELECT USUARIO,NOME,NIVEL FROM dbo.Login WHERE RTRIM(LTRIM(TOKEN))=@t AND STATUS='Habilitado'";
+                cmd.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
+                using var r = await cmd.ExecuteReaderAsync();
+                if (r.HasRows)
+                {
+                    await r.ReadAsync();
+                    usuario = r.GetString(0);
+                    nome = r.GetString(1);
+                    nivel = r.GetString(2);
+                }
             }
         }
         catch { }
@@ -1304,9 +1348,10 @@ app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
     if (!string.IsNullOrEmpty(usuario)) claims.Add(new Claim("usuario", usuario));
     if (!string.IsNullOrEmpty(nome)) claims.Add(new Claim("nome", nome));
     if (!string.IsNullOrEmpty(nivel)) claims.Add(new Claim("nivel", nivel));
+    if (clientId.HasValue) claims.Add(new Claim("clientId", clientId.Value.ToString()));
     var jwt = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claims, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: creds);
     var jwtStr = new JwtSecurityTokenHandler().WriteToken(jwt);
-    return Results.Ok(new { token = jwtStr, nome, usuario, nivel });
+    return Results.Ok(new { token = jwtStr, nome, usuario, nivel, clientId, clientName });
 });
 app.MapGet("/api/login/tokens", async (HttpRequest req) =>
 {
