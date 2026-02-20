@@ -110,6 +110,21 @@ export const api = {
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
   },
+  dbTableRows: async (p: { db: 'CMS'|'Logins', table: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/admin/db-table/rows?' + qs, { headers: headers() }))
+  },
+  clientUpdateProfile: async (p: { nome?: string, endereco?: string, fone?: string, email?: string, site?: string, responsavel?: string }) =>
+    withAuth(apiFetch('/api/client/profile', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  clientRegenerateToken: async () =>
+    withAuth(apiFetch('/api/client/token/regenerate', { method:'POST', headers: headers() })),
+  clientUploadLogo: async (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const r = await apiFetch('/api/client/logo', { method:'POST', headers: headers(), body: fd })
+    if (!r.ok) throw new Error('Upload failed')
+    return await r.json()
+  },
   seedCompanies: async () => withAuth(apiFetch('/api/dev/seed-companies', { method:'POST', headers: headers() })),
   getReportOptions: async () => withAuth(apiFetch('/api/admin/report-options', { headers: headers() })),
   setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }) =>
@@ -133,6 +148,13 @@ export const api = {
     const r = await apiFetch(`/api/admin/clients/${id}/logo`, { method:'POST', headers: headers(), body: fd })
     if(!r.ok) throw new Error('Upload failed')
     return await r.json()
+  },
+  sendMessage: async (p: { assunto: string, texto: string }) =>
+    withAuth(apiFetch('/api/messages', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  adminMessages: async (p: { page?: number, pageSize?: number } = {}) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    const url = qs ? '/api/admin/messages?' + qs : '/api/admin/messages'
+    return await withAuth(apiFetch(url, { headers: headers() }))
   },
   fetchReportPdf: async (url: string) => {
     const r = await apiFetch(url.startsWith('/api/') ? url : url, { headers: headers() })

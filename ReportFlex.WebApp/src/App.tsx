@@ -12,6 +12,8 @@ import { RequireAuth, RequireSuperAdmin, RequireNotClient } from './components/R
 import { useLocation } from 'react-router-dom'
 import { QueriesPage } from './pages/QueriesPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { MessagesPage } from './pages/MessagesPage'
+import { AdminMessagesPage } from './pages/AdminMessagesPage'
 
 export default function App() {
   const [expanded, setExpanded] = React.useState(true)
@@ -58,6 +60,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/consultas" element={<RequireAuth><QueriesPage /></RequireAuth>} />
+          <Route path="/mensagens" element={<RequireAuth><MessagesPage /></RequireAuth>} />
+          <Route path="/inbox" element={<RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin>} />
           <Route path="/configuracoes" element={<RequireNotClient><SettingsPage /></RequireNotClient>} />
           <Route path="/clientes" element={<RequireSuperAdmin><ClientesPage /></RequireSuperAdmin>} />
           <Route path="/prestadores" element={<RequireAuth><PrestadoresPage /></RequireAuth>} />

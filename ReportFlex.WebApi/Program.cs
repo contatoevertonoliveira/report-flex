@@ -24,6 +24,11 @@ builder.Services.AddAuthorization(options =>
         !ctx.User.HasClaim(c =>
             string.Equals(c.Type, "nivel", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(c.Value, "Cliente", StringComparison.OrdinalIgnoreCase))));
+    options.AddPolicy("AdminsOnly", policy => policy.RequireAssertion(ctx =>
+        ctx.User.HasClaim(c =>
+            string.Equals(c.Type, "nivel", StringComparison.OrdinalIgnoreCase) &&
+            (string.Equals(c.Value, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(c.Value, "Administrador", StringComparison.OrdinalIgnoreCase)))));
 });
 var jwtSection = builder.Configuration.GetSection("Jwt");
 var jwtKey = jwtSection.GetValue<string>("Key") ?? "dev";
@@ -184,6 +189,21 @@ BEGIN
         RESPONSAVEL VARCHAR(100) NULL,
         CLIENT_TOKEN VARCHAR(10) NULL
     );
+END
+
+IF OBJECT_ID('dbo.MensagensPortal','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.MensagensPortal(
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        FromUsuario VARCHAR(100) NULL,
+        FromNome VARCHAR(200) NULL,
+        FromNivel VARCHAR(50) NULL,
+        ClientId INT NULL,
+        Assunto VARCHAR(200) NOT NULL,
+        Texto VARCHAR(MAX) NOT NULL,
+        CreatedAt DATETIME NOT NULL DEFAULT(GETDATE()),
+        Status VARCHAR(50) NULL
+    );
 END";
     cmdInit.ExecuteNonQuery();
 }
@@ -328,6 +348,64 @@ app.MapGet("/api/admin/db-info", async () =>
     {
         return Results.Ok(new { mode = dbMode, databases = (object?)null, error = ex.Message });
     }
+}).RequireAuthorization("NotCliente");
+
+app.MapGet("/api/admin/db-table/rows", async (string db, string table, int page, int pageSize) =>
+{
+    if (string.IsNullOrWhiteSpace(db) || string.IsNullOrWhiteSpace(table))
+    {
+        return Results.BadRequest(new { error = "Parâmetros 'db' e 'table' são obrigatórios." });
+    }
+
+    string? dbKey = null;
+    if (string.Equals(db, "CMS", StringComparison.OrdinalIgnoreCase)) dbKey = "CMS";
+    else if (string.Equals(db, "Logins", StringComparison.OrdinalIgnoreCase)) dbKey = "Logins";
+
+    if (dbKey == null)
+    {
+        return Results.BadRequest(new { error = "Banco inválido. Use CMS ou Logins." });
+    }
+
+    page = ToPage(page);
+    pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+
+    using var cn = new SqlConnection(GetConn(dbKey));
+    await cn.OpenAsync();
+
+    using (var checkCmd = cn.CreateCommand())
+    {
+        checkCmd.CommandText = "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' AND TABLE_NAME=@t";
+        checkCmd.Parameters.Add(new SqlParameter("@t", SqlDbType.NVarChar, 128) { Value = table });
+        var exists = await checkCmd.ExecuteScalarAsync();
+        if (exists == null)
+        {
+            return Results.BadRequest(new { error = "Tabela não encontrada no banco selecionado." });
+        }
+    }
+
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = $"SELECT * FROM [{table}] ORDER BY 1 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY";
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<Dictionary<string, object?>>();
+    var schema = r.GetColumnSchema();
+    while (await r.ReadAsync())
+    {
+        var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in schema)
+        {
+            var ord = col.ColumnOrdinal ?? -1;
+            if (ord < 0) continue;
+            object? val = r.IsDBNull(ord) ? null : r.GetValue(ord);
+            row[col.ColumnName ?? $"Col{ord + 1}"] = val;
+        }
+        items.Add(row);
+    }
+
+    return Results.Ok(new { page, pageSize, items });
 }).RequireAuthorization("NotCliente");
 
 app.MapPost("/api/admin/connections", async (HttpContext ctx) =>
@@ -771,17 +849,22 @@ app.MapGet("/api/client/current", async (HttpContext ctx) =>
     using var cn = new SqlConnection(GetConn("Logins"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
-    cmd.CommandText = "SELECT Id,NOME,RESPONSAVEL,CAMINHOIMG FROM dbo.ClientesPortal WHERE Id=@id";
+    cmd.CommandText = "SELECT Id,NOME,RESPONSAVEL,CAMINHOIMG,CLIENT_TOKEN,ENDERECO,FONE,EMAIL,SITE FROM dbo.ClientesPortal WHERE Id=@id";
     cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
     using var r = await cmd.ExecuteReaderAsync();
     if (!await r.ReadAsync())
     {
-        return Results.Ok(new { id = (int?)null, nome = (string?)null, responsavel = (string?)null, logoPath = (string?)null });
+        return Results.Ok(new { id = (int?)null, nome = (string?)null, responsavel = (string?)null, logoPath = (string?)null, clientToken = (string?)null, endereco = (string?)null, fone = (string?)null, email = (string?)null, site = (string?)null });
     }
     var id = r.GetInt32(0);
     var nome = r.IsDBNull(1) ? null : r.GetString(1);
     var resp = r.IsDBNull(2) ? null : r.GetString(2);
     var logo = r.IsDBNull(3) ? null : r.GetString(3);
+    var token = r.IsDBNull(4) ? null : r.GetString(4);
+    var endereco = r.IsDBNull(5) ? null : r.GetString(5);
+    var fone = r.IsDBNull(6) ? null : r.GetString(6);
+    var email = r.IsDBNull(7) ? null : r.GetString(7);
+    var site = r.IsDBNull(8) ? null : r.GetString(8);
     if (!string.IsNullOrEmpty(logo) && !logo.Contains("://", StringComparison.Ordinal))
     {
         var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
@@ -790,7 +873,7 @@ app.MapGet("/api/client/current", async (HttpContext ctx) =>
         else
             logo = baseUrl + "/" + logo;
     }
-    return Results.Ok(new { id, nome, responsavel = resp, logoPath = logo });
+    return Results.Ok(new { id, nome, responsavel = resp, logoPath = logo, clientToken = token, endereco, fone, email, site });
 }).RequireAuthorization();
 
 app.MapPost("/api/admin/clients", async (HttpContext ctx) =>
@@ -1283,6 +1366,198 @@ app.MapPost("/api/login/signin-token", async (HttpRequest req) =>
     var jwtStr = new JwtSecurityTokenHandler().WriteToken(jwt);
     return Results.Ok(new { token = jwtStr, nome, usuario, nivel, clientId, clientName });
 });
+
+app.MapPost("/api/client/profile", async (HttpContext ctx) =>
+{
+    var claimNivel = ctx.User?.FindFirst("nivel")?.Value;
+    if (!string.Equals(claimNivel, "Cliente", StringComparison.OrdinalIgnoreCase)) return Results.Forbid();
+    var claimCid = ctx.User?.FindFirst("clientId")?.Value;
+    if (claimCid == null || !int.TryParse(claimCid, out var cid) || cid <= 0) return Results.BadRequest(new { error = "Cliente não identificado no token" });
+
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    string? GetStr(string key)
+    {
+        if (!dto.TryGetValue(key, out var el)) return null;
+        return el.ValueKind == System.Text.Json.JsonValueKind.Null ? null : el.ToString();
+    }
+
+    var nomeDto = GetStr("nome");
+    var enderecoDto = GetStr("endereco");
+    var foneDto = GetStr("fone");
+    var emailDto = GetStr("email");
+    var siteDto = GetStr("site");
+    var respDto = GetStr("responsavel");
+
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+UPDATE dbo.ClientesPortal SET
+NOME = ISNULL(@NOME, NOME),
+ENDERECO = ISNULL(@ENDERECO, ENDERECO),
+FONE = ISNULL(@FONE, FONE),
+EMAIL = ISNULL(@EMAIL, EMAIL),
+SITE = ISNULL(@SITE, SITE),
+RESPONSAVEL = ISNULL(@RESPONSAVEL, RESPONSAVEL)
+WHERE Id=@ID";
+    cmd.Parameters.Add(new SqlParameter("@ID", SqlDbType.Int) { Value = cid });
+    cmd.Parameters.Add(new SqlParameter("@NOME", SqlDbType.VarChar, 200) { Value = (object?)nomeDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ENDERECO", SqlDbType.VarChar, 300) { Value = (object?)enderecoDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@FONE", SqlDbType.VarChar, 50) { Value = (object?)foneDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@EMAIL", SqlDbType.VarChar, 200) { Value = (object?)emailDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@SITE", SqlDbType.VarChar, 200) { Value = (object?)siteDto ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@RESPONSAVEL", SqlDbType.VarChar, 100) { Value = (object?)respDto ?? DBNull.Value });
+    await cmd.ExecuteNonQueryAsync();
+    return Results.Ok(new { ok = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/client/token/regenerate", async (HttpContext ctx) =>
+{
+    var claimNivel = ctx.User?.FindFirst("nivel")?.Value;
+    if (!string.Equals(claimNivel, "Cliente", StringComparison.OrdinalIgnoreCase)) return Results.Forbid();
+    var claimCid = ctx.User?.FindFirst("clientId")?.Value;
+    if (claimCid == null || !int.TryParse(claimCid, out var cid) || cid <= 0) return Results.BadRequest(new { error = "Cliente não identificado no token" });
+
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    string token = "";
+    var rnd = new Random();
+    for (int i = 0; i < 200; i++)
+    {
+        token = rnd.Next(0, 10000).ToString("D4");
+        using var chk = cn.CreateCommand();
+        chk.CommandText = "SELECT COUNT(*) FROM dbo.ClientesPortal WHERE CLIENT_TOKEN=@t";
+        chk.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = token });
+        var count = (int)(await chk.ExecuteScalarAsync() ?? 0);
+        if (count == 0) break;
+    }
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = "UPDATE dbo.ClientesPortal SET CLIENT_TOKEN=@t WHERE Id=@id";
+        cmd.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = token });
+        cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
+        await cmd.ExecuteNonQueryAsync();
+    }
+    return Results.Ok(new { token });
+}).RequireAuthorization();
+
+app.MapPost("/api/client/logo", async (HttpContext ctx) =>
+{
+    var claimNivel = ctx.User?.FindFirst("nivel")?.Value;
+    if (!string.Equals(claimNivel, "Cliente", StringComparison.OrdinalIgnoreCase)) return Results.Forbid();
+    var claimCid = ctx.User?.FindFirst("clientId")?.Value;
+    if (claimCid == null || !int.TryParse(claimCid, out var cid) || cid <= 0) return Results.BadRequest(new { error = "Cliente não identificado no token" });
+    if (!ctx.Request.HasFormContentType) return Results.BadRequest(new { error = "Conteúdo inválido" });
+    var form = await ctx.Request.ReadFormAsync();
+    var file = form.Files["file"];
+    if (file == null || file.Length == 0) return Results.BadRequest(new { error = "Arquivo não enviado" });
+    var uploads = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "clients");
+    Directory.CreateDirectory(uploads);
+    var ext = Path.GetExtension(file.FileName);
+    if (string.IsNullOrWhiteSpace(ext)) ext = ".png";
+    var fileName = $"client_{cid}{ext}";
+    var full = Path.Combine(uploads, fileName);
+    using (var stream = System.IO.File.Create(full))
+    {
+        await file.CopyToAsync(stream);
+    }
+    var relPath = "/clients/" + fileName;
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = "UPDATE dbo.ClientesPortal SET CAMINHOIMG=@p WHERE Id=@id";
+        cmd.Parameters.Add(new SqlParameter("@p", SqlDbType.VarChar, 255) { Value = relPath });
+        cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
+        await cmd.ExecuteNonQueryAsync();
+    }
+    var baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
+    var fullUrl = baseUrl + relPath;
+    return Results.Ok(new { logoPath = fullUrl });
+}).RequireAuthorization();
+
+app.MapPost("/api/messages", async (HttpContext ctx) =>
+{
+    var claimUsuario = ctx.User?.FindFirst("usuario")?.Value;
+    var claimNome = ctx.User?.FindFirst("nome")?.Value;
+    var claimNivel = ctx.User?.FindFirst("nivel")?.Value;
+    var claimCid = ctx.User?.FindFirst("clientId")?.Value;
+    int? clientId = null;
+    if (!string.IsNullOrWhiteSpace(claimCid) && int.TryParse(claimCid, out var cidParsed) && cidParsed > 0)
+    {
+        clientId = cidParsed;
+    }
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    string? assunto = GetDtoString(dto, "assunto");
+    string? texto = GetDtoString(dto, "texto");
+    if (string.IsNullOrWhiteSpace(assunto) || string.IsNullOrWhiteSpace(texto))
+    {
+        return Results.BadRequest(new { error = "Assunto e texto são obrigatórios" });
+    }
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+INSERT INTO dbo.MensagensPortal(FromUsuario,FromNome,FromNivel,ClientId,Assunto,Texto,CreatedAt,Status)
+VALUES(@FromUsuario,@FromNome,@FromNivel,@ClientId,@Assunto,@Texto,GETDATE(),@Status)";
+    cmd.Parameters.Add(new SqlParameter("@FromUsuario", SqlDbType.VarChar, 100) { Value = (object?)claimUsuario ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@FromNome", SqlDbType.VarChar, 200) { Value = (object?)claimNome ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@FromNivel", SqlDbType.VarChar, 50) { Value = (object?)claimNivel ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@ClientId", SqlDbType.Int) { Value = (object?)clientId ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@Assunto", SqlDbType.VarChar, 200) { Value = assunto });
+    cmd.Parameters.Add(new SqlParameter("@Texto", SqlDbType.VarChar) { Value = texto });
+    cmd.Parameters.Add(new SqlParameter("@Status", SqlDbType.VarChar, 50) { Value = "Novo" });
+    await cmd.ExecuteNonQueryAsync();
+    return Results.Ok(new { ok = true });
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/messages", async (HttpContext ctx) =>
+{
+    int page = 1;
+    int pageSize = 50;
+    if (int.TryParse(ctx.Request.Query["page"], out var p) && p > 0) page = p;
+    if (int.TryParse(ctx.Request.Query["pageSize"], out var ps) && ps > 0 && ps <= 200) pageSize = ps;
+    int offset = (page - 1) * pageSize;
+    var items = new List<object>();
+    int total = 0;
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using (var cmdCount = cn.CreateCommand())
+    {
+        cmdCount.CommandText = "SELECT COUNT(*) FROM dbo.MensagensPortal";
+        var scalar = await cmdCount.ExecuteScalarAsync();
+        total = scalar == null || scalar == DBNull.Value ? 0 : Convert.ToInt32(scalar);
+    }
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT Id,FromUsuario,FromNome,FromNivel,ClientId,Assunto,Texto,CreatedAt,Status
+FROM dbo.MensagensPortal
+ORDER BY CreatedAt DESC, Id DESC
+OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
+        cmd.Parameters.Add(new SqlParameter("@Offset", SqlDbType.Int) { Value = offset });
+        cmd.Parameters.Add(new SqlParameter("@PageSize", SqlDbType.Int) { Value = pageSize });
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            items.Add(new
+            {
+                Id = r.GetInt32(0),
+                FromUsuario = r.IsDBNull(1) ? null : r.GetString(1),
+                FromNome = r.IsDBNull(2) ? null : r.GetString(2),
+                FromNivel = r.IsDBNull(3) ? null : r.GetString(3),
+                ClientId = r.IsDBNull(4) ? (int?)null : r.GetInt32(4),
+                Assunto = r.IsDBNull(5) ? null : r.GetString(5),
+                Texto = r.IsDBNull(6) ? null : r.GetString(6),
+                CreatedAt = r.GetDateTime(7),
+                Status = r.IsDBNull(8) ? null : r.GetString(8)
+            });
+        }
+    }
+    return Results.Ok(new { total, items });
+}).RequireAuthorization("AdminsOnly");
 
 app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
 {

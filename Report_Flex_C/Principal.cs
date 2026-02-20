@@ -223,6 +223,10 @@ namespace WindowsFormsApp1
             {
                 txtContador.Text = "4";
             }
+            else if (NivelAcesso == "Cliente")
+            {
+                txtContador.Text = "5";
+            }
         }
 
         private void txtContador_TextChanged(object sender, EventArgs e)
@@ -314,6 +318,23 @@ namespace WindowsFormsApp1
                     btnSobre.Enabled = true;
                     // Leitor somente consulta, sem populacao (pode ter edição)
                     btnPopulacao.Enabled = false; 
+                    btnBanco.Enabled = false;
+                    btnLogoff.Enabled = true;
+                    btnLogoff1.Enabled = true;
+                }
+                else if (txtContador.Text == "5") // Cliente
+                {
+                    lblStatus.Text = Logado;
+                    lblNivel.Text = "Cliente";
+                    lblConexao.Font = new Font("Tahoma", 10F, FontStyle.Bold);
+                    lblConexao.ForeColor = Color.ForestGreen;
+                    lblConexao.Text = "Conectado";
+                    FecharControles();
+                    btnConsultar.Enabled = true;
+                    btnConsultar1.Enabled = true;
+                    btnContent.Enabled = true;
+                    btnSobre.Enabled = true;
+                    btnPopulacao.Enabled = false;
                     btnBanco.Enabled = false;
                     btnLogoff.Enabled = true;
                     btnLogoff1.Enabled = true;
