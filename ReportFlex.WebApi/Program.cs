@@ -160,10 +160,22 @@ string GetConn(string name)
             ?? builder.Configuration.GetConnectionString(name)
             ?? "";
     }
+    
+    // Tentar obter primeiro do realOverrides em memória
     if (realOverrides.TryGetValue(name, out var ov) && !string.IsNullOrWhiteSpace(ov))
     {
         return ov;
     }
+    
+    // Se não tiver em memória, tentar carregar do .env (em caso de reinicialização/recarregamento)
+    var envData = LoadEnv();
+    string envKey = name == "CMS" ? "DB_CMS_CONN" : name == "Logins" ? "DB_LOGINS_CONN" : null;
+    if (!string.IsNullOrEmpty(envKey) && envData.TryGetValue(envKey, out var envVal) && !string.IsNullOrWhiteSpace(envVal))
+    {
+        return envVal;
+    }
+    
+    // Fallback para configuration
     return builder.Configuration.GetConnectionString(name)
         ?? builder.Configuration.GetConnectionString(name + "Demo")
         ?? "";
@@ -291,8 +303,25 @@ app.MapPost("/api/admin/db-mode", async (HttpContext ctx) =>
 
 app.MapGet("/api/admin/connections", () =>
 {
-    var cms = realOverrides.TryGetValue("CMS", out var c) ? c : builder.Configuration.GetConnectionString("CMS") ?? null;
-    var logins = realOverrides.TryGetValue("Logins", out var l) ? l : builder.Configuration.GetConnectionString("Logins") ?? null;
+    // Recarregar do arquivo .env para garantir valores salvos
+    var currentEnv = LoadEnv();
+    var cms = realOverrides.TryGetValue("CMS", out var c) ? c : null;
+    var logins = realOverrides.TryGetValue("Logins", out var l) ? l : null;
+    
+    // Se não estiver em realOverrides, tentar carregar do .env ou config
+    if (string.IsNullOrWhiteSpace(cms))
+    {
+        cms = currentEnv.TryGetValue("DB_CMS_CONN", out var envCms) && !string.IsNullOrWhiteSpace(envCms) 
+            ? envCms 
+            : builder.Configuration.GetConnectionString("CMS");
+    }
+    if (string.IsNullOrWhiteSpace(logins))
+    {
+        logins = currentEnv.TryGetValue("DB_LOGINS_CONN", out var envLogins) && !string.IsNullOrWhiteSpace(envLogins) 
+            ? envLogins 
+            : builder.Configuration.GetConnectionString("Logins");
+    }
+    
     return Results.Ok(new { CMS = cms, Logins = logins, mode = dbMode });
 }).RequireAuthorization("NotCliente");
 

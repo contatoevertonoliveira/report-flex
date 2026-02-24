@@ -55,6 +55,19 @@ export function SettingsPage(){
       setMode(r.mode || next)
       setMsg(`Modo alterado para ${r.mode || next}`)
       setDbInfoErr(null)
+      
+      // Se mudando para Real, carregar a connection string salva
+      if (next === 'Real') {
+        try {
+          const c = await api.getConnections()
+          if (c?.CMS) {
+            setRealPath(c.CMS)
+          }
+        } catch {
+          // Ignorar erro ao carregar conexões
+        }
+      }
+      
       try{
         const info = await api.getDbInfo()
         setDbInfo(info)
