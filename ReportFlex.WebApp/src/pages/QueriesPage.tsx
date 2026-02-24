@@ -3,7 +3,7 @@ import { api } from '../api'
 
 type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes'
 type Mode = 'prontas' | 'personalizadas'
-type Dataset = 'access-agg' | 'transit' | 'employees' | 'external' | 'card-by-cpf' | 'matricula-info' | 'empresa-info' | 'cracha-info' | 'visitors'
+type Dataset = 'access-agg' | 'transit' | 'employees' | 'external' | 'card-by-cpf' | 'matricula-info' | 'empresa-info' | 'cracha-info' | 'visitors' | 'db-table'
 
 const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'access-agg': [
@@ -74,7 +74,8 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Email', label: 'Email' },
     { key: 'Entrada', label: 'Entrada' },
     { key: 'Saida', label: 'Saída' }
-  ]
+  ],
+  'db-table': []
 }
 
 export function QueriesPage(){
@@ -99,6 +100,13 @@ export function QueriesPage(){
   const [crachaObter, setCrachaObter] = useState<'info'|'todos'|'catracas'>('info')
   const [nivelObter, setNivelObter] = useState<'todos'|'acessos'>('todos')
   const [visitantesObter, setVisitantesObter] = useState<'documento'|'empresa'>('documento')
+  const [dbInfo, setDbInfo] = useState<any>(null)
+  const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
+  const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'>('CMS')
+  const [dbTableName, setDbTableName] = useState('')
+
+  const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
+  const canUseDbTables = level !== 'Cliente'
 
   const canExport = useMemo(() => {
     if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period')) {
@@ -141,6 +149,16 @@ export function QueriesPage(){
     }
     return batch
   }
+
+  React.useEffect(() => {
+    if (mode === 'personalizadas' && dataset === 'db-table' && canUseDbTables && !dbInfo && !dbInfoErr){
+      api.getDbInfo().then(info => {
+        setDbInfo(info)
+      }).catch(() => {
+        setDbInfoErr('Não foi possível carregar informações das tabelas dos bancos.')
+      })
+    }
+  }, [mode, dataset, canUseDbTables, dbInfo, dbInfoErr])
 
   async function runQuick(){
     setError(null); setLoading(true)
@@ -297,6 +315,25 @@ export function QueriesPage(){
           return Array.isArray(items) ? items : []
         })
         setData(collected)
+      }else if (dataset === 'db-table'){
+        if (!canUseDbTables){
+          setError('Apenas usuários internos podem consultar tabelas completas.')
+          setLoading(false)
+          return
+        }
+        if (!dbTableName){
+          setError('Selecione a base e a tabela para consultar.')
+          setLoading(false)
+          return
+        }
+        const res = await api.dbTableRows({ db: dbTableDb, table: dbTableName, page: 1, pageSize: maxPreview })
+        const items = (res as any)?.items ?? res ?? []
+        const list = Array.isArray(items) ? items : []
+        setData(list)
+        if (list[0]){
+          const cols = Object.keys(list[0])
+          setSelectedCols(cols)
+        }
       }
     }catch{
       setError('Falha na consulta')
@@ -378,15 +415,25 @@ export function QueriesPage(){
     })
   }
 
+  const datasetColumns = useMemo(() => {
+    if (dataset === 'db-table'){
+      if (Array.isArray(data) && data[0]){
+        return Object.keys(data[0]).map(k => ({ key: k, label: k }))
+      }
+      return []
+    }
+    return DATASET_COLUMNS[dataset]
+  }, [dataset, data])
+
   const visibleColumns = useMemo(()=>{
     if (mode === 'personalizadas'){
-      const defs = DATASET_COLUMNS[dataset]
+      const defs = datasetColumns
       return defs.filter(d => selectedCols.includes(d.key))
     }
     // modo prontas: usa todas colunas retornadas
     if (Array.isArray(data) && data[0]) return Object.keys(data[0]).map(k=>({ key:k, label:k }))
     return []
-  }, [mode, dataset, selectedCols, data])
+  }, [mode, dataset, selectedCols, data, datasetColumns])
   const quickColumns = useMemo(()=>{
     const d = mapQuickToDataset(quickKind)
     return DATASET_COLUMNS[d]
@@ -395,13 +442,13 @@ export function QueriesPage(){
 
   const searchColumnsList = useMemo(()=>{
     if (mode === 'prontas') return quickColumns
-    return DATASET_COLUMNS[dataset]
-  }, [mode, quickColumns, dataset])
+    return datasetColumns
+  }, [mode, quickColumns, datasetColumns])
 
   const filteredData = useMemo(()=>{
     const term = (searchTerm || '').toLowerCase().trim()
     if (!term) return data
-    const cols = searchColumn === '*' ? (mode === 'personalizadas' ? DATASET_COLUMNS[dataset].map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
+    const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
     return data.filter(row => {
       for (const c of cols){
         const v = row?.[c]
@@ -412,7 +459,7 @@ export function QueriesPage(){
       }
       return false
     })
-  }, [data, searchTerm, searchColumn, mode, dataset, quickColumns])
+  }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
 
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
@@ -716,6 +763,7 @@ export function QueriesPage(){
               <option value="employees">Funcionários</option>
               <option value="external">Externos</option>
               <option value="access-agg">Acessos Agregados</option>
+              {canUseDbTables && <option value="db-table">Tabela do Banco (todas as colunas)</option>}
             </select>
             {(dataset === 'transit') && (
               <>
@@ -749,11 +797,31 @@ export function QueriesPage(){
                 </div>
               </>
             )}
+            {dataset === 'db-table' && canUseDbTables && (
+              <>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
+                  <select className="form-select" value={dbTableDb} onChange={e=> { setDbTableDb(e.target.value as any); setDbTableName(''); setData([]) }}>
+                    <option value="CMS">CMS</option>
+                    <option value="Logins">Logins</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-table" /></span>
+                  <select className="form-select" value={dbTableName} onChange={e=> { setDbTableName(e.target.value); setData([]) }}>
+                    <option value="">Selecione a tabela</option>
+                    {((dbInfo && dbInfo.databases && dbInfo.databases[dbTableDb]?.tables) || []).map((t:string)=>(
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
           </div>
           <div className="queries-row" style={{marginBottom:8}}>
             <select className="form-select" style={{width:220}} value={searchColumn} onChange={e=> setSearchColumn(e.target.value)}>
               <option value="*">Todas as colunas</option>
-              {DATASET_COLUMNS[dataset].map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+              {datasetColumns.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
             </select>
             <div className="input-group">
               <span className="input-group-text"><i className="bi bi-search" /></span>
@@ -782,7 +850,7 @@ export function QueriesPage(){
           </div>
           <div className="queries-cols-row" style={{marginBottom:12}}>
             <div className="queries-cols-list">
-              {DATASET_COLUMNS[dataset].map(col => {
+              {datasetColumns.map(col => {
                 const active = selectedCols.includes(col.key)
                 return (
                   <button
