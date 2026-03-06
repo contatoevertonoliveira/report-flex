@@ -31,6 +31,14 @@ export function LoginPage() {
           localStorage.removeItem('rf_client_name')
         }
         localStorage.setItem('rf_last_activity', Date.now().toString())
+        try{
+          const u = localStorage.getItem('rf_sql_user') || ''
+          const p = localStorage.getItem('rf_sql_pwd') || ''
+          if (u && p){
+            await api.setSqlAuth({ user: u, pwd: p })
+            await api.setSqlAuthRuntime({ user: u, pwd: p })
+          }
+        }catch{}
         toast('success', 'Login realizado com sucesso')
         navigate('/consultas')
       } else {

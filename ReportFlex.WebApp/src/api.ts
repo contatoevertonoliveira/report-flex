@@ -107,10 +107,14 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit/aggregated?' + qs, { headers: headers() }))
   },
+  reportsDoorCritical: async (p: { start: string, end: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
+  },
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
   },
-  dbTableRows: async (p: { db: 'CMS'|'Logins', table: string, page?: number, pageSize?: number }) => {
+  dbTableRows: async (p: { db: 'CMS'|'Logins'|'EMS', table: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/admin/db-table/rows?' + qs, { headers: headers() }))
   },
@@ -133,8 +137,16 @@ export const api = {
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),
   getConnections: async () => withAuth(apiFetch('/api/admin/connections', { headers: headers() })),
-  setConnections: async (p: { CMS?: string, Logins?: string }) => withAuth(apiFetch('/api/admin/connections', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setConnections: async (p: { CMS?: string, Logins?: string, EMS?: string }) => withAuth(apiFetch('/api/admin/connections', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setConnectionsRuntime: async (p: { CMS?: string, Logins?: string, EMS?: string }) => withAuth(apiFetch('/api/admin/connections/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setSqlAuthRuntime: async (p: { user: string, pwd: string }) => withAuth(apiFetch('/api/admin/sql-auth/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setSqlAuth: async (p: { user: string, pwd: string }) => withAuth(apiFetch('/api/admin/sql-auth', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+
   getDbInfo: async () => withAuth(apiFetch('/api/admin/db-info', { headers: headers() })),
+  getSqlLogins: async () => withAuth(apiFetch('/api/admin/sql/logins', { headers: headers() })),
+  testSqlAuth: async () => withAuth(apiFetch('/api/admin/sql/test-auth', { headers: headers() })),
+  getSqlAuthMode: async () => withAuth(apiFetch('/api/admin/sql/auth-mode', { headers: headers() })),
+  testSqlLoginOnly: async () => withAuth(apiFetch('/api/admin/sql/test-login-only', { headers: headers() })),
   currentClientInfo: async () => withAuth(apiFetch('/api/client/current', { headers: headers() })),
   adminClientsCreate: async (p: { nome: string, endereco?: string, fone?: string, email?: string, site?: string, ativo?: number, responsavel?: string, token?: string, logoPath?: string }) =>
     withAuth(apiFetch('/api/admin/clients', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),

@@ -8,24 +8,49 @@ export function SettingsPage(){
   const [err, setErr] = useState<string | null>(null)
   const [seedCount, setSeedCount] = useState(100)
   const [realPath, setRealPath] = useState('')
+  const [emsPath, setEmsPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
   const [reportOptions, setReportOptions] = useState<{ txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }>({
     txt: false, xlsx: true, pdf: true, word: false, excel: true, csv: true
   })
   const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
+  const [useSqlAuth, setUseSqlAuth] = useState(false)
+  const [sqlUser, setSqlUser] = useState('')
+  const [sqlPwd, setSqlPwd] = useState('')
+  const [sqlLogins, setSqlLogins] = useState<string[]>([])
+  const [authStatus, setAuthStatus] = useState<any | null>(null)
+  const [authMode, setAuthMode] = useState<any | null>(null)
+  const [loginOnlyStatus, setLoginOnlyStatus] = useState<any | null>(null)
 
   useEffect(() => {
     (async () => {
       try{
         const r = await api.getDbMode()
-        if (r?.mode === 'Demo' || r?.mode === 'Real'){
-          setMode(r.mode)
-        }
+        if (r?.mode === 'Demo' || r?.mode === 'Real'){ setMode(r.mode) }
         const c = await api.getConnections()
         if (c?.CMS){
           setRealPath(c.CMS)
         }
+        if (c?.EMS){
+          setEmsPath(c.EMS)
+        }
+        if (!c?.CMS) {
+          setRealPath('Data Source=JP4REPORTDEV01;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+        }
+        if (!c?.EMS) {
+          setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+        }
+        // Aplicar automaticamente JP4REPORTDEV01 como padrão e modo Real se ainda não houver configuração persistida
+        try{
+          if (r?.mode !== 'Real' || !c?.CMS) {
+            await api.setDbMode('Real')
+            setMode('Real')
+          }
+          if (!c?.CMS) {
+            await saveRealPath()
+          }
+        }catch{}
         setDbInfoErr(null)
         try{
           const info = await api.getDbInfo()
@@ -33,6 +58,23 @@ export function SettingsPage(){
         }catch{
           setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
         }
+        try{
+          const lg = await api.getSqlLogins()
+          const list = Array.isArray(lg?.logins) ? lg.logins.map((x:any)=> x?.name).filter((x:any)=> !!x) : []
+          setSqlLogins(list)
+        }catch{}
+        try{
+          const st = await api.testSqlAuth()
+          setAuthStatus(st)
+        }catch{}
+        try{
+          const md = await api.getSqlAuthMode()
+          setAuthMode(md)
+        }catch{}
+        try{
+          const lo = await api.testSqlLoginOnly()
+          setLoginOnlyStatus(lo)
+        }catch{}
         try{
           const opts = await api.getReportOptions()
           setReportOptions({
@@ -48,6 +90,17 @@ export function SettingsPage(){
     })()
   }, [])
 
+  async function applyRecommended(){
+    setErr(null); setMsg(null); setDbInfoErr(null)
+    try{
+      setRealPath('Data Source=JP4REPORTDEV01;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+      setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=EMSEVENTS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+      await saveRealPath()
+    }catch{
+      setErr('Falha ao aplicar configuração recomendada')
+    }
+  }
+
   async function applyMode(next: 'Real'|'Demo'){
     setErr(null); setMsg(null)
     try{
@@ -62,6 +115,9 @@ export function SettingsPage(){
           const c = await api.getConnections()
           if (c?.CMS) {
             setRealPath(c.CMS)
+          }
+          if (c?.EMS) {
+            setEmsPath(c.EMS)
           }
         } catch {
           // Ignorar erro ao carregar conexões
@@ -123,18 +179,50 @@ export function SettingsPage(){
     try{
       let cms = realPath
       let logins = realPath
+      let ems = emsPath
       const hasCatalog = /Initial\s+Catalog\s*=/i.test(realPath) || /Database\s*=/i.test(realPath)
       if (!hasCatalog){
         const base = realPath.endsWith(';') ? realPath : realPath + ';'
         cms = base + 'Initial Catalog=CMS'
         logins = base + 'Initial Catalog=Logins'
+        if (!ems) ems = base + 'Initial Catalog=hwreportsview'
       }else{
         cms = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*Logins/i, '$1=CMS')
         logins = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*CMS/i, '$1=Logins')
+        if (!ems) ems = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*[^;]+/i, '$1=hwreportsview')
       }
-      const r = await api.setConnections({ CMS: cms, Logins: logins })
+      const ensureTls = (s: string) => {
+        const up = s.trim().replace(/;+\s*$/,'')
+        const hasEnc = /Encrypt\s*=\s*True/i.test(up)
+        const hasTrust = /TrustServerCertificate\s*=\s*True/i.test(up)
+        let out = up
+        if (!hasEnc) out += ';Encrypt=True'
+        if (!hasTrust) out += ';TrustServerCertificate=True'
+        return out
+      }
+      const applySqlAuth = (s: string) => {
+        let out = s.replace(/Integrated\s*Security\s*=\s*True/ig, 'Integrated Security=False')
+        out = out.replace(/Trusted_Connection\s*=\s*Yes/ig, 'Integrated Security=False')
+        out = out.replace(/;\s*User\s*ID\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*Password\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*UID\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*PWD\s*=\s*[^;]*/ig, '')
+        if (sqlUser) out += `;User ID=${sqlUser}`
+        if (sqlPwd) out += `;Password=${sqlPwd}`
+        return out
+      }
+      if (useSqlAuth && sqlUser){
+        await api.setSqlAuth({ user: sqlUser, pwd: sqlPwd })
+      }
+      cms = ensureTls(useSqlAuth ? applySqlAuth(cms) : cms)
+      logins = ensureTls(useSqlAuth ? applySqlAuth(logins) : logins)
+      ems = ensureTls(useSqlAuth ? applySqlAuth(ems) : ems)
+      const r = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems })
       if (r?.CMS){
         setRealPath(r.CMS)
+      }
+      if (r?.EMS){
+        setEmsPath(r.EMS)
       }
       setMsg('Configuração de conexão salva')
       try{
@@ -189,15 +277,72 @@ export function SettingsPage(){
             </div>
           </div>
           {mode === 'Real' && (
-            <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-              <div className="input-group" style={{minWidth:420}}>
-                <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
-                <input className="form-control" placeholder="Caminho/Connection String do SQL Server (Real)" value={realPath} onChange={e=> setRealPath(e.target.value)} />
+            <>
+              <div className="alert alert-info d-flex align-items-center" style={{gap:8}}>
+                <i className="bi bi-person-badge" />
+                <div>
+                  <div><strong>Identidade do servidor:</strong> {dbInfo?.identity || 'desconhecida'}</div>
+                  <div className="text-muted" style={{fontSize:12}}>Para Windows Authentication, este usuário deve ter permissão nas bases.</div>
+                </div>
               </div>
-              <button className="btn btn-outline-success d-flex align-items-center" onClick={saveRealPath}>
-                <i className="bi bi-save me-1" /> Salvar configuração
-              </button>
-            </div>
+              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
+                <div className="input-group" style={{minWidth:420}}>
+                  <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
+                  <input className="form-control" placeholder="Caminho/Connection String do SQL Server (Real)" value={realPath} onChange={e=> setRealPath(e.target.value)} />
+                </div>
+                <button className="btn btn-outline-success d-flex align-items-center" onClick={saveRealPath}>
+                  <i className="bi bi-save me-1" /> Salvar configuração
+                </button>
+                <button className="btn btn-outline-primary d-flex align-items-center" onClick={applyRecommended}>
+                  <i className="bi bi-plug me-1" /> Usar JP4REPORTDEV01 (Windows Auth)
+                </button>
+              </div>
+              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
+                <div className="form-check form-switch">
+                  <input className="form-check-input" type="checkbox" id="switchSqlAuth" checked={useSqlAuth} onChange={()=> setUseSqlAuth(!useSqlAuth)} />
+                  <label className="form-check-label" htmlFor="switchSqlAuth">Usar Autenticação SQL (desativa Windows Auth)</label>
+                </div>
+                {useSqlAuth && (
+                  <>
+                    <div className="input-group" style={{minWidth:220}}>
+                      <span className="input-group-text"><i className="bi bi-person" /></span>
+                      <input className="form-control" placeholder="Usuário SQL" value={sqlUser} onChange={e=> setSqlUser(e.target.value)} />
+                    </div>
+                    <div className="input-group" style={{minWidth:220}}>
+                      <span className="input-group-text"><i className="bi bi-key" /></span>
+                      <input className="form-control" type="password" placeholder="Senha SQL" value={sqlPwd} onChange={e=> setSqlPwd(e.target.value)} />
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="row mt-2">
+                <div className="col-md-6">
+                  <h6>Logins SQL do servidor</h6>
+                  <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                    {sqlLogins.slice(0,50).map(n=> <li key={n}>{n}</li>)}
+                  </ul>
+                </div>
+                <div className="col-md-6">
+                  <h6>Status de autenticação atual</h6>
+                  <div className="d-flex flex-column" style={{fontSize:12}}>
+                    <div>CMS: {authStatus?.CMS?.ok ? (`OK (${authStatus?.CMS?.user||''})`) : (`Falha: ${authStatus?.CMS?.error||''}`)}</div>
+                    <div>Logins: {authStatus?.Logins?.ok ? (`OK (${authStatus?.Logins?.user||''})`) : (`Falha: ${authStatus?.Logins?.error||''}`)}</div>
+                    <div>EMS: {authStatus?.EMS?.ok ? (`OK (${authStatus?.EMS?.user||''})`) : (`Falha: ${authStatus?.EMS?.error||''}`)}</div>
+                    <div>Modo do servidor: {authMode?.mode || 'desconhecido'}</div>
+                    <div>Teste login (master): {loginOnlyStatus?.ok ? (`OK (${loginOnlyStatus?.user||''})`) : (`Falha: ${loginOnlyStatus?.error||''}`)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
+                <div className="input-group" style={{minWidth:420}}>
+                  <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
+                  <input className="form-control" placeholder="(opcional) Connection string específica para EMSEVENTS" value={emsPath} onChange={e=> setEmsPath(e.target.value)} />
+                </div>
+                <button className="btn btn-outline-success d-flex align-items-center" onClick={saveRealPath}>
+                  <i className="bi bi-save me-1" /> Salvar configuração
+                </button>
+              </div>
+            </>
           )}
           {mode === 'Demo' && (
             <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
@@ -235,7 +380,7 @@ export function SettingsPage(){
                 <strong>Modo atual:</strong> {dbInfo.mode || mode}
               </div>
               <div className="row">
-                <div className="col-md-6">
+                <div className="col-md-4">
                   <h6>Base CMS</h6>
                   {dbInfo.databases?.CMS ? (
                     <>
@@ -251,12 +396,20 @@ export function SettingsPage(){
                           ))}
                         </ul>
                       </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.CMS.procedures || []).slice(0,20).map((p:string)=>(
+                            <li key={p}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
                     </>
                   ) : (
                     <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base CMS com as configurações atuais.</div>
                   )}
                 </div>
-                <div className="col-md-6">
+                <div className="col-md-4">
                   <h6>Base Logins</h6>
                   {dbInfo.databases?.Logins ? (
                     <>
@@ -272,9 +425,46 @@ export function SettingsPage(){
                           ))}
                         </ul>
                       </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.Logins.procedures || []).slice(0,20).map((p:string)=>(
+                            <li key={p}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
                     </>
                   ) : (
                     <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base Logins com as configurações atuais.</div>
+                  )}
+                </div>
+                <div className="col-md-4">
+                  <h6>Base EMSEVENTS</h6>
+                  {dbInfo.databases?.EMS ? (
+                    <>
+                      <div style={{wordBreak:'break-all'}}>
+                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
+                        <code style={{fontSize:12}}>{dbInfo.databases.EMS.connection}</code>
+                      </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.EMS.tables || []).slice(0,20).map((t:string)=>(
+                            <li key={t}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="mt-2">
+                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
+                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
+                          {(dbInfo.databases.EMS.procedures || []).slice(0,20).map((p:string)=>(
+                            <li key={p}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base EMSEvents com as configurações atuais.</div>
                   )}
                 </div>
               </div>

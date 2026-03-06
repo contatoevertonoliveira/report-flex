@@ -78,6 +78,20 @@ namespace WindowsFormsApp1
             (sender as Control).BackColor = Color.Yellow;
         }
 
+        private void carregaCombos()
+        {
+            cboPesquisa.Items.Clear();
+            cboPesquisa.Items.Add("Selecione...");
+            cboPesquisa.Items.Add("Cpf");
+            cboPesquisa.Items.Add("Matrícula");
+            cboPesquisa.Items.Add("Empresa");
+            cboPesquisa.Items.Add("Crachá");
+            cboPesquisa.Items.Add("Nível de Acesso");
+            cboPesquisa.Items.Add("Visitantes");
+            cboPesquisa.Items.Add("EMSEVENTS");
+            cboPesquisa.SelectedIndex = 0;
+        }
+
         private void cboPesquisa_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (cboPesquisa.SelectedIndex == 0)
@@ -2547,19 +2561,17 @@ dbo.Employee.PreferredName = @Pesquisa";
             con.Close();
         }
 
-
-        //-------------------------------------------------------------CARREGAR COMBOS
-        public void carregaCombos()
+        public void searchEmsEvents()
         {
-            cboPesquisa.Items.Add("Selecione...");
-            //cboPesquisa.Items.Add("Cpf");
-            cboPesquisa.Items.Add("Matrícula");
-            cboPesquisa.Items.Add("Empresa");
-            cboPesquisa.Items.Add("Crachá");
-            //cboPesquisa.Items.Add("Veículos");
-            cboPesquisa.Items.Add("Nível de Acesso");
-            cboPesquisa.Items.Add("Visitantes");
-            cboPesquisa.SelectedIndex = 0;
+            con = new SqlConnection(DbEnv.GetEmsConnectionString());
+            con.Open();
+            string query = "SELECT TOP 1000 * FROM EMSEVENTS";
+            SqlCommand command = new SqlCommand(query, con);
+            SqlDataAdapter adapter = new SqlDataAdapter(command);
+            DataTable Table = new DataTable();
+            adapter.Fill(Table);
+            dgvDados.DataSource = Table;
+            con.Close();
         }
 
         public void Consulta_Transito_PorPeriodo_API()
@@ -2627,6 +2639,10 @@ dbo.Employee.PreferredName = @Pesquisa";
             {
                 string valueToSearch = txtPesquisa.Text.ToString();
                 searchData5(valueToSearch);
+            }
+            else if (cboPesquisa.Text == "EMSEVENTS")
+            {
+                searchEmsEvents();
             }
             else if (cboPesquisa.Text == "Nível de Acesso")
             {

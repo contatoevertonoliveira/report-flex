@@ -1,9 +1,38 @@
 import React, { useMemo, useState } from 'react'
 import { api } from '../api'
 
-type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes'
+type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
 type Mode = 'prontas' | 'personalizadas'
-type Dataset = 'access-agg' | 'transit' | 'employees' | 'external' | 'card-by-cpf' | 'matricula-info' | 'empresa-info' | 'cracha-info' | 'visitors' | 'db-table'
+type Dataset = 'access-agg' | 'transit' | 'employees' | 'external' | 'card-by-cpf' | 'matricula' | 'empresa' | 'cracha' | 'visitors' | 'door-critical' | 'db-table'
+
+function addDaysDateOnly(s: string, days: number): string {
+  if (!s) return s
+  const [y, m, d] = s.split('-').map(n => parseInt(n, 10))
+  const dt = new Date(y, (m - 1), d)
+  dt.setDate(dt.getDate() + days)
+  const yy = dt.getFullYear()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
+function toIsoDate(s: string | undefined | null): string | null {
+  if (!s) return null
+  const t = s.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t
+  const m = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+  if (!m) return null
+  const a = parseInt(m[1], 10)
+  const b = parseInt(m[2], 10)
+  const y = parseInt(m[3], 10)
+  let day = a, mon = b
+  if (a > 12) { day = a; mon = b }       // dd/mm/yyyy
+  else if (b > 12) { day = b; mon = a }  // mm/dd/yyyy
+  else { day = a; mon = b }              // ambiguo: default dd/mm
+  const mm = String(mon).padStart(2, '0')
+  const dd = String(day).padStart(2, '0')
+  return `${y}-${mm}-${dd}`
+}
 
 const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'access-agg': [
@@ -75,6 +104,21 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Entrada', label: 'Entrada' },
     { key: 'Saida', label: 'Saída' }
   ],
+  'door-critical': [
+    { key: 'EventID', label: 'EventID' },
+    { key: 'TimeOrder', label: 'TimeOrder' },
+    { key: 'DataHora', label: 'Data/Hora' },
+    { key: 'TAG', label: 'TAG' },
+    { key: 'Acesso', label: 'Acesso' },
+    { key: 'Evento', label: 'Evento' },
+    { key: 'NomeCompleto', label: 'Nome Completo' },
+    { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
+    { key: 'Cartao', label: 'Cartão' },
+    { key: 'Tipo', label: 'Tipo' },
+    { key: 'Empresa', label: 'Empresa' },
+    { key: 'StatusAcesso', label: 'Status do Acesso' },
+    { key: 'DetalheStatusAcesso', label: 'Detalhe do Status de Acesso' }
+  ],
   'db-table': []
 }
 
@@ -83,6 +127,10 @@ export function QueriesPage(){
   const [quickKind, setQuickKind] = useState<QuickKind>('access-agg')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sqlModal, setSqlModal] = useState(false)
+  const [sqlUser, setSqlUser] = useState('')
+  const [sqlPwd, setSqlPwd] = useState('')
+  const [applyingSql, setApplyingSql] = useState(false)
   const [data, setData] = useState<any[]>([])
   const [filters, setFilters] = useState<{[k:string]: any}>({})
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
@@ -102,14 +150,14 @@ export function QueriesPage(){
   const [visitantesObter, setVisitantesObter] = useState<'documento'|'empresa'>('documento')
   const [dbInfo, setDbInfo] = useState<any>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
-  const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'>('CMS')
+  const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'|'EMS'>('CMS')
   const [dbTableName, setDbTableName] = useState('')
 
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
   const canUseDbTables = level !== 'Cliente'
 
   const canExport = useMemo(() => {
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period')) {
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) {
       return data && data.length > 0
     }
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) {
@@ -122,6 +170,7 @@ export function QueriesPage(){
 
   function mapQuickToDataset(k: QuickKind): Dataset{
     if (k === 'transit-period') return 'transit'
+    if (k === 'door-critical') return 'door-critical'
     if (k === 'employees') return 'employees'
     if (k === 'external') return 'external'
     if (k === 'card-by-cpf') return 'card-by-cpf'
@@ -169,8 +218,10 @@ export function QueriesPage(){
       }else if (quickKind === 'transit-period'){
         const { start, end, empresa, terminal } = filters as any
         if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.reportsTransit({ start, end, empresa, terminal, page, pageSize: ps })
+          const r = await api.reportsTransit({ start: sIso, end: addDaysDateOnly(eIso, 1), empresa, terminal, page, pageSize: ps })
           return r?.items ?? []
         })
         setData(collected)
@@ -204,9 +255,11 @@ export function QueriesPage(){
           setData(list)
         }else{
           if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const sIso = toIsoDate(start) || start
+          const eIso = toIsoDate(end) || end
           const onlyTurnstiles = matriculaObter === 'catracas'
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.transitByMatricula({ matricula, start, end, onlyTurnstiles, page, pageSize: ps })
+            const r = await api.transitByMatricula({ matricula, start: sIso, end: addDaysDateOnly(eIso, 1), onlyTurnstiles, page, pageSize: ps })
             return r?.items ?? []
           })
           setData(collected)
@@ -220,8 +273,10 @@ export function QueriesPage(){
           setData(list)
         }else{
           if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const sIso = toIsoDate(start) || start
+          const eIso = toIsoDate(end) || end
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.transitByEmpresa({ empresa, start, end, page, pageSize: ps })
+            const r = await api.transitByEmpresa({ empresa, start: sIso, end: addDaysDateOnly(eIso, 1), page, pageSize: ps })
             return r?.items ?? []
           })
           setData(collected)
@@ -235,9 +290,11 @@ export function QueriesPage(){
           setData(list)
         }else{
           if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+          const sIso = toIsoDate(start) || start
+          const eIso = toIsoDate(end) || end
           const onlyTurnstiles = crachaObter === 'catracas'
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.transitByCardPeriod({ card: cracha, start, end, onlyTurnstiles, page, pageSize: ps })
+            const r = await api.transitByCardPeriod({ card: cracha, start: sIso, end: addDaysDateOnly(eIso, 1), onlyTurnstiles, page, pageSize: ps })
             return r?.items ?? []
           })
           setData(collected)
@@ -246,12 +303,16 @@ export function QueriesPage(){
         const { levelId, levelName, start, end } = filters as any
         if (nivelObter === 'todos'){
           if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
-          const res = await api.reportsAccessByLevelPeriod({ start, end })
+          const sIso = toIsoDate(start) || start
+          const eIso = toIsoDate(end) || end
+          const res = await api.reportsAccessByLevelPeriod({ start: sIso, end: addDaysDateOnly(eIso, 1) })
           setData(Array.isArray(res) ? res : [])
         }else{
           if ((!levelId && !levelName) || !start || !end){ setError('Informe o nível e o período'); setLoading(false); return }
+          const sIso = toIsoDate(start) || start
+          const eIso = toIsoDate(end) || end
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.transitByLevel({ levelId: levelId? Number(levelId):undefined, levelName, start, end, page, pageSize: ps })
+            const r = await api.transitByLevel({ levelId: levelId? Number(levelId):undefined, levelName, start: sIso, end: addDaysDateOnly(eIso, 1), page, pageSize: ps })
             return r?.items ?? []
           })
           setData(collected)
@@ -259,10 +320,12 @@ export function QueriesPage(){
       }else if (quickKind === 'visitantes'){
         const { documento, empresa, start, end } = filters as any
         if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
         if (visitantesObter === 'documento'){
           if (!documento){ setError('Informe o documento'); setLoading(false); return }
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.visitorsByDocument({ documento, start, end, page, pageSize: ps })
+            const r = await api.visitorsByDocument({ documento, start: sIso, end: addDaysDateOnly(eIso, 1), page, pageSize: ps })
             const items = (r as any)?.items ?? r ?? []
             return Array.isArray(items) ? items : []
           })
@@ -270,15 +333,25 @@ export function QueriesPage(){
         }else{
           if (!empresa){ setError('Informe a empresa'); setLoading(false); return }
           const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.visitorsByCompany({ empresa, start, end, page, pageSize: ps })
+            const r = await api.visitorsByCompany({ empresa, start: sIso, end: addDaysDateOnly(eIso, 1), page, pageSize: ps })
             const items = (r as any)?.items ?? r ?? []
             return Array.isArray(items) ? items : []
           })
           setData(collected)
         }
+      }else if (quickKind === 'door-critical'){
+        const { start, end } = filters as any
+        const sRaw = start || new Date().toISOString().slice(0,10)
+        const eRaw = end || sRaw
+        const sIso = toIsoDate(sRaw) || sRaw
+        const eIso = toIsoDate(eRaw) || eRaw
+        const res = await api.reportsDoorCritical({ start: sIso, end: addDaysDateOnly(eIso, 1) })
+        setData(Array.isArray(res) ? res : [])
       }
-    }catch{
-      setError('Falha na consulta')
+    }catch(e:any){
+      const msg = e?.message || 'Falha na consulta'
+      setError(msg)
+      if (/Login failed for user/i.test(msg)) setSqlModal(true)
       setData([])
     }finally{
       setLoading(false)
@@ -295,8 +368,10 @@ export function QueriesPage(){
       }else if (dataset === 'transit'){
         const { start, end, empresa, terminal } = filters as any
         if(!start || !end){ setError('Informe início e fim'); setLoading(false); return }
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.reportsTransit({ start, end, empresa, terminal, page, pageSize: ps })
+          const r = await api.reportsTransit({ start: sIso, end: addDaysDateOnly(eIso, 1), empresa, terminal, page, pageSize: ps })
           return r?.items ?? []
         })
         setData(collected)
@@ -335,8 +410,10 @@ export function QueriesPage(){
           setSelectedCols(cols)
         }
       }
-    }catch{
-      setError('Falha na consulta')
+    }catch(e:any){
+      const msg = e?.message || 'Falha na consulta'
+      setError(msg)
+      if (/Login failed for user/i.test(msg)) setSqlModal(true)
       setData([])
     }finally{
       setLoading(false)
@@ -365,11 +442,28 @@ export function QueriesPage(){
       }else if ((mode === 'prontas' && quickKind === 'transit-period') || (mode === 'personalizadas' && dataset === 'transit')){
         const { start, end, empresa, terminal } = filters as any
         if(!start || !end) return
-        const qs = new URLSearchParams(Object.entries({ start, end, empresa: empresa||'', terminal: terminal||'', format })).toString()
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
+        const qs = new URLSearchParams(Object.entries({ start: sIso, end: addDaysDateOnly(eIso, 1), empresa: empresa||'', terminal: terminal||'', format })).toString()
         const res = await fetch(`/api/reports/transit/export?${qs}`, { headers: h })
         if(!res.ok) return
         const blob = await res.blob()
         const name = `transit.${format}`
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = name
+        a.click()
+        URL.revokeObjectURL(a.href)
+      }else if (mode === 'prontas' && quickKind === 'door-critical'){
+        const { start, end } = filters as any
+        if(!start || !end) return
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
+        const qs = new URLSearchParams({ start: sIso, end: addDaysDateOnly(eIso, 1), format }).toString()
+        const res = await fetch(`/api/reports/door-critical/export?${qs}`, { headers: h })
+        if(!res.ok) return
+        const blob = await res.blob()
+        const name = `door-critical.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
         a.download = name
@@ -388,16 +482,79 @@ export function QueriesPage(){
       }else if ((mode === 'prontas' && quickKind === 'transit-period') || (mode === 'personalizadas' && dataset === 'transit')){
         const { start, end, empresa, terminal } = filters as any
         if(!start || !end){ setError('Informe início e fim'); return }
-        const qs = new URLSearchParams(Object.entries({ start, end, empresa: empresa||'', terminal: terminal||'', format:'pdf' })).toString()
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
+        const qs = new URLSearchParams(Object.entries({ start: sIso, end: addDaysDateOnly(eIso, 1), empresa: empresa||'', terminal: terminal||'', format:'pdf' })).toString()
         url = `/api/reports/transit/export?${qs}`
+      }else if (mode === 'prontas' && quickKind === 'door-critical'){
+        const { start, end } = filters as any
+        if(!start || !end){ setError('Informe início e fim'); return }
+        const sIso = toIsoDate(start) || start
+        const eIso = toIsoDate(end) || end
+        const qs = new URLSearchParams({ start: sIso, end: addDaysDateOnly(eIso, 1), format:'pdf' }).toString()
+        url = `/api/reports/door-critical/export?${qs}`
       }
       if (!url) { setError('Pré-visualização disponível apenas para Acessos e Trânsito'); return }
       const u = await api.fetchReportPdf(url)
       setPdfUrl(u)
-    }catch{
-      setError('Falha ao gerar PDF')
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao gerar PDF'
+      setError(msg)
+      if (/Login failed for user/i.test(msg)) setSqlModal(true)
     }
   }
+
+  async function applySqlAuth(){
+    if (!sqlUser || !sqlPwd) return
+    setApplyingSql(true)
+    try{
+      await api.setSqlAuth({ user: sqlUser, pwd: sqlPwd })
+      const conns = await api.getConnections() as any
+      const ensureTls = (s: string) => {
+        const up = s.trim().replace(/;+\s*$/,'')
+        const hasEnc = /Encrypt\s*=\s*True/i.test(up)
+        const hasTrust = /TrustServerCertificate\s*=\s*True/i.test(up)
+        let out = up
+        if (!hasEnc) out += ';Encrypt=True'
+        if (!hasTrust) out += ';TrustServerCertificate=True'
+        return out
+      }
+      const applySql = (s: string) => {
+        let out = s.replace(/Integrated\s*Security\s*=\s*True/ig, 'Integrated Security=False')
+        out = out.replace(/Trusted_Connection\s*=\s*Yes/ig, 'Integrated Security=False')
+        out = out.replace(/;\s*User\s*ID\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*Password\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*UID\s*=\s*[^;]*/ig, '')
+        out = out.replace(/;\s*PWD\s*=\s*[^;]*/ig, '')
+        out += `;User ID=${sqlUser};Password=${sqlPwd}`
+        return ensureTls(out)
+      }
+      const cms = conns?.CMS ? applySql(conns.CMS) : ''
+      const logins = conns?.Logins ? applySql(conns.Logins) : ''
+      const ems = conns?.EMS ? applySql(conns.EMS) : ''
+      await api.setConnectionsRuntime({ CMS: cms, Logins: logins, EMS: ems })
+      try { localStorage.setItem('rf_sql_user', sqlUser); localStorage.setItem('rf_sql_pwd', sqlPwd) } catch {}
+      setSqlModal(false)
+      setError(null)
+      if (mode === 'prontas') await runQuick(); else await runPersonalizada()
+    }catch{
+    }finally{
+      setApplyingSql(false)
+    }
+  }
+
+  React.useEffect(() => {
+    try{
+      const u = localStorage.getItem('rf_sql_user') || ''
+      const p = localStorage.getItem('rf_sql_pwd') || ''
+      if (u && p){
+        (async () => {
+          try { await api.setSqlAuth({ user: u, pwd: p }) } catch {}
+          await api.setSqlAuthRuntime({ user: u, pwd: p })
+        })()
+      }
+    }catch{}
+  }, [])
 
   function toggleSelected(colKey: string){
     setSelectedCols(prev => prev.includes(colKey) ? prev.filter(k=>k!==colKey) : [...prev, colKey])
@@ -478,6 +635,37 @@ export function QueriesPage(){
   return (
     <section className="queries">
       <h2>Consultas</h2>
+      {sqlModal && (
+        <div className="modal-backdrop show" style={{display:'block'}}></div>
+      )}
+      {sqlModal && (
+        <div className="modal show" style={{display:'block'}}>
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Autenticação SQL</h5>
+                <button type="button" className="btn-close" onClick={()=> setSqlModal(false)}></button>
+              </div>
+              <div className="modal-body">
+                <div className="input-group mb-2">
+                  <span className="input-group-text"><i className="bi bi-person" /></span>
+                  <input className="form-control" placeholder="Usuário SQL" value={sqlUser} onChange={e=> setSqlUser(e.target.value)} />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-key" /></span>
+                  <input className="form-control" type="password" placeholder="Senha SQL" value={sqlPwd} onChange={e=> setSqlPwd(e.target.value)} />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={()=> setSqlModal(false)}>Cancelar</button>
+                <button className="btn btn-primary" onClick={applySqlAuth} disabled={applyingSql}>
+                  {applyingSql ? 'Aplicando...' : 'Aplicar e reconectar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="card queries-card">
         <div className="card-header">
           <div className="d-flex align-items-center" style={{gap:8}}>
@@ -511,6 +699,7 @@ export function QueriesPage(){
             {([
               { key:'access-agg', label:'Acessos Agregados' },
               { key:'transit-period', label:'Trânsito por Período' },
+              { key:'door-critical', label:'Eventos de Porta' },
               { key:'employees', label:'Funcionários' },
               { key:'external', label:'Externos' },
               { key:'card-by-cpf', label:'Buscar Crachá por CPF' },
@@ -524,7 +713,15 @@ export function QueriesPage(){
                 key={opt.key}
                 type="button"
                 className={'queries-ready-option' + (quickKind===opt.key ? ' active' : '')}
-                onClick={()=> { setQuickKind(opt.key); setData([]); setError(null) }}
+                onClick={()=> {
+                  setQuickKind(opt.key);
+                  setData([]);
+                  setError(null);
+                  if (opt.key === 'door-critical') {
+                    const today = new Date().toISOString().slice(0,10);
+                    setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }));
+                  }
+                }}
               >
                 <span>{opt.label}</span>
                 {quickKind===opt.key && <i className="bi bi-check-circle" />}
@@ -533,7 +730,7 @@ export function QueriesPage(){
           </div>
 
           <div className="queries-row" style={{marginBottom:8}}>
-            {quickKind === 'transit-period' && (
+            {(quickKind === 'transit-period' || quickKind === 'door-critical') && (
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
@@ -543,14 +740,18 @@ export function QueriesPage(){
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
                   <input className="form-control" type="date" value={filters.end || ''} onChange={e=> setFilters({...filters, end: e.target.value})} placeholder="Fim" />
                 </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-building" /></span>
-                  <input className="form-control" placeholder="Empresa (opcional)" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
-                </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-upc-scan" /></span>
-                  <input className="form-control" placeholder="Terminal (opcional)" value={filters.terminal || ''} onChange={e=> setFilters({...filters, terminal: e.target.value})} />
-                </div>
+                {quickKind === 'transit-period' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-building" /></span>
+                      <input className="form-control" placeholder="Empresa (opcional)" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-upc-scan" /></span>
+                      <input className="form-control" placeholder="Terminal (opcional)" value={filters.terminal || ''} onChange={e=> setFilters({...filters, terminal: e.target.value})} />
+                    </div>
+                  </>
+                )}
               </>
             )}
             {(quickKind === 'employees' || quickKind === 'external') && (
@@ -804,6 +1005,7 @@ export function QueriesPage(){
                   <select className="form-select" value={dbTableDb} onChange={e=> { setDbTableDb(e.target.value as any); setDbTableName(''); setData([]) }}>
                     <option value="CMS">CMS</option>
                     <option value="Logins">Logins</option>
+                    <option value="EMS">EMSEvents</option>
                   </select>
                 </div>
                 <div className="input-group">

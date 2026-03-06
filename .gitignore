@@ -2,6 +2,9 @@ ReportFlex.WebApp/node_modules/
 ReportFlex.WebApp/dist/
 ReportFlex.WebApi/bin/
 ReportFlex.WebApi/obj/
+.vscode/
+Report_Flex_C/bin/
+Report_Flex_C/obj/
 .DS_Store
 Thumbs.db
 *.user

@@ -35,6 +35,7 @@ var jwtKey = jwtSection.GetValue<string>("Key") ?? "dev";
 var jwtIssuer = jwtSection.GetValue<string>("Issuer") ?? "app";
 var jwtAudience = jwtSection.GetValue<string>("Audience") ?? "users";
 var jwtExpires = jwtSection.GetValue<int>("ExpiresMinutes");
+if (jwtExpires <= 0) jwtExpires = 120;
 var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
 builder.Services.AddAuthentication().AddJwtBearer(opt =>
 {
@@ -102,6 +103,8 @@ var dbMode = initialEnv.TryGetValue("DB_MODE", out var m) && !string.IsNullOrWhi
     ? (string.Equals(m, "Real", StringComparison.OrdinalIgnoreCase) ? "Real" : "Demo")
     : "Demo";
 var realOverrides = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+string? sqlAuthUser = null;
+string? sqlAuthPwd = null;
 if (initialEnv.TryGetValue("DB_CMS_CONN", out var envCms) && !string.IsNullOrWhiteSpace(envCms))
 {
     realOverrides["CMS"] = envCms;
@@ -109,6 +112,14 @@ if (initialEnv.TryGetValue("DB_CMS_CONN", out var envCms) && !string.IsNullOrWhi
 if (initialEnv.TryGetValue("DB_LOGINS_CONN", out var envLogins) && !string.IsNullOrWhiteSpace(envLogins))
 {
     realOverrides["Logins"] = envLogins;
+}
+if (initialEnv.TryGetValue("DB_SQL_USER", out var su) && !string.IsNullOrWhiteSpace(su))
+{
+    sqlAuthUser = su;
+}
+if (initialEnv.TryGetValue("DB_SQL_PWD", out var sp) && !string.IsNullOrWhiteSpace(sp))
+{
+    sqlAuthPwd = sp;
 }
 
 var app = builder.Build();
@@ -152,33 +163,81 @@ static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string 
     return defaultValue;
 }
 
+// helper used by several export endpoints
+static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
+
 string GetConn(string name)
 {
+    static string NormalizeConn(string s)
+    {
+        try
+        {
+            var b = new SqlConnectionStringBuilder(s);
+            b.Encrypt = true;
+            b.TrustServerCertificate = true;
+            return b.ConnectionString;
+        }
+        catch
+        {
+            if (string.IsNullOrWhiteSpace(s)) return s;
+            var up = s.TrimEnd().TrimEnd(';');
+            var hasEncrypt = Regex.IsMatch(up, @"Encrypt\s*=\s*True", RegexOptions.IgnoreCase);
+            var hasTrust = Regex.IsMatch(up, @"TrustServerCertificate\s*=\s*True", RegexOptions.IgnoreCase);
+            if (hasEncrypt && hasTrust) return up;
+            if (!hasEncrypt) up += ";Encrypt=True";
+            if (!hasTrust) up += ";TrustServerCertificate=True";
+            return up;
+        }
+    }
+    static string ApplySqlAuth(string s, string? user, string? pwd)
+    {
+        if (string.IsNullOrWhiteSpace(user)) return s;
+        var b = new SqlConnectionStringBuilder(s);
+        b.IntegratedSecurity = false;
+        b.Remove("User ID");
+        b.Remove("UID");
+        b.Remove("Password");
+        b.Remove("PWD");
+        b["User ID"] = user!;
+        if (!string.IsNullOrWhiteSpace(pwd)) b["Password"] = pwd!;
+        return b.ConnectionString;
+    }
     if (string.Equals(dbMode, "Demo", StringComparison.OrdinalIgnoreCase))
     {
-        return builder.Configuration.GetConnectionString(name + "Demo")
+        var v = builder.Configuration.GetConnectionString(name + "Demo")
             ?? builder.Configuration.GetConnectionString(name)
             ?? "";
+        v = NormalizeConn(v);
+        v = ApplySqlAuth(v, sqlAuthUser, sqlAuthPwd);
+        return v;
     }
     
-    // Tentar obter primeiro do realOverrides em memória
     if (realOverrides.TryGetValue(name, out var ov) && !string.IsNullOrWhiteSpace(ov))
     {
+        ov = NormalizeConn(ov);
+        ov = ApplySqlAuth(ov, sqlAuthUser, sqlAuthPwd);
         return ov;
     }
     
-    // Se não tiver em memória, tentar carregar do .env (em caso de reinicialização/recarregamento)
     var envData = LoadEnv();
-    string envKey = name == "CMS" ? "DB_CMS_CONN" : name == "Logins" ? "DB_LOGINS_CONN" : null;
+    string envKey;
+    if (name == "CMS") envKey = "DB_CMS_CONN";
+    else if (name == "Logins") envKey = "DB_LOGINS_CONN";
+    else if (name == "EMS") envKey = "DB_EMS_CONN";
+    else envKey = null;
     if (!string.IsNullOrEmpty(envKey) && envData.TryGetValue(envKey, out var envVal) && !string.IsNullOrWhiteSpace(envVal))
     {
+        envVal = NormalizeConn(envVal);
+        envVal = ApplySqlAuth(envVal, sqlAuthUser, sqlAuthPwd);
         return envVal;
     }
     
-    // Fallback para configuration
-    return builder.Configuration.GetConnectionString(name)
+    var cfg = builder.Configuration.GetConnectionString(name)
         ?? builder.Configuration.GetConnectionString(name + "Demo")
         ?? "";
+    cfg = NormalizeConn(cfg);
+    cfg = ApplySqlAuth(cfg, sqlAuthUser, sqlAuthPwd);
+    return cfg;
 }
 
 try
@@ -307,6 +366,7 @@ app.MapGet("/api/admin/connections", () =>
     var currentEnv = LoadEnv();
     var cms = realOverrides.TryGetValue("CMS", out var c) ? c : null;
     var logins = realOverrides.TryGetValue("Logins", out var l) ? l : null;
+    var ems = realOverrides.TryGetValue("EMS", out var e) ? e : null;
     
     // Se não estiver em realOverrides, tentar carregar do .env ou config
     if (string.IsNullOrWhiteSpace(cms))
@@ -321,8 +381,20 @@ app.MapGet("/api/admin/connections", () =>
             ? envLogins 
             : builder.Configuration.GetConnectionString("Logins");
     }
+    if (string.IsNullOrWhiteSpace(ems))
+    {
+        ems = currentEnv.TryGetValue("DB_EMS_CONN", out var envEms) && !string.IsNullOrWhiteSpace(envEms)
+            ? envEms
+            : builder.Configuration.GetConnectionString("EMS");
+        // derive from cms if still empty
+        if (string.IsNullOrWhiteSpace(ems) && !string.IsNullOrWhiteSpace(cms))
+        {
+            // replace catalog with EMSEVENTS
+            ems = System.Text.RegularExpressions.Regex.Replace(cms, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=EMSEVENTS", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+    }
     
-    return Results.Ok(new { CMS = cms, Logins = logins, mode = dbMode });
+    return Results.Ok(new { CMS = cms, Logins = logins, EMS = ems, mode = dbMode });
 }).RequireAuthorization("NotCliente");
 
 app.MapGet("/api/admin/db-info", async () =>
@@ -331,6 +403,12 @@ app.MapGet("/api/admin/db-info", async () =>
     {
         var cmsConn = GetConn("CMS");
         var loginsConn = GetConn("Logins");
+        var emsConn = GetConn("EMS");
+        // if EMS connection isn't configured, try deriving it from CMS string
+        if (string.IsNullOrWhiteSpace(emsConn) && !string.IsNullOrWhiteSpace(cmsConn))
+        {
+            emsConn = System.Text.RegularExpressions.Regex.Replace(cmsConn, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=EMSEVENTS", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
         var result = new Dictionary<string, object?>();
 
         try
@@ -345,7 +423,17 @@ app.MapGet("/api/admin/db-info", async () =>
             {
                 tablesCms.Add(rCms.GetString(0));
             }
-            result["CMS"] = new { connection = cmsConn, tables = tablesCms };
+            var procsCms = new List<string>();
+            using (var cmdProcs = cnCms.CreateCommand())
+            {
+                cmdProcs.CommandText = "SELECT s.name + '.' + p.name FROM sys.procedures p INNER JOIN sys.schemas s ON s.schema_id = p.schema_id ORDER BY s.name, p.name";
+                using var rProcs = await cmdProcs.ExecuteReaderAsync();
+                while (await rProcs.ReadAsync())
+                {
+                    procsCms.Add(rProcs.GetString(0));
+                }
+            }
+            result["CMS"] = new { connection = cmsConn, tables = tablesCms, procedures = procsCms };
         }
         catch
         {
@@ -364,20 +452,187 @@ app.MapGet("/api/admin/db-info", async () =>
             {
                 tablesLogins.Add(rLogins.GetString(0));
             }
-            result["Logins"] = new { connection = loginsConn, tables = tablesLogins };
+            var procsLogins = new List<string>();
+            using (var cmdProcs = cnLogins.CreateCommand())
+            {
+                cmdProcs.CommandText = "SELECT s.name + '.' + p.name FROM sys.procedures p INNER JOIN sys.schemas s ON s.schema_id = p.schema_id ORDER BY s.name, p.name";
+                using var rProcs = await cmdProcs.ExecuteReaderAsync();
+                while (await rProcs.ReadAsync())
+                {
+                    procsLogins.Add(rProcs.GetString(0));
+                }
+            }
+            result["Logins"] = new { connection = loginsConn, tables = tablesLogins, procedures = procsLogins };
         }
         catch
         {
             result["Logins"] = null;
         }
 
-        return Results.Ok(new { mode = dbMode, databases = result });
+        try
+        {
+            using var cnEms = new SqlConnection(emsConn);
+            await cnEms.OpenAsync();
+            using var cmdEms = cnEms.CreateCommand();
+            cmdEms.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME";
+            using var rEms = await cmdEms.ExecuteReaderAsync();
+            var tablesEms = new List<string>();
+            while (await rEms.ReadAsync())
+            {
+                tablesEms.Add(rEms.GetString(0));
+            }
+            var procsEms = new List<string>();
+            using (var cmdProcs = cnEms.CreateCommand())
+            {
+                cmdProcs.CommandText = "SELECT s.name + '.' + p.name FROM sys.procedures p INNER JOIN sys.schemas s ON s.schema_id = p.schema_id ORDER BY s.name, p.name";
+                using var rProcs = await cmdProcs.ExecuteReaderAsync();
+                while (await rProcs.ReadAsync())
+                {
+                    procsEms.Add(rProcs.GetString(0));
+                }
+            }
+            result["EMS"] = new { connection = emsConn, tables = tablesEms, procedures = procsEms };
+        }
+        catch
+        {
+            result["EMS"] = null;
+        }
+
+        var identity = System.Security.Principal.WindowsIdentity.GetCurrent()?.Name ?? "";
+        return Results.Ok(new { mode = dbMode, identity, databases = result });
     }
     catch (Exception ex)
     {
-        return Results.Ok(new { mode = dbMode, databases = (object?)null, error = ex.Message });
+        var identity = System.Security.Principal.WindowsIdentity.GetCurrent()?.Name ?? "";
+        return Results.Ok(new { mode = dbMode, identity, databases = (object?)null, error = ex.Message });
     }
 }).RequireAuthorization("NotCliente");
+
+app.MapGet("/api/admin/sql/logins", async () =>
+{
+    try
+    {
+        var items = new List<Dictionary<string, object?>>();
+        using var cn = new SqlConnection(GetConn("CMS"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = @"
+SELECT sp.name, sp.type_desc, sp.is_disabled, sp.default_database_name,
+       sl.is_locked, sl.is_policy_checked, sp.create_date
+FROM sys.server_principals sp
+LEFT JOIN sys.sql_logins sl ON sl.principal_id = sp.principal_id
+WHERE sp.type IN ('S','U','G')
+ORDER BY sp.name";
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            row["name"] = r.IsDBNull(0) ? null : r.GetString(0);
+            row["type"] = r.IsDBNull(1) ? null : r.GetString(1);
+            row["disabled"] = r.IsDBNull(2) ? null : r.GetBoolean(2);
+            row["default_db"] = r.IsDBNull(3) ? null : r.GetString(3);
+            row["locked"] = r.IsDBNull(4) ? (bool?)null : r.GetBoolean(4);
+            row["policy_checked"] = r.IsDBNull(5) ? (bool?)null : r.GetBoolean(5);
+            row["created_at"] = r.IsDBNull(6) ? null : r.GetDateTime(6);
+            items.Add(row);
+        }
+        return Results.Ok(new { logins = items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/sql/auth-mode", async () =>
+{
+    try
+    {
+        using var cn = new SqlConnection(GetConn("CMS"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS INT)";
+        var v = await cmd.ExecuteScalarAsync();
+        var windowsOnly = (v is int i && i == 1);
+        return Results.Ok(new { windowsOnly, mode = windowsOnly ? "WindowsOnly" : "Mixed" });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/sql/test-login-only", async () =>
+{
+    try
+    {
+        var cmsConn = GetConn("CMS");
+        var b = new SqlConnectionStringBuilder(cmsConn);
+        var dataSource = b.DataSource;
+        if (string.IsNullOrWhiteSpace(dataSource))
+        {
+            return Results.BadRequest(new { error = "Data Source não encontrado na conexão CMS." });
+        }
+        var testBuilder = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            InitialCatalog = "master",
+            Encrypt = true,
+            TrustServerCertificate = true,
+            IntegratedSecurity = false
+        };
+        if (!string.IsNullOrWhiteSpace(sqlAuthUser)) testBuilder["User ID"] = sqlAuthUser!;
+        if (!string.IsNullOrWhiteSpace(sqlAuthPwd)) testBuilder["Password"] = sqlAuthPwd!;
+        try
+        {
+            using var cn = new SqlConnection(testBuilder.ConnectionString);
+            await cn.OpenAsync();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "SELECT SYSTEM_USER, DB_NAME()";
+            using var r = await cmd.ExecuteReaderAsync();
+            string user = "", db = "";
+            if (await r.ReadAsync())
+            {
+                user = r.IsDBNull(0) ? "" : r.GetString(0);
+                db = r.IsDBNull(1) ? "" : r.GetString(1);
+            }
+            return Results.Ok(new { ok = true, user, db, connection = testBuilder.ConnectionString });
+        }
+        catch (Exception ex)
+        {
+            return Results.Ok(new { ok = false, error = ex.Message, connection = testBuilder.ConnectionString });
+        }
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/sql/test-auth", async () =>
+{
+    var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+    async Task<object> Test(string key)
+    {
+        try
+        {
+            using var cn = new SqlConnection(GetConn(key));
+            await cn.OpenAsync();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "SELECT SYSTEM_USER";
+            var user = (string?)await cmd.ExecuteScalarAsync();
+            return new { ok = true, user };
+        }
+        catch (Exception ex)
+        {
+            return new { ok = false, error = ex.Message };
+        }
+    }
+    result["CMS"] = await Test("CMS");
+    result["Logins"] = await Test("Logins");
+    result["EMS"] = await Test("EMS");
+    return Results.Ok(result);
+}).RequireAuthorization();
 
 app.MapGet("/api/admin/db-table/rows", async (string db, string table, int page, int pageSize) =>
 {
@@ -389,10 +644,11 @@ app.MapGet("/api/admin/db-table/rows", async (string db, string table, int page,
     string? dbKey = null;
     if (string.Equals(db, "CMS", StringComparison.OrdinalIgnoreCase)) dbKey = "CMS";
     else if (string.Equals(db, "Logins", StringComparison.OrdinalIgnoreCase)) dbKey = "Logins";
+    else if (string.Equals(db, "EMS", StringComparison.OrdinalIgnoreCase) || string.Equals(db, "EMSEVENTS", StringComparison.OrdinalIgnoreCase)) dbKey = "EMS";
 
     if (dbKey == null)
     {
-        return Results.BadRequest(new { error = "Banco inválido. Use CMS ou Logins." });
+        return Results.BadRequest(new { error = "Banco inválido. Use CMS, Logins ou EMS." });
     }
 
     page = ToPage(page);
@@ -452,13 +708,49 @@ app.MapPost("/api/admin/connections", async (HttpContext ctx) =>
         realOverrides["Logins"] = logins;
         changed["DB_LOGINS_CONN"] = logins;
     }
+    if (dto.TryGetValue("EMS", out var ems) && !string.IsNullOrWhiteSpace(ems))
+    {
+        realOverrides["EMS"] = ems;
+        changed["DB_EMS_CONN"] = ems;
+    }
     if (changed.Count > 0)
     {
         SaveEnv(changed);
     }
-    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins") });
+    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS") });
 }).RequireAuthorization("NotCliente");
 
+app.MapPost("/api/admin/connections/runtime", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string,string>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    if (dto.TryGetValue("CMS", out var cms) && !string.IsNullOrWhiteSpace(cms)) realOverrides["CMS"] = cms;
+    if (dto.TryGetValue("Logins", out var logins) && !string.IsNullOrWhiteSpace(logins)) realOverrides["Logins"] = logins;
+    if (dto.TryGetValue("EMS", out var ems) && !string.IsNullOrWhiteSpace(ems)) realOverrides["EMS"] = ems;
+    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS") });
+}).RequireAuthorization("NotCliente");
+
+app.MapPost("/api/admin/sql-auth/runtime", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string,string>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    dto.TryGetValue("user", out sqlAuthUser);
+    dto.TryGetValue("pwd", out sqlAuthPwd);
+    return Results.Ok(new { user = sqlAuthUser, applied = !string.IsNullOrWhiteSpace(sqlAuthUser) });
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/sql-auth", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string,string>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    dto.TryGetValue("user", out sqlAuthUser);
+    dto.TryGetValue("pwd", out sqlAuthPwd);
+    var changes = new Dictionary<string,string>();
+    if (!string.IsNullOrWhiteSpace(sqlAuthUser)) changes["DB_SQL_USER"] = sqlAuthUser!;
+    if (!string.IsNullOrWhiteSpace(sqlAuthPwd)) changes["DB_SQL_PWD"] = sqlAuthPwd!;
+    if (changes.Count > 0) SaveEnv(changes);
+    return Results.Ok(new { user = sqlAuthUser, persisted = changes.Count > 0 });
+}).RequireAuthorization();
 // Disponibiliza o seed sempre, com checagem de segurança interna
 {
     app.MapPost("/api/dev/seed", async (int? count, string? scope) =>
@@ -1253,6 +1545,263 @@ ORDER BY u.UF2, t.TERMINAL";
     }
     return Results.Ok(items);
 }).RequireAuthorization();
+
+// ----------------------------------------------------------------
+// new report: door critical events generated by jp4_sp_DoorCritical
+// returns the same columns produced by the stored procedure
+app.MapGet("/api/reports/door-critical", async (DateTime start, DateTime end) =>
+{
+    try
+    {
+        using var cn = new SqlConnection(GetConn("EMS"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        // call the proc; it already contains the complicated union logic
+        cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
+        cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = start.ToString("yyyy-MM-ddTHH:mm:ss") });
+        cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = end.ToString("yyyy-MM-ddTHH:mm:ss") });
+        try
+        {
+            using var r = await cmd.ExecuteReaderAsync();
+            var items = new List<object>();
+            while (await r.ReadAsync())
+            {
+                items.Add(new
+                {
+                    EventID = r.GetInt32(0),
+                    TimeOrder = r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                    DataHora = r.IsDBNull(2) ? null : r.GetString(2),
+                    TAG = r.IsDBNull(3) ? null : r.GetString(3),
+                    Acesso = r.IsDBNull(4) ? null : r.GetString(4),
+                    Evento = r.IsDBNull(5) ? null : r.GetString(5),
+                    NomeCompleto = r.IsDBNull(6) ? null : r.GetString(6),
+                    DocumentoMatricula = r.IsDBNull(7) ? null : r.GetString(7),
+                    Cartao = r.IsDBNull(8) ? null : r.GetString(8),
+                    Tipo = r.IsDBNull(9) ? null : r.GetString(9),
+                    Empresa = r.IsDBNull(10) ? null : r.GetString(10),
+                    StatusAcesso = r.IsDBNull(11) ? null : r.GetString(11),
+                    DetalheStatusAcesso = r.IsDBNull(12) ? null : r.GetString(12)
+                });
+            }
+            return Results.Ok(new { success = true, count = items.Count, data = items });
+        }
+        catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+        {
+            using var cn2 = new SqlConnection(GetConn("CMS"));
+            await cn2.OpenAsync();
+            using var cmd2 = cn2.CreateCommand();
+            cmd2.CommandText = @"
+SELECT
+    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+    t.TRANSIT_DATE AS TimeOrder,
+    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
+    ISNULL(c.CardNumber,'') AS TAG,
+    ISNULL(v.DESCRIPTION,'') AS Acesso,
+    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
+    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
+    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
+    ISNULL(c.CardNumber,'') AS Cartao,
+    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
+    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
+    CAST(NULL AS varchar(50)) AS StatusAcesso,
+    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
+FROM HA_TRANSIT t
+LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+";
+            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+            using var r2 = await cmd2.ExecuteReaderAsync();
+            var items = new List<object>();
+            while (await r2.ReadAsync())
+            {
+                items.Add(new
+                {
+                    EventID = r2.GetInt32(0),
+                    TimeOrder = r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
+                    DataHora = r2.IsDBNull(2) ? null : r2.GetString(2),
+                    TAG = r2.IsDBNull(3) ? null : r2.GetString(3),
+                    Acesso = r2.IsDBNull(4) ? null : r2.GetString(4),
+                    Evento = r2.IsDBNull(5) ? null : r2.GetString(5),
+                    NomeCompleto = r2.IsDBNull(6) ? null : r2.GetString(6),
+                    DocumentoMatricula = r2.IsDBNull(7) ? null : r2.GetString(7),
+                    Cartao = r2.IsDBNull(8) ? null : r2.GetString(8),
+                    Tipo = r2.IsDBNull(9) ? null : r2.GetString(9),
+                    Empresa = r2.IsDBNull(10) ? null : r2.GetString(10),
+                    StatusAcesso = r2.IsDBNull(11) ? null : r2.GetString(11),
+                    DetalheStatusAcesso = r2.IsDBNull(12) ? null : r2.GetString(12)
+                });
+            }
+            return Results.Ok(new { success = true, count = items.Count, data = items });
+        }
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message, innerError = ex.InnerException?.Message });
+    }
+});
+
+app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, DateTime start, DateTime end, string format) =>
+{
+    // exports same data in csv/xlsx/pdf just like the other report endpoints
+    using var cn = new SqlConnection(GetConn("EMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
+    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = start.ToString("yyyy-MM-ddTHH:mm:ss") });
+    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = end.ToString("yyyy-MM-ddTHH:mm:ss") });
+
+    List<(int EventID, DateTime? TimeOrder, string DataHora, string TAG, string Acesso, string Evento, string NomeCompleto, string DocumentoMatricula, string Cartao, string Tipo, string Empresa, string StatusAcesso, string DetalheStatusAcesso)> rows;
+    try
+    {
+        using var r = await cmd.ExecuteReaderAsync();
+        rows = new List<(int, DateTime?, string, string, string, string, string, string, string, string, string, string, string)>();
+        while (await r.ReadAsync())
+        {
+            rows.Add((
+                r.GetInt32(0),
+                r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetString(6),
+                r.IsDBNull(7) ? null : r.GetString(7),
+                r.IsDBNull(8) ? null : r.GetString(8),
+                r.IsDBNull(9) ? null : r.GetString(9),
+                r.IsDBNull(10) ? null : r.GetString(10),
+                r.IsDBNull(11) ? null : r.GetString(11),
+                r.IsDBNull(12) ? null : r.GetString(12)
+            ));
+        }
+    }
+    catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+    {
+        using var cn2 = new SqlConnection(GetConn("CMS"));
+        await cn2.OpenAsync();
+        using var cmd2 = cn2.CreateCommand();
+        cmd2.CommandText = @"
+SELECT
+    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+    t.TRANSIT_DATE AS TimeOrder,
+    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
+    ISNULL(c.CardNumber,'') AS TAG,
+    ISNULL(v.DESCRIPTION,'') AS Acesso,
+    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
+    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
+    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
+    ISNULL(c.CardNumber,'') AS Cartao,
+    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
+    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
+    CAST(NULL AS varchar(50)) AS StatusAcesso,
+    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
+FROM HA_TRANSIT t
+LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+";
+        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+        using var r2 = await cmd2.ExecuteReaderAsync();
+        rows = new List<(int, DateTime?, string, string, string, string, string, string, string, string, string, string, string)>();
+        while (await r2.ReadAsync())
+        {
+            rows.Add((
+                r2.GetInt32(0),
+                r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
+                r2.IsDBNull(2) ? null : r2.GetString(2),
+                r2.IsDBNull(3) ? null : r2.GetString(3),
+                r2.IsDBNull(4) ? null : r2.GetString(4),
+                r2.IsDBNull(5) ? null : r2.GetString(5),
+                r2.IsDBNull(6) ? null : r2.GetString(6),
+                r2.IsDBNull(7) ? null : r2.GetString(7),
+                r2.IsDBNull(8) ? null : r2.GetString(8),
+                r2.IsDBNull(9) ? null : r2.GetString(9),
+                r2.IsDBNull(10) ? null : r2.GetString(10),
+                r2.IsDBNull(11) ? null : r2.GetString(11),
+                r2.IsDBNull(12) ? null : r2.GetString(12)
+            ));
+        }
+    }
+    // reuse export logic from existing endpoints
+    if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+        foreach (var x in rows)
+        {
+            sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora)},{Escape(x.TAG)},{Escape(x.Acesso)},{Escape(x.Evento)},{Escape(x.NomeCompleto)},{Escape(x.DocumentoMatricula)},{Escape(x.Cartao)},{Escape(x.Tipo)},{Escape(x.Empresa)},{Escape(x.StatusAcesso)},{Escape(x.DetalheStatusAcesso)}");
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-critical.csv");
+    }
+    if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorCritical" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
+            void AddRow(params string[] cells)
+            {
+                var row = new Row();
+                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
+                sheetData.Append(row);
+            }
+            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
+            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa, x.StatusAcesso, x.DetalheStatusAcesso);
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
+    }
+    if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        // reuse PDF helper from earlier (Escape function is already defined earlier in file)
+        QuestPDF.Settings.License = LicenseType.Community;
+        var bytes = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Margin(20);
+                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Críticos").SemiBold().FontSize(18); });
+                page.Content().Table(table =>
+                {
+                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
+                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
+                    foreach (var x in rows)
+                    {
+                        table.Cell().Text(x.EventID.ToString());
+                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
+                        table.Cell().Text(x.DataHora ?? "");
+                        table.Cell().Text(x.TAG ?? "");
+                        table.Cell().Text(x.Acesso ?? "");
+                        table.Cell().Text(x.Evento ?? "");
+                        table.Cell().Text(x.NomeCompleto ?? "");
+                        table.Cell().Text(x.DocumentoMatricula ?? "");
+                        table.Cell().Text(x.Cartao ?? "");
+                        table.Cell().Text(x.Tipo ?? "");
+                        table.Cell().Text(x.Empresa ?? "");
+                        table.Cell().Text(x.StatusAcesso ?? "");
+                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
+                    }
+                });
+            });
+        }).GeneratePdf();
+        return Results.File(bytes, "application/pdf", "door-critical.pdf");
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
 app.MapGet("/api/prestadores", async () =>
 {
     var list = new List<object>();
