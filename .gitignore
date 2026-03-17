@@ -14,3 +14,10 @@ Thumbs.db
 .env
 ReportFlex.WebApi/.env
 **/.env
+.tmp_build/
+response.json
+test_output.json
+test_*.sql
+test_*.ps1
+SQL/_mapping/
+SQL/hwreportsview/

@@ -10,9 +10,11 @@ using DocumentFormat.OpenXml.Spreadsheet;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls("http://*:5001");
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddRouting();
 builder.Services.AddEndpointsApiExplorer();
@@ -166,6 +168,23 @@ static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string 
 // helper used by several export endpoints
 static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
 
+static DateTime ParseDate(string s)
+{
+    if (string.IsNullOrWhiteSpace(s)) return DateTime.MinValue;
+    string[] formats = { 
+        "yyyy-MM-dd'T'HH:mm:ss", 
+        "yyyy-MM-dd'T'HH:mm:ss.fffffffK", 
+        "yyyy-MM-dd'T'HH:mm:ss.fffK", 
+        "yyyy-MM-dd", 
+        "yyyy/MM/dd HH:mm:ss",
+        "yyyy-MM-dd HH:mm:ss",
+        "o" 
+    };
+    if (DateTime.TryParseExact(s, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
+        return dt;
+    return DateTime.Parse(s, CultureInfo.InvariantCulture);
+}
+
 string GetConn(string name)
 {
     static string NormalizeConn(string s)
@@ -189,9 +208,18 @@ string GetConn(string name)
             return up;
         }
     }
+    string? sqlUser = sqlAuthUser;
+    string? sqlPwd = sqlAuthPwd;
+    if (string.IsNullOrWhiteSpace(sqlUser))
+    {
+        var env = LoadEnv();
+        sqlUser = env.GetValueOrDefault("DB_SQL_USER");
+        sqlPwd = env.GetValueOrDefault("DB_SQL_PWD");
+    }
+
     static string ApplySqlAuth(string s, string? user, string? pwd)
     {
-        if (string.IsNullOrWhiteSpace(user)) return s;
+        if (string.IsNullOrWhiteSpace(user) || s.Contains("Integrated Security=True", StringComparison.OrdinalIgnoreCase)) return s;
         var b = new SqlConnectionStringBuilder(s);
         b.IntegratedSecurity = false;
         b.Remove("User ID");
@@ -208,14 +236,64 @@ string GetConn(string name)
             ?? builder.Configuration.GetConnectionString(name)
             ?? "";
         v = NormalizeConn(v);
-        v = ApplySqlAuth(v, sqlAuthUser, sqlAuthPwd);
+        v = ApplySqlAuth(v, sqlUser, sqlPwd);
         return v;
     }
     
     if (realOverrides.TryGetValue(name, out var ov) && !string.IsNullOrWhiteSpace(ov))
     {
         ov = NormalizeConn(ov);
-        ov = ApplySqlAuth(ov, sqlAuthUser, sqlAuthPwd);
+        try
+        {
+            var bOv = new SqlConnectionStringBuilder(ov);
+            if (string.IsNullOrWhiteSpace(bOv.DataSource))
+            {
+                var candidates = new[]
+                {
+                    builder.Configuration.GetConnectionString(name),
+                    builder.Configuration.GetConnectionString("CMS"),
+                    builder.Configuration.GetConnectionString("Logins"),
+                    builder.Configuration.GetConnectionString("EMS")
+                };
+                SqlConnectionStringBuilder? baseBuilder = null;
+                foreach (var c in candidates)
+                {
+                    if (string.IsNullOrWhiteSpace(c)) continue;
+                    try
+                    {
+                        var bBase = new SqlConnectionStringBuilder(c);
+                        if (!string.IsNullOrWhiteSpace(bBase.DataSource))
+                        {
+                            baseBuilder = bBase;
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                if (baseBuilder != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(bOv.InitialCatalog))
+                        baseBuilder.InitialCatalog = bOv.InitialCatalog;
+                    baseBuilder.Encrypt = bOv.Encrypt;
+                    baseBuilder.TrustServerCertificate = bOv.TrustServerCertificate;
+                    ov = baseBuilder.ConnectionString;
+                }
+                else
+                {
+                    ov = bOv.ConnectionString;
+                }
+            }
+            else
+            {
+                ov = bOv.ConnectionString;
+            }
+        }
+        catch
+        {
+        }
+        ov = ApplySqlAuth(ov, sqlUser, sqlPwd);
         return ov;
     }
     
@@ -224,19 +302,92 @@ string GetConn(string name)
     if (name == "CMS") envKey = "DB_CMS_CONN";
     else if (name == "Logins") envKey = "DB_LOGINS_CONN";
     else if (name == "EMS") envKey = "DB_EMS_CONN";
+    else if (name == "EMSEVENTS") envKey = "DB_EMSEVENTS_CONN";
     else envKey = null;
     if (!string.IsNullOrEmpty(envKey) && envData.TryGetValue(envKey, out var envVal) && !string.IsNullOrWhiteSpace(envVal))
     {
         envVal = NormalizeConn(envVal);
-        envVal = ApplySqlAuth(envVal, sqlAuthUser, sqlAuthPwd);
+        try
+        {
+            var bEnv = new SqlConnectionStringBuilder(envVal);
+            if (string.IsNullOrWhiteSpace(bEnv.DataSource))
+            {
+                var candidates = new[]
+                {
+                    builder.Configuration.GetConnectionString(name),
+                    builder.Configuration.GetConnectionString("CMS"),
+                    builder.Configuration.GetConnectionString("Logins"),
+                    builder.Configuration.GetConnectionString("EMS"),
+                    envData.GetValueOrDefault("DB_CMS_CONN"),
+                    envData.GetValueOrDefault("DB_LOGINS_CONN"),
+                    envData.GetValueOrDefault("DB_EMS_CONN")
+                };
+                SqlConnectionStringBuilder? baseBuilder = null;
+                foreach (var c in candidates)
+                {
+                    if (string.IsNullOrWhiteSpace(c)) continue;
+                    try
+                    {
+                        var bBase = new SqlConnectionStringBuilder(c);
+                        if (!string.IsNullOrWhiteSpace(bBase.DataSource))
+                        {
+                            baseBuilder = bBase;
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                if (baseBuilder != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(bEnv.InitialCatalog))
+                        baseBuilder.InitialCatalog = bEnv.InitialCatalog;
+                    baseBuilder.Encrypt = bEnv.Encrypt;
+                    baseBuilder.TrustServerCertificate = bEnv.TrustServerCertificate;
+                    envVal = baseBuilder.ConnectionString;
+                }
+                else
+                {
+                    envVal = bEnv.ConnectionString;
+                }
+            }
+            else
+            {
+                envVal = bEnv.ConnectionString;
+            }
+        }
+        catch
+        {
+        }
+        envVal = ApplySqlAuth(envVal, sqlUser, sqlPwd);
         return envVal;
+    }
+
+    if (name == "EMSEVENTS")
+    {
+        try
+        {
+            var baseConn = envData.GetValueOrDefault("DB_CMS_CONN") ?? builder.Configuration.GetConnectionString("CMS") ?? "";
+            if (!string.IsNullOrWhiteSpace(baseConn))
+            {
+                var b = new SqlConnectionStringBuilder(baseConn);
+                b.InitialCatalog = "EMSEVENTS";
+                var derived = NormalizeConn(b.ConnectionString);
+                derived = ApplySqlAuth(derived, sqlUser, sqlPwd);
+                return derived;
+            }
+        }
+        catch
+        {
+        }
     }
     
     var cfg = builder.Configuration.GetConnectionString(name)
         ?? builder.Configuration.GetConnectionString(name + "Demo")
         ?? "";
     cfg = NormalizeConn(cfg);
-    cfg = ApplySqlAuth(cfg, sqlAuthUser, sqlAuthPwd);
+    cfg = ApplySqlAuth(cfg, sqlUser, sqlPwd);
     return cfg;
 }
 
@@ -1065,6 +1216,7 @@ INSERT INTO Card(SbiID,CardNumber) VALUES(@id,@card)";
 
 app.MapGet("/api/login/check", async (string token) =>
 {
+    token = (token ?? "").Trim();
     string? nome = null, usuario = null, nivel = "Leitor";
     try
     {
@@ -1516,14 +1668,16 @@ ORDER BY b.BEHAVIOR_ID";
     return Results.BadRequest(new { error = "Formato inválido" });
     static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
 }).RequireAuthorization();
-app.MapGet("/api/reports/transit/aggregated", async (DateTime start, DateTime end, string? empresa) =>
+app.MapGet("/api/reports/transit/aggregated", async (string start, string end, string? empresa) =>
 {
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     var where = "WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
-    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
-    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
     if (!string.IsNullOrWhiteSpace(empresa))
     {
         where += " AND u.UF2 = @empresa";
@@ -1549,17 +1703,19 @@ ORDER BY u.UF2, t.TERMINAL";
 // ----------------------------------------------------------------
 // new report: door critical events generated by jp4_sp_DoorCritical
 // returns the same columns produced by the stored procedure
-app.MapGet("/api/reports/door-critical", async (DateTime start, DateTime end) =>
+app.MapGet("/api/reports/door-critical", async (string start, string end) =>
 {
     try
     {
+        var startDt = ParseDate(start);
+        var endDt = ParseDate(end);
         using var cn = new SqlConnection(GetConn("EMS"));
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         // call the proc; it already contains the complicated union logic
         cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
-        cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = start.ToString("yyyy-MM-ddTHH:mm:ss") });
-        cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = end.ToString("yyyy-MM-ddTHH:mm:ss") });
+        cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+        cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
         try
         {
             using var r = await cmd.ExecuteReaderAsync();
@@ -1614,8 +1770,8 @@ LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 ";
-            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
-            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
             using var r2 = await cmd2.ExecuteReaderAsync();
             var items = new List<object>();
             while (await r2.ReadAsync())
@@ -1646,15 +1802,17 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     }
 });
 
-app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, DateTime start, DateTime end, string format) =>
+app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string start, string end, string format) =>
 {
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
     // exports same data in csv/xlsx/pdf just like the other report endpoints
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
-    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = start.ToString("yyyy-MM-ddTHH:mm:ss") });
-    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = end.ToString("yyyy-MM-ddTHH:mm:ss") });
+    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
 
     List<(int EventID, DateTime? TimeOrder, string DataHora, string TAG, string Acesso, string Evento, string NomeCompleto, string DocumentoMatricula, string Cartao, string Tipo, string Empresa, string StatusAcesso, string DetalheStatusAcesso)> rows;
     try
@@ -2291,16 +2449,18 @@ INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/transit", async (DateTime start, DateTime end, string? empresa, string? terminal, int page, int pageSize) =>
+app.MapGet("/api/reports/transit", async (string start, string end, string? empresa, string? terminal, int page, int pageSize) =>
 {
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
     page = ToPage(page); pageSize = ToPageSize(pageSize);
     var offset = (page - 1) * pageSize;
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     var where = "WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
-    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
-    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
     if (!string.IsNullOrWhiteSpace(terminal))
     {
         where += " AND t.TERMINAL = @terminal";
@@ -2346,14 +2506,16 @@ LEFT JOIN EmployeeUserFields u ON u.SbiID = e.SbiID
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/transit/export", async (HttpContext ctx, DateTime start, DateTime end, string? empresa, string? terminal, string format) =>
+app.MapGet("/api/reports/transit/export", async (HttpContext ctx, string start, string end, string? empresa, string? terminal, string format) =>
 {
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     var where = "WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
-    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
-    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
     if (!string.IsNullOrWhiteSpace(terminal))
     {
         where += " AND t.TERMINAL = @terminal";
@@ -2593,6 +2755,919 @@ WHERE x.PreferredName = @cpf";
         });
     }
     return Results.Ok(list);
+}).RequireAuthorization();
+
+static string DigitsOnly(string? s)
+{
+    if (string.IsNullOrWhiteSpace(s)) return "";
+    var sb = new StringBuilder(s.Length);
+    foreach (var ch in s)
+    {
+        if (ch >= '0' && ch <= '9') sb.Append(ch);
+    }
+    return sb.ToString();
+}
+
+static DateTime ParseDateTimeAny(string? s)
+{
+    if (string.IsNullOrWhiteSpace(s)) throw new ArgumentException("Data/hora inválida");
+    var t = s.Trim();
+    var br = CultureInfo.GetCultureInfo("pt-BR");
+    var isoFormats = new[]
+    {
+        "yyyy-MM-dd",
+        "yyyy-MM-ddTHH:mm",
+        "yyyy-MM-ddTHH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ss.fff",
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd HH:mm:ss",
+        "o"
+    };
+    if (DateTime.TryParseExact(t, isoFormats, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var dtIso))
+        return dtIso;
+    var brFormats = new[]
+    {
+        "dd/MM/yyyy",
+        "dd/MM/yyyy HH:mm",
+        "dd/MM/yyyy HH:mm:ss"
+    };
+    if (DateTime.TryParseExact(t, brFormats, br, DateTimeStyles.AllowWhiteSpaces, out var dtBr))
+        return dtBr;
+    if (DateTime.TryParse(t, br, DateTimeStyles.AllowWhiteSpaces, out var dtBrLoose))
+        return dtBrLoose;
+    if (DateTime.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out var dtInvLoose))
+        return dtInvLoose;
+    throw new ArgumentException("Data/hora inválida");
+}
+
+static string SafeConnSummary(string connString)
+{
+    try
+    {
+        var b = new SqlConnectionStringBuilder(connString);
+        var auth = b.IntegratedSecurity ? "Integrated" : "Sql";
+        return $"Data Source={b.DataSource};Initial Catalog={b.InitialCatalog};Auth={auth}";
+    }
+    catch
+    {
+        return "ConnectionString inválida";
+    }
+}
+
+app.MapGet("/api/access/info/by-document", async (string documento) =>
+{
+    var docRaw = (documento ?? "").Trim();
+    var docDigits = DigitsOnly(docRaw);
+    var connStr = GetConn("CMS");
+    using var cn = new SqlConnection(connStr);
+    try
+    {
+        await cn.OpenAsync();
+    }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no SQL Server", detail: "Não foi possível autenticar no banco de dados (CMS). Verifique usuário/senha e o modo de autenticação do SQL Server. " + SafeConnSummary(connStr), statusCode: 500);
+    }
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.CommandText = @"
+WITH Persons AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        uf.UF21 AS Tipo,
+        c.CardNumber AS CardNumber,
+        e.CommencementDateTime AS Cadastro,
+        e.ExpiryDateTime AS Expira
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        uf.UF21 AS Tipo,
+        c.CardNumber AS CardNumber,
+        x.CommencementDateTime AS Cadastro,
+        x.ExpiryDateTime AS Expira
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT DISTINCT
+    SbiID,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    Tipo,
+    CardNumber,
+    Cadastro,
+    Expira
+FROM Persons
+ORDER BY Name, CardNumber;";
+    cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+    cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<object>();
+    while (await r.ReadAsync())
+    {
+        list.Add(new
+        {
+            SbiID = r.GetInt32(0),
+            Name = r.IsDBNull(1) ? null : r.GetString(1),
+            CPF = r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula = r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
+            Tipo = r.IsDBNull(5) ? null : r.GetValue(5).ToString(),
+            CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+        });
+    }
+    return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/access/by-document", async (string documento, string start, string end, string? mode, int page, int pageSize) =>
+{
+    var docRaw = (documento ?? "").Trim();
+    var docDigits = DigitsOnly(docRaw);
+    var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
+    if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
+
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use Exportar CSV para gerar o relatório completo sem estourar timeout.", statusCode: 422);
+    }
+
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+
+    var startTicks = startDt.Ticks;
+    var endTicks = endDt.Ticks;
+
+    var connStr = GetConn("CMS");
+    using var cn = new SqlConnection(connStr);
+    try
+    {
+        await cn.OpenAsync();
+    }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no SQL Server", detail: "Não foi possível autenticar no banco de dados (CMS). Verifique usuário/senha e o modo de autenticação do SQL Server. " + SafeConnSummary(connStr), statusCode: 500);
+    }
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 600;
+    cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+    cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+    cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
+    cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
+    cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+
+    cmd.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT COUNT(1) AS Total
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+
+    SqlDataReader r;
+    try
+    {
+        r = await cmd.ExecuteReaderAsync();
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Reduza o período, aplique filtros, ou use Exportar CSV para gerar o relatório completo.", statusCode: 504);
+    }
+    using var _r = r;
+    var items = new List<object>();
+    while (await _r.ReadAsync())
+    {
+        items.Add(new
+        {
+            Codigo = _r.GetInt32(0),
+            Name = _r.IsDBNull(1) ? null : _r.GetString(1),
+            CPF = _r.IsDBNull(2) ? null : _r.GetString(2),
+            Matricula = _r.IsDBNull(3) ? null : _r.GetString(3),
+            Empresa = _r.IsDBNull(4) ? null : _r.GetString(4),
+            Cartao = _r.IsDBNull(5) ? null : _r.GetString(5),
+            Direcao = _r.IsDBNull(6) ? null : _r.GetString(6),
+            Tipo = _r.IsDBNull(7) ? null : _r.GetString(7),
+            Terminal = _r.IsDBNull(8) ? null : _r.GetString(8),
+            TerminalDescription = _r.IsDBNull(9) ? null : _r.GetString(9),
+            Transito = _r.GetDateTime(10)
+        });
+    }
+    int total = 0;
+    if (await _r.NextResultAsync() && await _r.ReadAsync()) total = _r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/access/by-document/all", async (string documento, string? mode, int page, int pageSize) =>
+{
+    var docRaw = (documento ?? "").Trim();
+    var docDigits = DigitsOnly(docRaw);
+    var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
+    if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
+
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+
+    var connStr = GetConn("CMS");
+    using var cn = new SqlConnection(connStr);
+    try { await cn.OpenAsync(); }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no SQL Server", detail: "Não foi possível autenticar no banco de dados (CMS). Verifique usuário/senha e o modo de autenticação do SQL Server. " + SafeConnSummary(connStr), statusCode: 500);
+    }
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 600;
+    cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+    cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+    cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    cmd.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT COUNT(1) AS Total
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+    SqlDataReader r;
+    try
+    {
+        r = await cmd.ExecuteReaderAsync();
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use um período menor, ou gere o relatório completo via Exportar CSV.", statusCode: 504);
+    }
+    using var _r = r;
+    var items = new List<object>();
+    while (await _r.ReadAsync())
+    {
+        items.Add(new
+        {
+            Codigo = _r.GetInt32(0),
+            Name = _r.IsDBNull(1) ? null : _r.GetString(1),
+            CPF = _r.IsDBNull(2) ? null : _r.GetString(2),
+            Matricula = _r.IsDBNull(3) ? null : _r.GetString(3),
+            Empresa = _r.IsDBNull(4) ? null : _r.GetString(4),
+            Cartao = _r.IsDBNull(5) ? null : _r.GetString(5),
+            Direcao = _r.IsDBNull(6) ? null : _r.GetString(6),
+            Tipo = _r.IsDBNull(7) ? null : _r.GetString(7),
+            Terminal = _r.IsDBNull(8) ? null : _r.GetString(8),
+            TerminalDescription = _r.IsDBNull(9) ? null : _r.GetString(9),
+            Transito = _r.GetDateTime(10)
+        });
+    }
+    int total = 0;
+    if (await _r.NextResultAsync() && await _r.ReadAsync()) total = _r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/access/by-document/export", async (HttpContext http, string documento, string start, string end, string? mode) =>
+{
+    var docRaw = (documento ?? "").Trim();
+    var docDigits = DigitsOnly(docRaw);
+    var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
+    if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
+
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+
+    var connStr = GetConn("CMS");
+    string fileName = $"acessos-{docDigits}.csv";
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    return Results.Stream(async (stream) =>
+    {
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
+        await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
+
+        using var cn = new SqlConnection(connStr);
+        try { await cn.OpenAsync(http.RequestAborted); }
+        catch (SqlException ex) when (ex.Number == 18456)
+        {
+            await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
+            await writer.FlushAsync();
+            return;
+        }
+
+        var chunkEnd = endDt;
+        while (chunkEnd > startDt)
+        {
+            var chunkStart = chunkEnd.AddDays(-30);
+            if (chunkStart < startDt) chunkStart = startDt;
+
+            using var cmd = cn.CreateCommand();
+            cmd.CommandTimeout = 600;
+            cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+            cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+            cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
+            cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
+            cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+            cmd.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC;
+";
+            SqlDataReader r;
+            try
+            {
+                r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+            }
+            catch (SqlException ex) when (ex.Number == -2)
+            {
+                await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                await writer.FlushAsync();
+                return;
+            }
+            using var _r = r;
+            while (await _r.ReadAsync(http.RequestAborted))
+            {
+                var line =
+                    _r.GetInt32(0) + "," +
+                    Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
+                    Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
+                    Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
+                    Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
+                    Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
+                    Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
+                    Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
+                    Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
+                    Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
+                    _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
+                await writer.WriteLineAsync(line);
+            }
+            await writer.FlushAsync();
+
+            chunkEnd = chunkStart;
+        }
+    }, "text/csv", fileName);
+}).RequireAuthorization();
+
+app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string documento, string? mode) =>
+{
+    var docRaw = (documento ?? "").Trim();
+    var docDigits = DigitsOnly(docRaw);
+    var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
+    if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
+
+    var connStr = GetConn("CMS");
+    string fileName = $"acessos-{docDigits}-all.csv";
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    return Results.Stream(async (stream) =>
+    {
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
+        await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
+
+        using var cn = new SqlConnection(connStr);
+        try { await cn.OpenAsync(http.RequestAborted); }
+        catch (SqlException ex) when (ex.Number == 18456)
+        {
+            await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
+            await writer.FlushAsync();
+            return;
+        }
+
+        long minTicks = 0;
+        long maxTicks = 0;
+        {
+            using var cmdRange = cn.CreateCommand();
+            cmdRange.CommandTimeout = 600;
+            cmdRange.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+            cmdRange.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+            cmdRange.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+            cmdRange.CommandText = @"
+WITH People AS (
+    SELECT c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT MIN(ev.[Time]) AS MinTicks, MAX(ev.[Time]) AS MaxTicks
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+            using var rr = await cmdRange.ExecuteReaderAsync(http.RequestAborted);
+            if (await rr.ReadAsync(http.RequestAborted))
+            {
+                if (!rr.IsDBNull(0)) minTicks = rr.GetInt64(0);
+                if (!rr.IsDBNull(1)) maxTicks = rr.GetInt64(1);
+            }
+        }
+
+        if (minTicks <= 0 || maxTicks <= 0 || maxTicks <= minTicks)
+        {
+            await writer.FlushAsync();
+            return;
+        }
+
+        var startDt = new DateTime(minTicks);
+        var endDt = new DateTime(maxTicks).AddSeconds(1);
+        var chunkEnd = endDt;
+        while (chunkEnd > startDt)
+        {
+            var chunkStart = chunkEnd.AddDays(-30);
+            if (chunkStart < startDt) chunkStart = startDt;
+
+            using var cmd = cn.CreateCommand();
+            cmd.CommandTimeout = 600;
+            cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+            cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+            cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
+            cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
+            cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+            cmd.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC;
+";
+            SqlDataReader r;
+            try
+            {
+                r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+            }
+            catch (SqlException ex) when (ex.Number == -2)
+            {
+                await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                await writer.FlushAsync();
+                return;
+            }
+            using var _r = r;
+            while (await _r.ReadAsync(http.RequestAborted))
+            {
+                var line =
+                    _r.GetInt32(0) + "," +
+                    Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
+                    Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
+                    Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
+                    Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
+                    Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
+                    Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
+                    Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
+                    Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
+                    Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
+                    _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
+                await writer.WriteLineAsync(line);
+            }
+            await writer.FlushAsync();
+
+            chunkEnd = chunkStart;
+        }
+    }, "text/csv", fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/person/by-card-info", async (string card) =>

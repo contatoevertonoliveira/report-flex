@@ -6,11 +6,21 @@ const API_BASE = (() => {
   }catch{}
   try{
     const origin = window.location.origin || ''
-    if (origin.includes('localhost:5000') || origin.includes('127.0.0.1:5000')) return ''
+    if (origin.includes('localhost:5001') || origin.includes('127.0.0.1:5001')) return ''
   }catch{}
-  return 'http://localhost:5000'
+  return 'http://localhost:5001'
 })()
-export function setToken(t: string){ authToken = t; localStorage.setItem('rf_token', t) }
+function clearSessionCaches(){
+  try{
+    sessionStorage.removeItem('rf_queries_cache_v1')
+  }catch{}
+}
+
+export function setToken(t: string){
+  authToken = t
+  localStorage.setItem('rf_token', t)
+  clearSessionCaches()
+}
 function headers(){ const h: Record<string,string> = {}; if(authToken) h['Authorization'] = `Bearer ${authToken}`; const cid = localStorage.getItem('rf_client_id'); if (cid) h['X-Client-Id'] = cid; return h }
 
 async function apiFetch(path: string, init?: RequestInit){
@@ -41,6 +51,15 @@ export const api = {
   prestadores: async () => withAuth(apiFetch('/api/prestadores', { headers: headers() })),
   transitByCard: async (card: string) => withAuth(apiFetch('/api/cms/transit/by-card?card=' + encodeURIComponent(card), { headers: headers() })),
   cardByCpf: async (cpf: string) => withAuth(apiFetch('/api/cms/card/by-cpf?cpf=' + encodeURIComponent(cpf), { headers: headers() })),
+  accessInfoByDocument: async (documento: string) => withAuth(apiFetch('/api/access/info/by-document?documento=' + encodeURIComponent(documento), { headers: headers() })),
+  accessByDocument: async (p: { documento: string, start: string, end: string, mode?: 'all'|'catracas'|'faciais', page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/access/by-document?' + qs, { headers: headers() }))
+  },
+  accessByDocumentAll: async (p: { documento: string, mode?: 'all'|'catracas'|'faciais', page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/access/by-document/all?' + qs, { headers: headers() }))
+  },
   personByCardInfo: async (card: string) => withAuth(apiFetch('/api/cms/person/by-card-info?card=' + encodeURIComponent(card), { headers: headers() })),
   personByMatriculaInfo: async (matricula: string) => withAuth(apiFetch('/api/cms/person/by-matricula-info?matricula=' + encodeURIComponent(matricula), { headers: headers() })),
   transitByMatricula: async (p: { matricula: string, start: string, end: string, onlyTurnstiles?: boolean, page?: number, pageSize?: number }) => {
@@ -182,6 +201,7 @@ export function logout(){
   localStorage.removeItem('rf_client_id')
   localStorage.removeItem('rf_client_name')
   localStorage.removeItem('rf_level')
+  clearSessionCaches()
 }
 
 async function withAuth(p: Promise<Response>){

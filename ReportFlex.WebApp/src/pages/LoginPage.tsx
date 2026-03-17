@@ -56,7 +56,7 @@ export function LoginPage() {
     <section className="login-layout">
       <div className="login-card">
         <div className="login-brand">
-          <img alt="Logo" src="http://localhost:5000/images-legacy/Logo_Principal_Fundo2.png" style={{maxWidth:'180px'}} />
+          <img alt="Logo" src="http://localhost:5001/images-legacy/Logo_Principal_Fundo2.png" style={{maxWidth:'180px'}} />
         </div>
         <form className="login-actions" onSubmit={e=>{ e.preventDefault(); handleLogin() }}>
           <input
