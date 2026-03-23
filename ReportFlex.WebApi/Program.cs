@@ -473,6 +473,42 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
     });
 }).RequireAuthorization("NotCliente");
 
+app.MapGet("/api/admin/report-default-client", async () =>
+{
+    var env = LoadEnv();
+    int cid = 0;
+    if (env.TryGetValue("REPORT_DEFAULT_CLIENT_ID", out var v) && int.TryParse(v, out var parsed) && parsed > 0) cid = parsed;
+    if (cid <= 0) return Results.Ok(new { id = (int?)null, nome = (string?)null });
+    try
+    {
+        using var cn = new SqlConnection(GetConn("Logins"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT NOME FROM dbo.ClientesPortal WHERE Id=@id";
+        cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
+        var nome = (string?)(await cmd.ExecuteScalarAsync());
+        return Results.Ok(new { id = cid, nome });
+    }
+    catch
+    {
+        return Results.Ok(new { id = cid, nome = (string?)null });
+    }
+}).RequireAuthorization("NotCliente");
+
+app.MapPost("/api/admin/report-default-client", async (HttpContext ctx) =>
+{
+    int cid = 0;
+    try
+    {
+        var body = await ctx.Request.ReadFromJsonAsync<Dictionary<string, int>>();
+        if (body != null && body.TryGetValue("clientId", out var id)) cid = id;
+    }
+    catch { }
+    if (cid <= 0) return Results.BadRequest(new { error = "clientId inválido" });
+    SaveEnv(new Dictionary<string, string> { ["REPORT_DEFAULT_CLIENT_ID"] = cid.ToString() });
+    return Results.Ok(new { ok = true, id = cid });
+}).RequireAuthorization("NotCliente");
+
 static string ToOrderDir(string? dir) => string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
 static int ToPage(int page) => page <= 0 ? 1 : page;
 static int ToPageSize(int pageSize) => (pageSize <= 0 || pageSize > 200) ? 20 : pageSize;
@@ -2814,6 +2850,206 @@ static string SafeConnSummary(string connString)
     }
 }
 
+async Task<(string Name, byte[]? Logo)> GetReportClientInfoAsync(HttpContext http)
+{
+    int cid = 0;
+    try
+    {
+        var env = LoadEnv();
+        if (env.TryGetValue("REPORT_DEFAULT_CLIENT_ID", out var v) && int.TryParse(v, out var parsed) && parsed > 0) cid = parsed;
+    }
+    catch { }
+
+    if (cid <= 0)
+    {
+        var clientIdHeader = http.Request.Headers.TryGetValue("X-Client-Id", out var vals) ? vals.ToString() : null;
+        if (!int.TryParse(clientIdHeader, out cid) || cid <= 0)
+        {
+            var claim = http.User?.FindFirst("clientId");
+            if (claim != null) int.TryParse(claim.Value, out cid);
+        }
+    }
+
+    if (cid <= 0) return ("Cliente", null);
+
+    try
+    {
+        using var cn = new SqlConnection(GetConn("Logins"));
+        await cn.OpenAsync(http.RequestAborted);
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT NOME,CAMINHOIMG FROM dbo.ClientesPortal WHERE Id=@id";
+        cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
+        using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+        if (!await r.ReadAsync(http.RequestAborted)) return ("Cliente", null);
+        var nome = r.IsDBNull(0) ? null : r.GetString(0);
+        var logoPath = r.IsDBNull(1) ? null : r.GetString(1);
+        byte[]? logo = null;
+        if (!string.IsNullOrWhiteSpace(logoPath) && !logoPath.Contains("://", StringComparison.Ordinal))
+        {
+            var full = logoPath.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", logoPath.TrimStart('/')) : logoPath;
+            if (System.IO.File.Exists(full))
+            {
+                try { logo = await System.IO.File.ReadAllBytesAsync(full, http.RequestAborted); } catch { }
+            }
+        }
+        var nm = string.IsNullOrWhiteSpace(nome) ? "Cliente" : nome.Trim();
+        return (nm, logo);
+    }
+    catch
+    {
+        return ("Cliente", null);
+    }
+}
+
+static string GetReportUser(HttpContext http)
+{
+    var u = http.User?.FindFirst("usuario")?.Value;
+    if (!string.IsNullOrWhiteSpace(u)) return u;
+    var n = http.User?.Identity?.Name;
+    if (!string.IsNullOrWhiteSpace(n)) return n;
+    return "Sistema";
+}
+
+byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, string modo, DateTime? start, DateTime? end, IReadOnlyList<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)> rows, string generatedBy)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var title = "Relatório de Acessos";
+    var sub = $"Documento: {documento} • Tipo: {modo}";
+    if (start != null && end != null) sub += $" • Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}";
+    var accent = "#0b3d2e";
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    byte[]? leftLogo = null;
+    byte[]? rightLogo = clientLogo;
+    try
+    {
+        var env = LoadEnv();
+        if (env.TryGetValue("REPORT_LOGO_LEFT", out var lp) && !string.IsNullOrWhiteSpace(lp))
+        {
+            var full = lp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", lp.TrimStart('/')) : lp;
+            if (System.IO.File.Exists(full)) leftLogo = System.IO.File.ReadAllBytes(full);
+        }
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        container.Page(page =>
+        {
+            page.Size(new QuestPDF.Helpers.PageSize(1190.88f, 841.68f));
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Header().PaddingBottom(8).Column(col =>
+            {
+                col.Item().Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().Element(e =>
+                    {
+                        if (leftLogo != null) e.Height(34).Image(leftLogo, ImageScaling.FitHeight);
+                        else e.Text("JumperFour").FontSize(18).SemiBold().FontColor(accent);
+                    });
+                    row.RelativeItem().AlignRight().Element(e =>
+                    {
+                        if (rightLogo != null) e.Height(34).Image(rightLogo, ImageScaling.FitHeight);
+                        else e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827");
+                    });
+                });
+                col.Item().PaddingTop(2).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().Text(title).SemiBold().FontSize(12);
+                    row.RelativeItem().AlignRight().Text(clientName).SemiBold().FontSize(10);
+                });
+                col.Item().Text(sub).FontSize(9).FontColor("#374151");
+                col.Item().PaddingTop(6).LineHorizontal(1);
+            });
+
+            page.Content().PaddingTop(8).Table(table =>
+            {
+                table.ColumnsDefinition(c =>
+                {
+                    c.RelativeColumn(1.2f);
+                    c.RelativeColumn(1.7f);
+                    c.RelativeColumn(2.6f);
+                    c.RelativeColumn(0.9f);
+                    c.RelativeColumn(2.0f);
+                    c.RelativeColumn(1.2f);
+                    c.RelativeColumn(1.0f);
+                    c.RelativeColumn(1.1f);
+                    c.RelativeColumn(1.8f);
+                    c.RelativeColumn(0.9f);
+                });
+
+                IContainer HeaderCell(IContainer x) => x
+                    .Background(headerBg)
+                    .Border(0.5f).BorderColor(border)
+                    .PaddingVertical(4).PaddingHorizontal(6)
+                    .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                IContainer Cell(IContainer x, bool alt) => x
+                    .Background(alt ? rowAlt : "#ffffff")
+                    .Border(0.5f).BorderColor(border)
+                    .PaddingVertical(3).PaddingHorizontal(6);
+
+                table.Header(h =>
+                {
+                    h.Cell().Element(HeaderCell).Text("DATA E HORA");
+                    h.Cell().Element(HeaderCell).Text("TAG");
+                    h.Cell().Element(HeaderCell).Text("ACESSO");
+                    h.Cell().Element(HeaderCell).Text("EVENTO");
+                    h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
+                    h.Cell().Element(HeaderCell).Text("DOC / MATRÍCULA");
+                    h.Cell().Element(HeaderCell).Text("CARTÃO");
+                    h.Cell().Element(HeaderCell).Text("TIPO");
+                    h.Cell().Element(HeaderCell).Text("EMPRESA");
+                    h.Cell().Element(HeaderCell).Text("STATUS");
+                });
+
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    var r = rows[i];
+                    var alt = i % 2 == 1;
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Transito.ToString("dd/MM/yyyy HH:mm:ss"));
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Terminal ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Descricao ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Direcao ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text($"{(r.CPF ?? "")}{(string.IsNullOrWhiteSpace(r.Matricula) ? "" : " / " + r.Matricula)}");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Cartao ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text("Liberado");
+                }
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().LineHorizontal(1);
+                col.Item().PaddingTop(4).Text($"Gerado por {generatedBy} em {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(8).FontColor("#6b7280");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+
+                    row.RelativeItem().AlignCenter().Text("Relatório - JumperFour").FontSize(9).FontColor("#374151");
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
 app.MapGet("/api/access/info/by-document", async (string documento) =>
 {
     var docRaw = (documento ?? "").Trim();
@@ -2837,7 +3073,7 @@ WITH Persons AS (
         e.Name + ' ' + e.Surname AS Name,
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
         uf.UF21 AS Tipo,
         c.CardNumber AS CardNumber,
         e.CommencementDateTime AS Cadastro,
@@ -2856,7 +3092,7 @@ WITH Persons AS (
         x.Name + ' ' + x.Surname AS Name,
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
         uf.UF21 AS Tipo,
         c.CardNumber AS CardNumber,
         x.CommencementDateTime AS Cadastro,
@@ -3280,7 +3516,7 @@ WHERE
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/access/by-document/export", async (HttpContext http, string documento, string start, string end, string? mode) =>
+app.MapGet("/api/access/by-document/export", async (HttpContext http, string documento, string start, string end, string? mode, string format = "csv") =>
 {
     var docRaw = (documento ?? "").Trim();
     var docDigits = DigitsOnly(docRaw);
@@ -3292,7 +3528,10 @@ app.MapGet("/api/access/by-document/export", async (HttpContext http, string doc
     if (endDt <= startDt) return Results.BadRequest("Período inválido");
 
     var connStr = GetConn("CMS");
-    string fileName = $"acessos-{docDigits}.csv";
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    string fileName = $"acessos-{docDigits}.{fmt}";
 
     static string Csv(string? s)
     {
@@ -3302,34 +3541,36 @@ app.MapGet("/api/access/by-document/export", async (HttpContext http, string doc
         return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 
-    return Results.Stream(async (stream) =>
+    if (fmt == "csv")
     {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
-        await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
-
-        using var cn = new SqlConnection(connStr);
-        try { await cn.OpenAsync(http.RequestAborted); }
-        catch (SqlException ex) when (ex.Number == 18456)
+        return Results.Stream(async (stream) =>
         {
-            await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
-            await writer.FlushAsync();
-            return;
-        }
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
+            await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
 
-        var chunkEnd = endDt;
-        while (chunkEnd > startDt)
-        {
-            var chunkStart = chunkEnd.AddDays(-30);
-            if (chunkStart < startDt) chunkStart = startDt;
+            using var cn = new SqlConnection(connStr);
+            try { await cn.OpenAsync(http.RequestAborted); }
+            catch (SqlException ex) when (ex.Number == 18456)
+            {
+                await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
+                await writer.FlushAsync();
+                return;
+            }
 
-            using var cmd = cn.CreateCommand();
-            cmd.CommandTimeout = 600;
-            cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
-            cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
-            cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
-            cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
-            cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-            cmd.CommandText = @"
+            var chunkEnd = endDt;
+            while (chunkEnd > startDt)
+            {
+                var chunkStart = chunkEnd.AddDays(-30);
+                if (chunkStart < startDt) chunkStart = startDt;
+
+                using var cmd = cn.CreateCommand();
+                cmd.CommandTimeout = 600;
+                cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+                cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+                cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
+                cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
+                cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+                cmd.CommandText = @"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -3413,42 +3654,259 @@ SELECT
 FROM EventsFiltered
 ORDER BY TimeTicks DESC;
 ";
-            SqlDataReader r;
-            try
-            {
-                r = await cmd.ExecuteReaderAsync(http.RequestAborted);
-            }
-            catch (SqlException ex) when (ex.Number == -2)
-            {
-                await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                SqlDataReader r;
+                try
+                {
+                    r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+                }
+                catch (SqlException ex) when (ex.Number == -2)
+                {
+                    await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                    await writer.FlushAsync();
+                    return;
+                }
+                using var _r = r;
+                while (await _r.ReadAsync(http.RequestAborted))
+                {
+                    var line =
+                        _r.GetInt32(0) + "," +
+                        Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
+                        Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
+                        Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
+                        Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
+                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
+                        Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
+                        Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
+                        Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
+                        Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
+                        _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
+                    await writer.WriteLineAsync(line);
+                }
                 await writer.FlushAsync();
-                return;
-            }
-            using var _r = r;
-            while (await _r.ReadAsync(http.RequestAborted))
-            {
-                var line =
-                    _r.GetInt32(0) + "," +
-                    Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
-                    Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
-                    Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
-                    Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
-                    Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
-                    Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
-                    Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
-                    Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
-                    Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
-                    _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
-                await writer.WriteLineAsync(line);
-            }
-            await writer.FlushAsync();
 
-            chunkEnd = chunkStart;
+                chunkEnd = chunkStart;
+            }
+        }, "text/csv", fileName);
+    }
+
+    var maxRows = fmt == "pdf" ? 5000 : 20000;
+    using var cnAll = new SqlConnection(connStr);
+    try { await cnAll.OpenAsync(http.RequestAborted); }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no SQL Server", detail: "Não foi possível autenticar no banco de dados (CMS).", statusCode: 500);
+    }
+
+    int total = 0;
+    {
+        using var cmdCount = cnAll.CreateCommand();
+        cmdCount.CommandTimeout = 600;
+        cmdCount.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+        cmdCount.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+        cmdCount.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startDt.Ticks });
+        cmdCount.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endDt.Ticks });
+        cmdCount.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+        cmdCount.CommandText = @"
+WITH People AS (
+    SELECT c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT COUNT(1) AS Total
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+        try
+        {
+            using var rCount = await cmdCount.ExecuteReaderAsync(http.RequestAborted);
+            if (await rCount.ReadAsync(http.RequestAborted)) total = rCount.IsDBNull(0) ? 0 : rCount.GetInt32(0);
         }
-    }, "text/csv", fileName);
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use um período menor ou exporte em CSV.", statusCode: 504);
+        }
+    }
+
+    if (total > maxRows)
+    {
+        return Results.Problem(title: "Consulta muito grande para este formato", detail: $"Total de {total} registros. Para PDF/XLSX, limite em até {maxRows} registros ou use CSV.", statusCode: 422);
+    }
+
+    var rows = new List<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)>();
+    {
+        using var cmdAll = cnAll.CreateCommand();
+        cmdAll.CommandTimeout = 600;
+        cmdAll.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+        cmdAll.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+        cmdAll.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startDt.Ticks });
+        cmdAll.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endDt.Ticks });
+        cmdAll.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+        cmdAll.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        uf.UF2 AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC;
+";
+        try
+        {
+            using var rAll = await cmdAll.ExecuteReaderAsync(http.RequestAborted);
+            while (await rAll.ReadAsync(http.RequestAborted))
+            {
+                rows.Add((
+                    rAll.GetInt32(0),
+                    rAll.IsDBNull(1) ? null : rAll.GetString(1),
+                    rAll.IsDBNull(2) ? null : rAll.GetString(2),
+                    rAll.IsDBNull(3) ? null : rAll.GetString(3),
+                    rAll.IsDBNull(4) ? null : rAll.GetString(4),
+                    rAll.IsDBNull(5) ? null : rAll.GetString(5),
+                    rAll.IsDBNull(6) ? null : rAll.GetString(6),
+                    rAll.IsDBNull(7) ? null : rAll.GetString(7),
+                    rAll.IsDBNull(8) ? null : rAll.GetString(8),
+                    rAll.IsDBNull(9) ? null : rAll.GetString(9),
+                    rAll.GetDateTime(10)
+                ));
+            }
+        }
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use um período menor ou exporte em CSV.", statusCode: 504);
+        }
+    }
+
+    if (fmt == "xlsx")
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart!.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Acessos" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+            void AddRow(params string[] cells)
+            {
+                var row = new Row();
+                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+                sheetData.Append(row);
+            }
+            AddRow("Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito");
+            foreach (var x in rows)
+            {
+                AddRow(x.Codigo.ToString(), x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Cartao ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
+            }
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http));
+    return Results.File(bytes, "application/pdf", fileName);
 }).RequireAuthorization();
 
-app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string documento, string? mode) =>
+app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string documento, string? mode, string format = "csv") =>
 {
     var docRaw = (documento ?? "").Trim();
     var docDigits = DigitsOnly(docRaw);
@@ -3456,7 +3914,10 @@ app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string
     if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
 
     var connStr = GetConn("CMS");
-    string fileName = $"acessos-{docDigits}-all.csv";
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    string fileName = $"acessos-{docDigits}-all.{fmt}";
 
     static string Csv(string? s)
     {
@@ -3466,29 +3927,31 @@ app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string
         return "\"" + s.Replace("\"", "\"\"") + "\"";
     }
 
-    return Results.Stream(async (stream) =>
+    if (fmt == "csv")
     {
-        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
-        await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
-
-        using var cn = new SqlConnection(connStr);
-        try { await cn.OpenAsync(http.RequestAborted); }
-        catch (SqlException ex) when (ex.Number == 18456)
+        return Results.Stream(async (stream) =>
         {
-            await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
-            await writer.FlushAsync();
-            return;
-        }
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
+            await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
 
-        long minTicks = 0;
-        long maxTicks = 0;
-        {
-            using var cmdRange = cn.CreateCommand();
-            cmdRange.CommandTimeout = 600;
-            cmdRange.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
-            cmdRange.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
-            cmdRange.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-            cmdRange.CommandText = @"
+            using var cn = new SqlConnection(connStr);
+            try { await cn.OpenAsync(http.RequestAborted); }
+            catch (SqlException ex) when (ex.Number == 18456)
+            {
+                await writer.WriteLineAsync(Csv("Falha de autenticação no SQL Server (CMS)"));
+                await writer.FlushAsync();
+                return;
+            }
+
+            long minTicks = 0;
+            long maxTicks = 0;
+            {
+                using var cmdRange = cn.CreateCommand();
+                cmdRange.CommandTimeout = 600;
+                cmdRange.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+                cmdRange.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+                cmdRange.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+                cmdRange.CommandText = @"
 WITH People AS (
     SELECT c.CardNumber AS CardNumber
     FROM Employee e
@@ -3522,36 +3985,36 @@ WHERE
         OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
     );
 ";
-            using var rr = await cmdRange.ExecuteReaderAsync(http.RequestAborted);
-            if (await rr.ReadAsync(http.RequestAborted))
-            {
-                if (!rr.IsDBNull(0)) minTicks = rr.GetInt64(0);
-                if (!rr.IsDBNull(1)) maxTicks = rr.GetInt64(1);
+                using var rr = await cmdRange.ExecuteReaderAsync(http.RequestAborted);
+                if (await rr.ReadAsync(http.RequestAborted))
+                {
+                    if (!rr.IsDBNull(0)) minTicks = rr.GetInt64(0);
+                    if (!rr.IsDBNull(1)) maxTicks = rr.GetInt64(1);
+                }
             }
-        }
 
-        if (minTicks <= 0 || maxTicks <= 0 || maxTicks <= minTicks)
-        {
-            await writer.FlushAsync();
-            return;
-        }
+            if (minTicks <= 0 || maxTicks <= 0 || maxTicks <= minTicks)
+            {
+                await writer.FlushAsync();
+                return;
+            }
 
-        var startDt = new DateTime(minTicks);
-        var endDt = new DateTime(maxTicks).AddSeconds(1);
-        var chunkEnd = endDt;
-        while (chunkEnd > startDt)
-        {
-            var chunkStart = chunkEnd.AddDays(-30);
-            if (chunkStart < startDt) chunkStart = startDt;
+            var startDt = new DateTime(minTicks);
+            var endDt = new DateTime(maxTicks).AddSeconds(1);
+            var chunkEnd = endDt;
+            while (chunkEnd > startDt)
+            {
+                var chunkStart = chunkEnd.AddDays(-30);
+                if (chunkStart < startDt) chunkStart = startDt;
 
-            using var cmd = cn.CreateCommand();
-            cmd.CommandTimeout = 600;
-            cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
-            cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
-            cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
-            cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
-            cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-            cmd.CommandText = @"
+                using var cmd = cn.CreateCommand();
+                cmd.CommandTimeout = 600;
+                cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+                cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+                cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.Ticks });
+                cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.Ticks });
+                cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+                cmd.CommandText = @"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -3635,39 +4098,334 @@ SELECT
 FROM EventsFiltered
 ORDER BY TimeTicks DESC;
 ";
-            SqlDataReader r;
-            try
-            {
-                r = await cmd.ExecuteReaderAsync(http.RequestAborted);
-            }
-            catch (SqlException ex) when (ex.Number == -2)
-            {
-                await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                SqlDataReader r;
+                try { r = await cmd.ExecuteReaderAsync(http.RequestAborted); }
+                catch (SqlException ex) when (ex.Number == -2)
+                {
+                    await writer.WriteLineAsync(Csv("TIMEOUT: consulta excedeu o tempo limite. Use um período menor ou gere em partes."));
+                    await writer.FlushAsync();
+                    return;
+                }
+                using var _r = r;
+                while (await _r.ReadAsync(http.RequestAborted))
+                {
+                    var line =
+                        _r.GetInt32(0) + "," +
+                        Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
+                        Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
+                        Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
+                        Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
+                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
+                        Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
+                        Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
+                        Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
+                        Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
+                        _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
+                    await writer.WriteLineAsync(line);
+                }
                 await writer.FlushAsync();
-                return;
+                chunkEnd = chunkStart;
             }
-            using var _r = r;
-            while (await _r.ReadAsync(http.RequestAborted))
-            {
-                var line =
-                    _r.GetInt32(0) + "," +
-                    Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
-                    Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
-                    Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
-                    Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
-                    Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
-                    Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
-                    Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
-                    Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
-                    Csv(_r.IsDBNull(9) ? null : _r.GetString(9)) + "," +
-                    _r.GetDateTime(10).ToString("yyyy-MM-dd HH:mm:ss");
-                await writer.WriteLineAsync(line);
-            }
-            await writer.FlushAsync();
+        }, "text/csv", fileName);
+    }
 
-            chunkEnd = chunkStart;
+    var maxRows = fmt == "pdf" ? 5000 : 20000;
+    using var cnAll = new SqlConnection(connStr);
+    try { await cnAll.OpenAsync(http.RequestAborted); }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no SQL Server", detail: "Não foi possível autenticar no banco de dados (CMS).", statusCode: 500);
+    }
+
+    int total = 0;
+    {
+        using var cmdCount = cnAll.CreateCommand();
+        cmdCount.CommandTimeout = 600;
+        cmdCount.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+        cmdCount.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+        cmdCount.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+        cmdCount.CommandText = @"
+WITH People AS (
+    SELECT c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT COUNT(1) AS Total
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+        try
+        {
+            using var rCount = await cmdCount.ExecuteReaderAsync(http.RequestAborted);
+            if (await rCount.ReadAsync(http.RequestAborted)) total = rCount.IsDBNull(0) ? 0 : rCount.GetInt32(0);
         }
-    }, "text/csv", fileName);
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use Exportar CSV.", statusCode: 504);
+        }
+    }
+
+    if (total > maxRows)
+    {
+        return Results.Problem(title: "Consulta muito grande para este formato", detail: $"Total de {total} registros. Para PDF/XLSX, limite em até {maxRows} registros ou use CSV.", statusCode: 422);
+    }
+
+    DateTime? minDt = null;
+    DateTime? maxDt = null;
+    {
+        using var cmdRange = cnAll.CreateCommand();
+        cmdRange.CommandTimeout = 600;
+        cmdRange.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+        cmdRange.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+        cmdRange.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+        cmdRange.CommandText = @"
+WITH People AS (
+    SELECT c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+)
+SELECT
+    MIN(DATEADD(MILLISECOND, CAST((ev.[Time] % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(ev.[Time] / 864000000000 AS int), CONVERT(datetime2, '0001-01-01')))) AS MinDt,
+    MAX(DATEADD(MILLISECOND, CAST((ev.[Time] % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(ev.[Time] / 864000000000 AS int), CONVERT(datetime2, '0001-01-01')))) AS MaxDt
+FROM People p
+INNER JOIN [EMSEVENTS].dbo.Events ev
+    ON ev.CardNumber = p.CardNumber
+WHERE
+    p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+    AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+    AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+    AND (
+        @mode = 'all'
+        OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+        OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+    );
+";
+        try
+        {
+            using var rr = await cmdRange.ExecuteReaderAsync(http.RequestAborted);
+            if (await rr.ReadAsync(http.RequestAborted))
+            {
+                if (!rr.IsDBNull(0)) minDt = rr.GetDateTime(0);
+                if (!rr.IsDBNull(1)) maxDt = rr.GetDateTime(1);
+            }
+        }
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use Exportar CSV.", statusCode: 504);
+        }
+    }
+
+    if (minDt == null || maxDt == null || maxDt <= minDt)
+    {
+        if (fmt == "xlsx")
+        {
+            using var ms = new MemoryStream();
+            using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+            {
+                var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+                var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+                var sheets = doc.WorkbookPart!.Workbook.AppendChild(new Sheets());
+                sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Acessos" });
+                var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+                var header = new Row();
+                foreach (var c in new[] { "Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito" })
+                    header.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
+                sheetData.Append(header);
+            }
+            return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+        var reportClientInfo = await GetReportClientInfoAsync(http);
+        var bytesEmpty = BuildAccessPdf(reportClientInfo.Name, reportClientInfo.Logo, docRaw, modeNorm, null, null, Array.Empty<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)>(), GetReportUser(http));
+        return Results.File(bytesEmpty, "application/pdf", fileName);
+    }
+
+    var rows = new List<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)>();
+    {
+        using var cmdAll = cnAll.CreateCommand();
+        cmdAll.CommandTimeout = 600;
+        cmdAll.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
+        cmdAll.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
+        cmdAll.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = minDt!.Value.Ticks });
+        cmdAll.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = maxDt!.Value.Ticks + 1 });
+        cmdAll.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
+        cmdAll.CommandText = @"
+WITH People AS (
+    SELECT
+        e.SbiID AS SbiID,
+        e.Name + ' ' + e.Surname AS Name,
+        e.PreferredName AS CPF,
+        e.Identifier AS Matricula,
+        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
+        'FUNCIONÁRIO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM Employee e
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    WHERE
+        e.PreferredName = @docRaw OR e.Identifier = @docRaw OR e.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+    UNION ALL
+    SELECT
+        x.SbiID AS SbiID,
+        x.Name + ' ' + x.Surname AS Name,
+        x.PreferredName AS CPF,
+        x.Identifier AS Matricula,
+        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
+        'TERCEIRO' AS TipoPessoa,
+        c.CardNumber AS CardNumber
+    FROM ExternalRegular x
+    LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    WHERE
+        x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @docDigits) OR
+        (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @docDigits)
+),
+EventsFiltered AS (
+    SELECT
+        p.SbiID,
+        p.Name,
+        p.CPF,
+        p.Matricula,
+        p.Empresa,
+        p.CardNumber,
+        p.TipoPessoa,
+        ev.Source AS Terminal,
+        ev.Description AS Descricao,
+        ev.[Time] AS TimeTicks
+    FROM People p
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = p.CardNumber
+    WHERE
+        p.CardNumber IS NOT NULL AND LTRIM(RTRIM(p.CardNumber)) <> ''
+        AND ev.CardNumber IS NOT NULL AND LTRIM(RTRIM(ev.CardNumber)) <> ''
+        AND ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND (ev.ConditionName = 'GRANTED' OR ev.AccessReason = 'Granted')
+        AND (
+            @mode = 'all'
+            OR (@mode = 'catracas' AND (ev.Source LIKE '%_CNT%' OR ev.Description LIKE '%CATRACA%' OR ev.Description LIKE '%Catraca%'))
+            OR (@mode = 'faciais' AND (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%'))
+        )
+)
+SELECT
+    SbiID AS Codigo,
+    Name,
+    CPF,
+    Matricula,
+    Empresa,
+    CardNumber AS Cartao,
+    CASE
+        WHEN Descricao LIKE '%ENTRADA%' THEN 'ENTRADA'
+        WHEN Descricao LIKE '%SAÍDA%' OR Descricao LIKE '%SAIDA%' THEN 'SAÍDA'
+        WHEN Terminal LIKE '%_RDR1' THEN 'ENTRADA'
+        WHEN Terminal LIKE '%_RDR2' THEN 'SAÍDA'
+        ELSE NULL
+    END AS Direcao,
+    TipoPessoa AS Tipo,
+    Terminal,
+    Descricao AS TerminalDescription,
+    DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
+        DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
+FROM EventsFiltered
+ORDER BY TimeTicks DESC;
+";
+        try
+        {
+            using var rAll = await cmdAll.ExecuteReaderAsync(http.RequestAborted);
+            while (await rAll.ReadAsync(http.RequestAborted))
+            {
+                rows.Add((
+                    rAll.GetInt32(0),
+                    rAll.IsDBNull(1) ? null : rAll.GetString(1),
+                    rAll.IsDBNull(2) ? null : rAll.GetString(2),
+                    rAll.IsDBNull(3) ? null : rAll.GetString(3),
+                    rAll.IsDBNull(4) ? null : rAll.GetString(4),
+                    rAll.IsDBNull(5) ? null : rAll.GetString(5),
+                    rAll.IsDBNull(6) ? null : rAll.GetString(6),
+                    rAll.IsDBNull(7) ? null : rAll.GetString(7),
+                    rAll.IsDBNull(8) ? null : rAll.GetString(8),
+                    rAll.IsDBNull(9) ? null : rAll.GetString(9),
+                    rAll.GetDateTime(10)
+                ));
+            }
+        }
+        catch (SqlException ex) when (ex.Number == -2)
+        {
+            return Results.Problem(title: "Consulta muito longa", detail: "A consulta excedeu o tempo limite. Use Exportar CSV.", statusCode: 504);
+        }
+    }
+
+    if (fmt == "xlsx")
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart!.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Acessos" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+            void AddRow(params string[] cells)
+            {
+                var row = new Row();
+                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+                sheetData.Append(row);
+            }
+            AddRow("Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito");
+            foreach (var x in rows)
+                AddRow(x.Codigo.ToString(), x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Cartao ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var startDt = minDt!.Value;
+    var endDt = maxDt!.Value;
+    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http));
+    return Results.File(bytes, "application/pdf", fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/person/by-card-info", async (string card) =>

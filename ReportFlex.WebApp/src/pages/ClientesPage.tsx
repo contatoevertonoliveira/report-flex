@@ -9,6 +9,7 @@ export function ClientesPage(){
   const [saving, setSaving] = useState<boolean>(false)
   const [deleting, setDeleting] = useState<boolean>(false)
   const [showDelete, setShowDelete] = useState<boolean>(false)
+  const [defaultReportClientId, setDefaultReportClientId] = useState<number | null>(null)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   function toast(type: 'success'|'error'|'info'|'warning', message: string){
@@ -16,6 +17,11 @@ export function ClientesPage(){
   }
   async function load(){
     try{
+      try{
+        const dr = await api.getReportDefaultClient()
+        const id = typeof (dr as any)?.id === 'number' ? (dr as any).id : null
+        setDefaultReportClientId(id)
+      }catch{}
       const data = await api.clientes()
       if (Array.isArray(data)){
         const norm = data.map((x:any)=> ({
@@ -42,6 +48,16 @@ export function ClientesPage(){
   useEffect(()=>{ load() },[])
   function pick(r:any){ setSelectedId(r.SBID); setForm({ nome:r.NOME??'', endereco:r.ENDERECO??'', fone:r.FONE??'', email:r.EMAIL??'', site:r.SITE??'', ativo:r.ATIVO??1, responsavel:r.RESPONSAVEL??'', token:r.TOKEN??'', logoPath:r.CAMINHOIMG??'' }) }
   function clear(){ setSelectedId(null); setForm({ nome:'', endereco:'', fone:'', email:'', site:'', ativo:1, responsavel:'', token:'', logoPath:'' }); setLogoFile(null) }
+  async function setAsDefaultReportClient(){
+    if (selectedId == null) return
+    try{
+      await api.setReportDefaultClient(selectedId)
+      setDefaultReportClientId(selectedId)
+      toast('success','Cliente definido como padrão do relatório')
+    }catch(e:any){
+      toast('error','Erro ao definir padrão: ' + (e?.message || 'desconhecido'))
+    }
+  }
   async function save(){
     try{
       setSaving(true)
@@ -154,6 +170,7 @@ export function ClientesPage(){
               <th>Nome</th>
               <th>Token</th>
               <th>Ativo</th>
+              <th>Padrão</th>
             </tr>
           </thead>
           <tbody>
@@ -163,6 +180,7 @@ export function ClientesPage(){
                 <td>{r.NOME}</td>
                 <td>{r.TOKEN}</td>
                 <td>{r.ATIVO === 1 ? 'Sim' : 'Não'}</td>
+                <td>{defaultReportClientId === r.SBID ? 'Sim' : ''}</td>
               </tr>
             ))}
           </tbody>
@@ -227,6 +245,11 @@ export function ClientesPage(){
             {saving ? 'Salvando...' : (selectedId ? 'Salvar alterações' : 'Criar')}
           </button>
           <button className="btn btn-secondary" onClick={clear}>Novo</button>
+          {selectedId && (
+            <button className="btn btn-outline-success" onClick={setAsDefaultReportClient}>
+              Definir como padrão do relatório
+            </button>
+          )}
           {selectedId && (
             <button className="btn btn-outline-danger" onClick={()=> setShowDelete(true)}>
               Excluir

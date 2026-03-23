@@ -152,6 +152,9 @@ export const api = {
   getReportOptions: async () => withAuth(apiFetch('/api/admin/report-options', { headers: headers() })),
   setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }) =>
     withAuth(apiFetch('/api/admin/report-options', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  getReportDefaultClient: async () => withAuth(apiFetch('/api/admin/report-default-client', { headers: headers() })),
+  setReportDefaultClient: async (clientId: number) =>
+    withAuth(apiFetch('/api/admin/report-default-client', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ clientId }) })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),
@@ -189,7 +192,15 @@ export const api = {
   },
   fetchReportPdf: async (url: string) => {
     const r = await apiFetch(url.startsWith('/api/') ? url : url, { headers: headers() })
-    if(!r.ok) throw new Error('Falha ao obter PDF')
+    if(!r.ok){
+      const raw = await r.text()
+      try{
+        const data: any = raw ? JSON.parse(raw) : null
+        throw new Error(data?.detail || data?.title || data?.error || data?.message || 'Falha ao obter PDF')
+      }catch{
+        throw new Error(raw || 'Falha ao obter PDF')
+      }
+    }
     const b = await r.blob()
     return URL.createObjectURL(b)
   }

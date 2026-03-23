@@ -234,6 +234,7 @@ export function QueriesPage(){
   const [progress, setProgress] = useState(0)
   const progressTimerRef = React.useRef<any>(null)
   const [resultTotal, setResultTotal] = useState<number | null>(null)
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean }>({ csv: true, xlsx: true, excel: true, pdf: true, txt: false, word: false })
 
   // Personalizadas
   const [dataset, setDataset] = useState<Dataset>('transit')
@@ -259,6 +260,25 @@ export function QueriesPage(){
   const canUseDbTables = level !== 'Cliente'
 
   const cacheKey = 'rf_queries_cache_v1'
+
+  React.useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try{
+        const opts = await api.getReportOptions()
+        if (!mounted) return
+        setReportOptions({
+          csv: !!opts.csv,
+          xlsx: !!opts.xlsx,
+          excel: !!opts.excel,
+          pdf: !!opts.pdf,
+          txt: !!opts.txt,
+          word: !!opts.word
+        })
+      }catch{}
+    })()
+    return () => { mounted = false }
+  }, [])
 
   React.useEffect(() => {
     try{
@@ -318,6 +338,10 @@ export function QueriesPage(){
     }catch{}
   }, [lastSuccessfulRun])
 
+  const exportEnabledCsv = reportOptions.csv
+  const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
+  const exportEnabledPdf = reportOptions.pdf
+
   const canExport = useMemo(() => {
     if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) {
       return data && data.length > 0
@@ -334,17 +358,28 @@ export function QueriesPage(){
   const exportAllowsPdf = useMemo(() => {
     if (!canExport) return false
     if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
-  }, [canExport, mode, quickKind, dataset])
+  }, [canExport, mode, quickKind, dataset, cpfObter])
 
-  const exportAllowsXlsx = useMemo(() => exportAllowsPdf, [exportAllowsPdf])
+  const exportAllowsXlsx = useMemo(() => {
+    if (!canExport) return false
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
+    if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
+    return false
+  }, [canExport, mode, quickKind, dataset, cpfObter])
 
   const exportAllowsCsv = useMemo(() => {
     if (!canExport) return false
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
-    return exportAllowsPdf
-  }, [canExport, mode, quickKind, cpfObter, exportAllowsPdf])
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
+    return false
+  }, [canExport, mode, quickKind, cpfObter, dataset])
+
+  const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf))
 
   function resetData(){ setData([]); setError(null) }
 
@@ -674,6 +709,14 @@ export function QueriesPage(){
       if (t) h['Authorization'] = `Bearer ${t}`
       const cid = localStorage.getItem('rf_client_id')
       if (cid) h['X-Client-Id'] = cid
+      const showErr = async (res: Response) => {
+        try{
+          const j: any = await res.json()
+          setError(j?.detail || j?.title || 'Falha ao exportar')
+        }catch{
+          setError('Falha ao exportar')
+        }
+      }
       if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')){
         const url = `/api/reports/access/aggregated/export?format=${format}`
         const res = await fetch(url, { headers: h })
@@ -713,7 +756,6 @@ export function QueriesPage(){
         a.click()
         URL.revokeObjectURL(a.href)
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
-        if (format !== 'csv') return
         const { cpf } = filters as any
         if (!cpf) return
         const modeQ = cpfObter === 'todos' ? 'all' : cpfObter
@@ -728,7 +770,7 @@ export function QueriesPage(){
           url = `/api/access/by-document/export?${qs}`
         }
         const res = await fetch(url, { headers: h })
-        if(!res.ok) return
+        if(!res.ok){ await showErr(res); return }
         const blob = await res.blob()
         const name = `acessos-${cpf}.${format}`
         const a = document.createElement('a')
@@ -757,9 +799,23 @@ export function QueriesPage(){
         if(!r0){ setError('Informe início e fim'); return }
         const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
         url = `/api/reports/door-critical/export?${qs}`
+      }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
+        const { cpf } = filters as any
+        if (!cpf){ setError('Informe o CPF'); return }
+        const modeQ = cpfObter === 'todos' ? 'all' : cpfObter
+        if (cpfSemPeriodo){
+          const qs = new URLSearchParams({ documento: cpf, mode: modeQ, format:'pdf' }).toString()
+          url = `/api/access/by-document/all/export?${qs}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0){ setError('Informe início e fim'); return }
+          const qs = new URLSearchParams({ documento: cpf, start: r0.startIso, end: r0.endIso, mode: modeQ, format:'pdf' }).toString()
+          url = `/api/access/by-document/export?${qs}`
+        }
       }
-      if (!url) { setError('Pré-visualização disponível apenas para Acessos e Trânsito'); return }
+      if (!url) { setError('Pré-visualização indisponível para esta consulta'); return }
       const u = await api.fetchReportPdf(url)
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl)
       setPdfUrl(u)
     }catch(e:any){
       const msg = e?.message || 'Falha ao gerar PDF'
@@ -1309,20 +1365,20 @@ export function QueriesPage(){
                 </div>
               </div>
             )}
-            {canExport && (
+            {showExportGroup && (
               <div className="export-group">
                 <span>Exportar:</span>
-                {exportAllowsCsv && (
+                {exportEnabledCsv && exportAllowsCsv && (
                   <button className="btn btn-light btn-icon" title="CSV" onClick={()=> exportData('csv')}>
                     <i className="bi bi-filetype-csv" />
                   </button>
                 )}
-                {exportAllowsXlsx && (
+                {exportEnabledXlsx && exportAllowsXlsx && (
                   <button className="btn btn-light btn-icon" title="XLSX" onClick={()=> exportData('xlsx')}>
                     <i className="bi bi-file-earmark-excel" />
                   </button>
                 )}
-                {exportAllowsPdf && (
+                {exportEnabledPdf && exportAllowsPdf && (
                   <>
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
@@ -1436,20 +1492,20 @@ export function QueriesPage(){
                 </div>
               </div>
             )}
-            {canExport && (
+            {showExportGroup && (
               <div className="export-group">
                 <span>Exportar:</span>
-                {exportAllowsCsv && (
+                {exportEnabledCsv && exportAllowsCsv && (
                   <button className="btn btn-light btn-icon" title="CSV" onClick={()=> exportData('csv')}>
                     <i className="bi bi-filetype-csv" />
                   </button>
                 )}
-                {exportAllowsXlsx && (
+                {exportEnabledXlsx && exportAllowsXlsx && (
                   <button className="btn btn-light btn-icon" title="XLSX" onClick={()=> exportData('xlsx')}>
                     <i className="bi bi-file-earmark-excel" />
                   </button>
                 )}
-                {exportAllowsPdf && (
+                {exportEnabledPdf && exportAllowsPdf && (
                   <>
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
