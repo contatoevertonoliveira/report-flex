@@ -155,6 +155,9 @@ export const api = {
   getReportDefaultClient: async () => withAuth(apiFetch('/api/admin/report-default-client', { headers: headers() })),
   setReportDefaultClient: async (clientId: number) =>
     withAuth(apiFetch('/api/admin/report-default-client', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ clientId }) })),
+  getQueriesConfig: async () => withAuth(apiFetch('/api/admin/queries-config', { headers: headers() })),
+  setQueriesConfig: async (p: Record<string, boolean>) =>
+    withAuth(apiFetch('/api/admin/queries-config', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),

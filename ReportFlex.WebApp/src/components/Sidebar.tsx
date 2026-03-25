@@ -5,6 +5,7 @@ import { useLocation } from 'react-router-dom'
 export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: ()=>void }) {
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
   const isSuperAdmin = level === 'SuperAdmin'
+  const isAdmin = level === 'Administrador'
   const isClient = level === 'Cliente'
   const [clientName, setClientName] = React.useState<string | null>(null)
   const [clientResp, setClientResp] = React.useState<string | null>(null)
@@ -64,6 +65,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   }, [])
   const links = [
     { label: 'Consultas', href: '/consultas', icon: 'bi-search' },
+    ...((isAdmin || isSuperAdmin) ? [{ label: 'Consultas Config', href: '/consultas-config', icon: 'bi-sliders' }] : []),
     { label: 'Mensagens', href: '/mensagens', icon: 'bi-chat-dots' },
     ...(isClient ? [] : [{ label: 'Configurações', href: '/configuracoes', icon: 'bi-gear' }]),
     ...(isSuperAdmin ? [{ label: 'Clientes', href: '/clientes', icon: 'bi-people' }] : []),

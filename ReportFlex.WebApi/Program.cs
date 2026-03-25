@@ -509,6 +509,32 @@ app.MapPost("/api/admin/report-default-client", async (HttpContext ctx) =>
     return Results.Ok(new { ok = true, id = cid });
 }).RequireAuthorization("NotCliente");
 
+app.MapGet("/api/admin/queries-config", () =>
+{
+    var env = LoadEnv();
+    if (env.TryGetValue("REPORT_QUERIES_CONFIG", out var raw) && !string.IsNullOrWhiteSpace(raw))
+    {
+        try
+        {
+            var obj = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(raw);
+            return Results.Ok(obj ?? new Dictionary<string, bool>());
+        }
+        catch
+        {
+            // ignore parse errors, return empty (all desativadas)
+        }
+    }
+    return Results.Ok(new Dictionary<string, bool>());
+}).RequireAuthorization("NotCliente");
+
+app.MapPost("/api/admin/queries-config", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, bool>>();
+    var json = System.Text.Json.JsonSerializer.Serialize(dto ?? new Dictionary<string, bool>());
+    SaveEnv(new Dictionary<string, string> { ["REPORT_QUERIES_CONFIG"] = json });
+    return Results.Ok(dto ?? new Dictionary<string, bool>());
+}).RequireAuthorization("NotCliente");
+
 static string ToOrderDir(string? dir) => string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
 static int ToPage(int page) => page <= 0 ? 1 : page;
 static int ToPageSize(int pageSize) => (pageSize <= 0 || pageSize > 200) ? 20 : pageSize;
