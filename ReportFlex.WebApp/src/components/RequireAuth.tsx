@@ -67,3 +67,15 @@ export function RequireNotClient({ children }: { children: React.ReactNode }){
   }
   return <>{children}</>
 }
+
+export function RequireAdminOrSuper({ children }: { children: React.ReactNode }){
+  const location = useLocation()
+  if(!isTokenValid()){
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
+  const level = localStorage.getItem('rf_level')
+  if (level !== 'Administrador' && level !== 'SuperAdmin'){
+    return <Navigate to="/consultas" state={{ from: location }} replace />
+  }
+  return <>{children}</>
+}

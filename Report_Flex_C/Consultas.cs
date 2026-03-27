@@ -2,8 +2,11 @@ using System;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Globalization;
+using System.Linq;
 using System.Windows.Forms;
 using ReportFlex.WinForms;
 
@@ -32,11 +35,244 @@ namespace WindowsFormsApp1
         public Image img;
         public string ImagemCliente = "";
         public string Resultado = "";
+        private ApiClient.ReportOptions _reportOptions = null;
+        private FlowLayoutPanel _exportPanel;
+        private Button _btnCsv;
+        private Button _btnXlsx;
+        private Button _btnPdf;
+        private Button _btnPreviewPdf;
 
         private SqlConnection getConexaoBD()
         {
             string strConexao = DbEnv.GetCmsConnectionString();
             return new SqlConnection(strConexao);
+        }
+
+        private bool EnsureCmsConnection()
+        {
+            try
+            {
+                if (con == null) con = getConexaoBD();
+                if (con.State != ConnectionState.Open) con.Open();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                var diag = "";
+                try { diag = ReportFlex.WinForms.DbEnv.GetDiagnosticsFor("CMS"); } catch { }
+                MessageBox.Show("Não foi possível conectar ao banco de dados CMS.\n\n" + ex.Message + (string.IsNullOrEmpty(diag) ? "" : ("\n\n" + diag)), "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
+        private void ConfigureGridAppearance()
+        {
+            try
+            {
+                dgvDados.EnableHeadersVisualStyles = false;
+                dgvDados.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(11, 61, 46);
+                dgvDados.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+                dgvDados.ColumnHeadersDefaultCellStyle.Font = new Font("Tahoma", 9F, FontStyle.Bold);
+                dgvDados.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
+                dgvDados.RowHeadersVisible = false;
+                dgvDados.DataBindingComplete += (s, e) =>
+                {
+                    try
+                    {
+                        foreach (DataGridViewColumn c in dgvDados.Columns)
+                        {
+                            if (!string.IsNullOrWhiteSpace(c.HeaderText))
+                                c.HeaderText = c.HeaderText.ToUpperInvariant();
+                        }
+                    }
+                    catch { }
+                };
+            }
+            catch { }
+        }
+
+        private void CreateExportPanel()
+        {
+            if (_exportPanel != null) return;
+            _exportPanel = new FlowLayoutPanel();
+            _exportPanel.Name = "pnlExport";
+            _exportPanel.Anchor = AnchorStyles.Bottom;
+            _exportPanel.Location = new Point(260, 700);
+            _exportPanel.Size = new Size(660, 50);
+            _exportPanel.FlowDirection = FlowDirection.LeftToRight;
+            _exportPanel.WrapContents = false;
+
+            var lbl = new Label();
+            lbl.Text = "Exportar:";
+            lbl.AutoSize = true;
+            lbl.TextAlign = ContentAlignment.MiddleLeft;
+            lbl.Padding = new Padding(0, 16, 8, 0);
+
+            _btnCsv = new Button();
+            _btnCsv.Text = "CSV";
+            _btnCsv.Width = 90;
+            _btnCsv.Height = 40;
+            _btnCsv.BackColor = Color.WhiteSmoke;
+            _btnCsv.Click += (s, e) => ExportCpfAccess("csv", false);
+
+            _btnXlsx = new Button();
+            _btnXlsx.Text = "XLSX";
+            _btnXlsx.Width = 90;
+            _btnXlsx.Height = 40;
+            _btnXlsx.BackColor = Color.WhiteSmoke;
+            _btnXlsx.Click += (s, e) =>
+            {
+                if (cboPesquisa.Text == "Cpf") ExportCpfAccess("xlsx", false);
+                else if (cboPesquisa.Text == "Trânsito") ExportTransit("xlsx", false);
+                else if (cboPesquisa.Text == "Crítico (Portas)") ExportCritical("xlsx", false);
+            };
+
+            _btnPdf = new Button();
+            _btnPdf.Text = "PDF";
+            _btnPdf.Width = 90;
+            _btnPdf.Height = 40;
+            _btnPdf.BackColor = Color.WhiteSmoke;
+            _btnPdf.Click += (s, e) =>
+            {
+                if (cboPesquisa.Text == "Cpf") ExportCpfAccess("pdf", false);
+                else if (cboPesquisa.Text == "Trânsito") ExportTransit("pdf", false);
+                else if (cboPesquisa.Text == "Crítico (Portas)") ExportCritical("pdf", false);
+            };
+
+            _btnPreviewPdf = new Button();
+            _btnPreviewPdf.Text = "Visualizar PDF";
+            _btnPreviewPdf.Width = 140;
+            _btnPreviewPdf.Height = 40;
+            _btnPreviewPdf.BackColor = Color.FromArgb(0, 64, 64);
+            _btnPreviewPdf.ForeColor = Color.White;
+            _btnPreviewPdf.Click += (s, e) =>
+            {
+                if (cboPesquisa.Text == "Cpf") ExportCpfAccess("pdf", true);
+                else if (cboPesquisa.Text == "Trânsito") ExportTransit("pdf", true);
+                else if (cboPesquisa.Text == "Crítico (Portas)") ExportCritical("pdf", true);
+            };
+
+            _exportPanel.Controls.Add(lbl);
+            _exportPanel.Controls.Add(_btnCsv);
+            _exportPanel.Controls.Add(_btnXlsx);
+            _exportPanel.Controls.Add(_btnPdf);
+            _exportPanel.Controls.Add(_btnPreviewPdf);
+
+            Controls.Add(_exportPanel);
+            UpdateExportButtons();
+        }
+
+        private void EnsureReportOptionsLoaded()
+        {
+            if (_reportOptions != null) return;
+            try
+            {
+                _reportOptions = ApiClient.GetReportOptions();
+            }
+            catch
+            {
+                _reportOptions = new ApiClient.ReportOptions { csv = true, xlsx = true, excel = true, pdf = true, txt = false, word = false };
+            }
+        }
+
+        private void UpdateExportButtons()
+        {
+            if (_btnCsv == null) return;
+            EnsureReportOptionsLoaded();
+            var canCpf = cboPesquisa.Text == "Cpf" && (cboObter.Text == "Todos Acessos" || cboObter.Text == "Somente Catracas");
+            var canTransit = cboPesquisa.Text == "Trânsito" && cboObter.Text == "Por Período";
+            var canCritical = cboPesquisa.Text == "Crítico (Portas)" && cboObter.Text == "Por Período";
+            var can = canCpf || canTransit || canCritical;
+            var allowCsv = can && (_reportOptions != null && _reportOptions.csv);
+            var allowXlsx = can && (_reportOptions != null && (_reportOptions.xlsx || _reportOptions.excel));
+            var allowPdf = can && (_reportOptions != null && _reportOptions.pdf);
+            _btnCsv.Visible = allowCsv;
+            _btnXlsx.Visible = allowXlsx;
+            _btnPdf.Visible = allowPdf;
+            _btnPreviewPdf.Visible = allowPdf;
+            _exportPanel.Visible = allowCsv || allowXlsx || allowPdf;
+        }
+
+        private bool TryGetPeriodo(out DateTime start, out DateTime end)
+        {
+            start = DateTime.MinValue;
+            end = DateTime.MinValue;
+            var s0 = (txtDataInicio.Text ?? "").Trim();
+            var e0 = (txtDataFim.Text ?? "").Trim();
+            if (!DateTime.TryParseExact(s0, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out start))
+                return false;
+            if (!DateTime.TryParseExact(e0, "yyyy/MM/dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out end))
+                return false;
+            return end > start;
+        }
+
+        private string GetCpfMode()
+        {
+            if (cboObter.Text == "Somente Catracas") return "catracas";
+            return "all";
+        }
+
+        private void ExportCpfAccess(string format, bool preview)
+        {
+            try
+            {
+                EnsureReportOptionsLoaded();
+                UpdateExportButtons();
+
+                var cpf = (txtPesquisa.Text ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(cpf))
+                {
+                    MessageBox.Show("Informe um CPF.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                var mode = GetCpfMode();
+
+                byte[] bytes;
+                if (Ativa.Checked)
+                {
+                    if (!TryGetPeriodo(out var start, out var end))
+                    {
+                        MessageBox.Show("Período inválido. Preencha Data Início e Data Fim corretamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    bytes = ApiClient.DownloadAccessByDocumentExport(cpf, start, end, mode, format);
+                }
+                else
+                {
+                    bytes = ApiClient.DownloadAccessByDocumentAllExport(cpf, mode, format);
+                }
+
+                var ext = (format ?? "csv").ToLowerInvariant();
+                if (ext == "excel") ext = "xlsx";
+                var fileName = $"acessos-{cpf}.{ext}";
+
+                if (preview && ext == "pdf")
+                {
+                    var p = Path.Combine(Path.GetTempPath(), fileName);
+                    File.WriteAllBytes(p, bytes);
+                    Process.Start(p);
+                    return;
+                }
+
+                using (var dlg = new SaveFileDialog())
+                {
+                    dlg.FileName = fileName;
+                    dlg.Filter = ext == "pdf" ? "PDF (*.pdf)|*.pdf|Todos (*.*)|*.*"
+                        : ext == "xlsx" ? "Excel (*.xlsx)|*.xlsx|Todos (*.*)|*.*"
+                        : "CSV (*.csv)|*.csv|Todos (*.*)|*.*";
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    File.WriteAllBytes(dlg.FileName, bytes);
+                    MessageBox.Show("Arquivo exportado com sucesso.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                MessageBox.Show("Sessão expirada. Faça login novamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao exportar: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private SqlConnection getConexaoBD1()
@@ -83,6 +319,8 @@ namespace WindowsFormsApp1
             cboPesquisa.Items.Clear();
             cboPesquisa.Items.Add("Selecione...");
             cboPesquisa.Items.Add("Cpf");
+            cboPesquisa.Items.Add("Trânsito");
+            cboPesquisa.Items.Add("Crítico (Portas)");
             cboPesquisa.Items.Add("Matrícula");
             cboPesquisa.Items.Add("Empresa");
             cboPesquisa.Items.Add("Crachá");
@@ -119,6 +357,34 @@ namespace WindowsFormsApp1
                     //cboObter.Items.Add("Somente Cancelas");
                     //cboObter.Items.Add("Primeira Entrada e Última Saída de cada dia");
 
+                }
+                else if (cboPesquisa.Text == "Trânsito")
+                {
+                    lblMsg.Text = "Informe período para consultar Trânsito:";
+                    lblSQL.Text = "Resultado: Trânsito por período";
+                    cboObter.Items.Clear();
+                    cboObter.Items.Add("Selecione...");
+                    cboObter.Items.Add("Por Período");
+                    Ativa.Enabled = true;
+                    Desativa.Enabled = false;
+                    Ativa.Checked = true;
+                    txtDataInicio.Enabled = true;
+                    txtDataFim.Enabled = true;
+                    btnConsultar.Enabled = true;
+                }
+                else if (cboPesquisa.Text == "Crítico (Portas)")
+                {
+                    lblMsg.Text = "Informe período para relatório Crítico (Portas):";
+                    lblSQL.Text = "Relatório: Portas críticas por período";
+                    cboObter.Items.Clear();
+                    cboObter.Items.Add("Selecione...");
+                    cboObter.Items.Add("Por Período");
+                    Ativa.Enabled = true;
+                    Desativa.Enabled = false;
+                    Ativa.Checked = true;
+                    txtDataInicio.Enabled = true;
+                    txtDataFim.Enabled = true;
+                    btnConsultar.Enabled = true;
                 }
 
                 //MATRÍCULA ---------------------------------------------------------------------------
@@ -195,6 +461,7 @@ namespace WindowsFormsApp1
                     cboObter.Items.Add("Acessos por Empresa");
                 }
             }
+            UpdateExportButtons();
         }
 
         private void cboObter_SelectedIndexChanged(object sender, EventArgs e)
@@ -218,17 +485,24 @@ namespace WindowsFormsApp1
                     {
                         Ativa.Enabled = false;
                         Desativa.Enabled = false;
+                        Ativa.Checked = false;
+                        Desativa.Checked = true;
                         txtPesquisa.Enabled = true;
                         txtPesquisa.BackColor = Color.White;
                         btnConsultar.Enabled = true;
                         txtPesquisa.Focus();
                     }
-                    else if (cboObter.Text == "Todos os acessos")
+                    else if (cboObter.Text == "Todos Acessos" || cboObter.Text == "Somente Catracas")
                     {
                         Ativa.Enabled = true;
-                        Desativa.Enabled = false;
+                        Desativa.Enabled = true;
+                        Desativa.Checked = true;
+                        Ativa.Checked = false;
+                        txtDataInicio.Enabled = false;
+                        txtDataFim.Enabled = false;
                         txtPesquisa.Enabled = true;
                         txtPesquisa.BackColor = Color.White;
+                        btnConsultar.Enabled = true;
                         txtPesquisa.Focus();
                     }
                 }
@@ -398,23 +672,131 @@ namespace WindowsFormsApp1
                     cboPesquisa.Enabled = false;
                     cboObter.Enabled = false;            
             }
+            UpdateExportButtons();
         }
 
         private void FrmConsultas_Load(object sender, EventArgs e)
         {
             btnConsultar.BackColor = Color.ForestGreen;
             btnBuscar.BackColor = Color.Gray;
+            ConfigureGridAppearance();
+            CreateExportPanel();
+            carregaCombos();
+            UpdateExportButtons();
+            TryLoadClientLogo();
+        }
+
+        private void TryLoadClientLogo()
+        {
             try
             {
-                con = getConexaoBD();
-                con.Open();
-                carregaCombos();
+                var def = ApiClient.GetReportDefaultClient();
+                int? cid = def != null ? def.id : null;
+                if (!cid.HasValue || cid.Value <= 0) return;
+                Session.ClientId = cid;
+                Session.ClientName = def.nome;
+                var clientes = ApiClient.GetClientes();
+                var cli = clientes != null ? clientes.FirstOrDefault(x => x.id == cid.Value) : null;
+                var logo = cli != null ? cli.logoPath : null;
+                if (!string.IsNullOrWhiteSpace(logo))
+                {
+                    var bytes = ApiClient.DownloadBinary(logo);
+                    using (var ms = new MemoryStream(bytes))
+                    {
+                        var img = Image.FromStream(ms);
+                        PictureBox1.Image = img;
+                    }
+                }
+                else
+                {
+                    // fallback: keep existing resource
+                }
+            }
+            catch
+            {
+                // ignore; keep existing resource
+            }
+        }
+
+        private void ExportTransit(string format, bool preview)
+        {
+            try
+            {
+                if (!TryGetPeriodo(out var start, out var end))
+                {
+                    MessageBox.Show("Período inválido. Preencha Data Início e Data Fim corretamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                var bytes = ApiClient.DownloadTransitExport(start, end, "", "", format);
+                var ext = (format ?? "xlsx").ToLowerInvariant();
+                if (ext == "excel") ext = "xlsx";
+                var fileName = $"transito.{ext}";
+                if (preview && ext == "pdf")
+                {
+                    var p = Path.Combine(Path.GetTempPath(), fileName);
+                    File.WriteAllBytes(p, bytes);
+                    Process.Start(p);
+                    return;
+                }
+                using (var dlg = new SaveFileDialog())
+                {
+                    dlg.FileName = fileName;
+                    dlg.Filter = ext == "pdf" ? "PDF (*.pdf)|*.pdf|Todos (*.*)|*.*"
+                        : ext == "xlsx" ? "Excel (*.xlsx)|*.xlsx|Todos (*.*)|*.*"
+                        : "CSV (*.csv)|*.csv|Todos (*.*)|*.*";
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    File.WriteAllBytes(dlg.FileName, bytes);
+                    MessageBox.Show("Arquivo exportado com sucesso.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                MessageBox.Show("Sessão expirada. Faça login novamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {
-                var diag = "";
-                try { diag = ReportFlex.WinForms.DbEnv.GetDiagnosticsFor("CMS"); } catch { }
-                MessageBox.Show("Não foi possível conectar ao banco de dados CMS. Algumas consultas podem não funcionar.\n\n" + ex.Message + (string.IsNullOrEmpty(diag) ? "" : ("\n\n" + diag)), "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Erro ao exportar: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ExportCritical(string format, bool preview)
+        {
+            try
+            {
+                if (!TryGetPeriodo(out var start, out var end))
+                {
+                    MessageBox.Show("Período inválido. Preencha Data Início e Data Fim corretamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                var bytes = ApiClient.DownloadDoorCriticalExport(start, end, format);
+                var ext = (format ?? "pdf").ToLowerInvariant();
+                if (ext == "excel") ext = "xlsx";
+                var fileName = $"critico-portas.{ext}";
+                if (preview && ext == "pdf")
+                {
+                    var p = Path.Combine(Path.GetTempPath(), fileName);
+                    File.WriteAllBytes(p, bytes);
+                    Process.Start(p);
+                    return;
+                }
+                using (var dlg = new SaveFileDialog())
+                {
+                    dlg.FileName = fileName;
+                    dlg.Filter = ext == "pdf" ? "PDF (*.pdf)|*.pdf|Todos (*.*)|*.*"
+                        : ext == "xlsx" ? "Excel (*.xlsx)|*.xlsx|Todos (*.*)|*.*"
+                        : "CSV (*.csv)|*.csv|Todos (*.*)|*.*";
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    File.WriteAllBytes(dlg.FileName, bytes);
+                    MessageBox.Show("Arquivo exportado com sucesso.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                MessageBox.Show("Sessão expirada. Faça login novamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Erro ao exportar: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -426,18 +808,8 @@ namespace WindowsFormsApp1
             {
                 if (cboObter.Text == "Todos os Niveis")
                 {
-                    consulta_TODOS_Nivel_Acesso();
-
-                    if (dgvDados.Rows.Count > 0)
-                    {
-                        txtPesquisa.Enabled = true;
-                        btnConsultar.Enabled = false;
-                    }
-                    else
-                    {
-                        txtPesquisa.Enabled = false;
-                        btnConsultar.Enabled = true;
-                    }
+                    MessageBox.Show("Use Exportar/Relatórios para Nível de Acesso (via API).", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    btnConsultar.Enabled = true;
                 }
             }
             else if (cboPesquisa.Text == "Cpf")
@@ -449,7 +821,44 @@ namespace WindowsFormsApp1
                         bool isNumeric = int.TryParse(txtPesquisa.Text, out int num);
                         if (isNumeric)
                         {
-                            BuscaINFOCad_CPF();
+                            try
+                            {
+                                var info = ApiClient.GetJson<System.Collections.ArrayList>("/api/access/info/by-document?documento=" + Uri.EscapeDataString(txtPesquisa.Text.Trim()));
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("CPF", typeof(string));
+                                tabela.Columns.Add("MATRÍCULA", typeof(string));
+                                tabela.Columns.Add("EMPRESA", typeof(string));
+                                tabela.Columns.Add("TIPO", typeof(string));
+                                tabela.Columns.Add("CARTÃO", typeof(string));
+                                tabela.Columns.Add("CADASTRO", typeof(DateTime));
+                                tabela.Columns.Add("EXPIRA", typeof(DateTime));
+                                if (info != null)
+                                {
+                                    foreach (var it in info)
+                                    {
+                                        var dict = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["NOME COMPLETO"] = dict?["Name"];
+                                        row["CPF"] = dict?["CPF"];
+                                        row["MATRÍCULA"] = dict?["Matricula"];
+                                        row["EMPRESA"] = dict?["Empresa"];
+                                        row["TIPO"] = dict?["Tipo"];
+                                        row["CARTÃO"] = dict?["CardNumber"];
+                                        row["CADASTRO"] = dict?["Cadastro"] ?? DBNull.Value;
+                                        row["EXPIRA"] = dict?["Expira"] ?? DBNull.Value;
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar cadastro por CPF na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                         else
                         {
@@ -465,6 +874,94 @@ namespace WindowsFormsApp1
                         btnConsultar.Enabled = true;
                     }
                 }
+                else if (cboObter.Text == "Todos Acessos" || cboObter.Text == "Somente Catracas")
+                {
+                    if (txtPesquisa.Text.Trim().Length == 0)
+                    {
+                        MessageBox.Show("Por favor digite um número de CPF!", "Report Flex | Digitar CPF !!!", MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                        btnConsultar.Enabled = true;
+                        return;
+                    }
+
+                    try
+                    {
+                        var mode = GetCpfMode();
+                        var page = 1;
+                        var pageSize = 1000;
+                        ApiClient.AccessResponse resp;
+                        if (Ativa.Checked)
+                        {
+                            if (!txtDataInicio.MaskCompleted || !txtDataFim.MaskCompleted)
+                            {
+                                MessageBox.Show("Você precisa digitar Data Início e Data Fim.", "Report Flex | Data...", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                                btnConsultar.Enabled = true;
+                                return;
+                            }
+                            if (!TryGetPeriodo(out var start, out var end))
+                            {
+                                MessageBox.Show("Período inválido.", "Report Flex | Data...", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                                btnConsultar.Enabled = true;
+                                return;
+                            }
+                            resp = ApiClient.GetAccessByDocument(txtPesquisa.Text.Trim(), start, end, mode, page, pageSize);
+                        }
+                        else
+                        {
+                            resp = ApiClient.GetAccessByDocumentAll(txtPesquisa.Text.Trim(), mode, page, pageSize);
+                        }
+
+                        var tabela = new DataTable();
+                        tabela.Columns.Add("CÓDIGO", typeof(int));
+                        tabela.Columns.Add("DATA E HORA", typeof(DateTime));
+                        tabela.Columns.Add("TAG", typeof(string));
+                        tabela.Columns.Add("ACESSO", typeof(string));
+                        tabela.Columns.Add("EVENTO", typeof(string));
+                        tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                        tabela.Columns.Add("DOC / MATRÍCULA", typeof(string));
+                        tabela.Columns.Add("CARTÃO", typeof(string));
+                        tabela.Columns.Add("TIPO", typeof(string));
+                        tabela.Columns.Add("EMPRESA", typeof(string));
+                        tabela.Columns.Add("STATUS", typeof(string));
+
+                        if (resp != null && resp.items != null)
+                        {
+                            foreach (var x in resp.items)
+                            {
+                                var row = tabela.NewRow();
+                                row["CÓDIGO"] = x.Codigo;
+                                row["DATA E HORA"] = x.Transito;
+                                row["TAG"] = x.Terminal;
+                                row["ACESSO"] = x.TerminalDescription;
+                                row["EVENTO"] = x.Direcao;
+                                row["NOME COMPLETO"] = x.Name;
+                                var docMat = (x.CPF ?? "") + (string.IsNullOrWhiteSpace(x.Matricula) ? "" : (" / " + x.Matricula));
+                                row["DOC / MATRÍCULA"] = docMat;
+                                row["CARTÃO"] = x.Cartao;
+                                row["TIPO"] = x.Tipo;
+                                row["EMPRESA"] = x.Empresa;
+                                row["STATUS"] = "Liberado";
+                                tabela.Rows.Add(row);
+                            }
+                        }
+                        dgvDados.DataSource = tabela;
+                        if (resp != null && resp.total > pageSize)
+                        {
+                            MessageBox.Show("Consulta grande: exibindo apenas os primeiros " + pageSize + " registros. Use Exportar para baixar o relatório completo.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        btnConsultar.Enabled = true;
+                        UpdateExportButtons();
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        MessageBox.Show("Sessão expirada. Faça login novamente.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        btnConsultar.Enabled = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("Erro ao consultar acessos na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        btnConsultar.Enabled = true;
+                    }
+                }
             }
             //CONSULTA SE A OPÇÃO SELECIONADA FOR -------------------------------------->>> EMPRESA
             else if (cboPesquisa.Text == "Empresa")
@@ -473,9 +970,40 @@ namespace WindowsFormsApp1
                 {
                     if (txtPesquisa.Text.Trim().Length > 0)
                     {
-                        Consulta_EMPRESA_InfoCad();
-                        Resultado = txtPesquisa.Text;
-                        btnFiltrar.Enabled = true;
+                        try
+                        {
+                            var info = ApiClient.GetJson<System.Collections.ArrayList>("/api/cms/company/by-name-info?empresa=" + Uri.EscapeDataString(txtPesquisa.Text.Trim()));
+                            var tabela = new DataTable();
+                            tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                            tabela.Columns.Add("CPF", typeof(string));
+                            tabela.Columns.Add("MATRÍCULA", typeof(string));
+                            tabela.Columns.Add("EMPRESA", typeof(string));
+                            tabela.Columns.Add("TIPO", typeof(string));
+                            if (info != null)
+                            {
+                                foreach (var it in info)
+                                {
+                                    var dict = it as System.Collections.Generic.Dictionary<string, object>;
+                                    var row = tabela.NewRow();
+                                    row["NOME COMPLETO"] = dict?["Name"];
+                                    row["CPF"] = dict?["CPF"];
+                                    row["MATRÍCULA"] = dict?["Matricula"];
+                                    row["EMPRESA"] = dict?["Empresa"];
+                                    row["TIPO"] = dict?["Tipo"];
+                                    tabela.Rows.Add(row);
+                                }
+                            }
+                            dgvDados.DataSource = tabela;
+                            Resultado = txtPesquisa.Text;
+                            btnFiltrar.Enabled = true;
+                            btnConsultar.Enabled = true;
+                            UpdateExportButtons();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("Erro ao consultar empresa na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            btnConsultar.Enabled = true;
+                        }
                     }
                     else
                     {
@@ -501,6 +1029,7 @@ namespace WindowsFormsApp1
                     }
                     else
                     {
+                        // API-only, não requer CMS
                         Consulta_Transito_PorPeriodo_API();
                     }
                 }
@@ -513,8 +1042,45 @@ namespace WindowsFormsApp1
                 {
                     if (txtPesquisa.Text.Trim().Length > 0)
                     {
-                        Consulta_CRACHA_InfoCad();
-                        Resultado = txtPesquisa.Text;
+                        try
+                        {
+                            var info = ApiClient.GetJson<System.Collections.ArrayList>("/api/cms/person/by-card-info?card=" + Uri.EscapeDataString(txtPesquisa.Text.Trim()));
+                            var tabela = new DataTable();
+                            tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                            tabela.Columns.Add("CPF", typeof(string));
+                            tabela.Columns.Add("MATRÍCULA", typeof(string));
+                            tabela.Columns.Add("EMPRESA", typeof(string));
+                            tabela.Columns.Add("TIPO", typeof(string));
+                            tabela.Columns.Add("CARTÃO", typeof(string));
+                            tabela.Columns.Add("CADASTRO", typeof(DateTime));
+                            tabela.Columns.Add("EXPIRA", typeof(DateTime));
+                            if (info != null)
+                            {
+                                foreach (var it in info)
+                                {
+                                    var dict = it as System.Collections.Generic.Dictionary<string, object>;
+                                    var row = tabela.NewRow();
+                                    row["NOME COMPLETO"] = dict?["Name"];
+                                    row["CPF"] = dict?["CPF"];
+                                    row["MATRÍCULA"] = dict?["Matricula"];
+                                    row["EMPRESA"] = dict?["Empresa"];
+                                    row["TIPO"] = dict?["Tipo"];
+                                    row["CARTÃO"] = dict?["CardNumber"];
+                                    row["CADASTRO"] = dict?["Cadastro"] ?? DBNull.Value;
+                                    row["EXPIRA"] = dict?["Expira"] ?? DBNull.Value;
+                                    tabela.Rows.Add(row);
+                                }
+                            }
+                            dgvDados.DataSource = tabela;
+                            Resultado = txtPesquisa.Text;
+                            btnConsultar.Enabled = true;
+                            UpdateExportButtons();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("Erro ao consultar cadastro por Crachá na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            btnConsultar.Enabled = true;
+                        }
                     }
                     else
                     {
@@ -528,8 +1094,59 @@ namespace WindowsFormsApp1
                 {
                     if (txtPesquisa.Text.Trim().Length != 0)
                     {
-                        Consulta_CRACHA_TDS_ACESSOS();
-                        Resultado = txtPesquisa.Text;
+                        try
+                        {
+                            if (!TryGetPeriodo(out var start, out var end))
+                            {
+                                start = DateTime.Today.AddMonths(-1);
+                                end = DateTime.Today.AddDays(1);
+                            }
+                            var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                "/api/cms/transit/by-card-period?card=" + Uri.EscapeDataString(txtPesquisa.Text.Trim())
+                                + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                + "&onlyTurnstiles=false&page=1&pageSize=1000");
+                            var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                            var tabela = new DataTable();
+                            tabela.Columns.Add("DATA E HORA", typeof(DateTime));
+                            tabela.Columns.Add("TAG", typeof(string));
+                            tabela.Columns.Add("ACESSO", typeof(string));
+                            tabela.Columns.Add("EVENTO", typeof(string));
+                            tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                            tabela.Columns.Add("DOC / MATRÍCULA", typeof(string));
+                            tabela.Columns.Add("CARTÃO", typeof(string));
+                            tabela.Columns.Add("TIPO", typeof(string));
+                            tabela.Columns.Add("EMPRESA", typeof(string));
+                            tabela.Columns.Add("STATUS", typeof(string));
+                            if (items != null)
+                            {
+                                foreach (var it in items)
+                                {
+                                    var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                    var row = tabela.NewRow();
+                                    row["DATA E HORA"] = d?["TransitDate"] ?? DBNull.Value;
+                                    row["TAG"] = d?["Terminal"];
+                                    row["ACESSO"] = d?["TerminalDescription"];
+                                    row["EVENTO"] = d?["Direction"];
+                                    row["NOME COMPLETO"] = d?["Name"];
+                                    row["DOC / MATRÍCULA"] = "";
+                                    row["CARTÃO"] = d?["CardNumber"];
+                                    row["TIPO"] = d?["UserType"];
+                                    row["EMPRESA"] = "";
+                                    row["STATUS"] = "Liberado";
+                                    tabela.Rows.Add(row);
+                                }
+                            }
+                            dgvDados.DataSource = tabela;
+                            Resultado = txtPesquisa.Text;
+                            btnConsultar.Enabled = true;
+                            UpdateExportButtons();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("Erro ao consultar acessos por Crachá na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            btnConsultar.Enabled = true;
+                        }
                     }
                     else
                     {
@@ -555,8 +1172,56 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                            consulta_CRACHA_ACESSOS();
-                            Resultado = txtPesquisa.Text;
+                            try
+                            {
+                                var start = DateTime.Parse(txtDataInicio.Text);
+                                var end = DateTime.Parse(txtDataFim.Text);
+                                var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                    "/api/cms/transit/by-card-period?card=" + Uri.EscapeDataString(txtPesquisa.Text.Trim())
+                                    + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                    + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                    + "&onlyTurnstiles=true&page=1&pageSize=1000");
+                                var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("DATA E HORA", typeof(DateTime));
+                                tabela.Columns.Add("TAG", typeof(string));
+                                tabela.Columns.Add("ACESSO", typeof(string));
+                                tabela.Columns.Add("EVENTO", typeof(string));
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("DOC / MATRÍCULA", typeof(string));
+                                tabela.Columns.Add("CARTÃO", typeof(string));
+                                tabela.Columns.Add("TIPO", typeof(string));
+                                tabela.Columns.Add("EMPRESA", typeof(string));
+                                tabela.Columns.Add("STATUS", typeof(string));
+                                if (items != null)
+                                {
+                                    foreach (var it in items)
+                                    {
+                                        var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["DATA E HORA"] = d?["TransitDate"] ?? DBNull.Value;
+                                        row["TAG"] = d?["Terminal"];
+                                        row["ACESSO"] = d?["TerminalDescription"];
+                                        row["EVENTO"] = d?["Direction"];
+                                        row["NOME COMPLETO"] = d?["Name"];
+                                        row["DOC / MATRÍCULA"] = "";
+                                        row["CARTÃO"] = d?["CardNumber"];
+                                        row["TIPO"] = d?["UserType"];
+                                        row["EMPRESA"] = "";
+                                        row["STATUS"] = "Liberado";
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                Resultado = txtPesquisa.Text;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar catracas por Crachá na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                     }
                     else
@@ -585,8 +1250,8 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                            consulta_CRACHA_ACESSOS_CANCELAS();
-                            Resultado = txtPesquisa.Text;
+                            MessageBox.Show("Relatório de cancelas será padronizado em versão futura. Use Trânsito por Período para exportar.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            btnConsultar.Enabled = true;
                         }
                     }
                     else
@@ -612,8 +1277,45 @@ namespace WindowsFormsApp1
                         bool isNumeric = int.TryParse(txtPesquisa.Text, out int num);
                         if (isNumeric)
                         {
-                            Consulta_MATRICULA_InfoCad();
-                            Resultado = txtPesquisa.Text;
+                            try
+                            {
+                                var info = ApiClient.GetJson<System.Collections.ArrayList>("/api/cms/person/by-matricula-info?matricula=" + Uri.EscapeDataString(txtPesquisa.Text.Trim()));
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("CPF", typeof(string));
+                                tabela.Columns.Add("MATRÍCULA", typeof(string));
+                                tabela.Columns.Add("EMPRESA", typeof(string));
+                                tabela.Columns.Add("TIPO", typeof(string));
+                                tabela.Columns.Add("CARTÃO", typeof(string));
+                                tabela.Columns.Add("CADASTRO", typeof(DateTime));
+                                tabela.Columns.Add("EXPIRA", typeof(DateTime));
+                                if (info != null)
+                                {
+                                    foreach (var it in info)
+                                    {
+                                        var dict = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["NOME COMPLETO"] = dict?["Name"];
+                                        row["CPF"] = dict?["CPF"];
+                                        row["MATRÍCULA"] = dict?["Matricula"];
+                                        row["EMPRESA"] = dict?["Empresa"];
+                                        row["TIPO"] = dict?["Tipo"];
+                                        row["CARTÃO"] = dict?["CardNumber"];
+                                        row["CADASTRO"] = dict?["Cadastro"] ?? DBNull.Value;
+                                        row["EXPIRA"] = dict?["Expira"] ?? DBNull.Value;
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                Resultado = txtPesquisa.Text;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar cadastro por Matrícula na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                         else
                         {
@@ -633,8 +1335,59 @@ namespace WindowsFormsApp1
                 {
                     if (txtPesquisa.Text.Trim().Length != 0)
                     {
-                        Consulta_MATRICULA_TDS_ACESSOS();
-                        Resultado = txtPesquisa.Text;
+                        try
+                        {
+                            if (!TryGetPeriodo(out var start, out var end))
+                            {
+                                start = DateTime.Today.AddMonths(-1);
+                                end = DateTime.Today.AddDays(1);
+                            }
+                            var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                "/api/cms/transit/by-matricula?matricula=" + Uri.EscapeDataString(txtPesquisa.Text.Trim())
+                                + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                + "&onlyTurnstiles=false&page=1&pageSize=1000");
+                            var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                            var tabela = new DataTable();
+                            tabela.Columns.Add("DATA E HORA", typeof(DateTime));
+                            tabela.Columns.Add("TAG", typeof(string));
+                            tabela.Columns.Add("ACESSO", typeof(string));
+                            tabela.Columns.Add("EVENTO", typeof(string));
+                            tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                            tabela.Columns.Add("DOC / MATRÍCULA", typeof(string));
+                            tabela.Columns.Add("CARTÃO", typeof(string));
+                            tabela.Columns.Add("TIPO", typeof(string));
+                            tabela.Columns.Add("EMPRESA", typeof(string));
+                            tabela.Columns.Add("STATUS", typeof(string));
+                            if (items != null)
+                            {
+                                foreach (var it in items)
+                                {
+                                    var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                    var row = tabela.NewRow();
+                                    row["DATA E HORA"] = d?["TransitDate"] ?? DBNull.Value;
+                                    row["TAG"] = d?["Terminal"];
+                                    row["ACESSO"] = d?["TerminalDescription"];
+                                    row["EVENTO"] = d?["Direction"];
+                                    row["NOME COMPLETO"] = d?["Name"];
+                                    row["DOC / MATRÍCULA"] = txtPesquisa.Text.Trim();
+                                    row["CARTÃO"] = d?["CardNumber"];
+                                    row["TIPO"] = d?["UserType"];
+                                    row["EMPRESA"] = "";
+                                    row["STATUS"] = "Liberado";
+                                    tabela.Rows.Add(row);
+                                }
+                            }
+                            dgvDados.DataSource = tabela;
+                            Resultado = txtPesquisa.Text;
+                            btnConsultar.Enabled = true;
+                            UpdateExportButtons();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("Erro ao consultar acessos por Matrícula na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            btnConsultar.Enabled = true;
+                        }
                     }
                     else
                     {
@@ -661,8 +1414,56 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                            consulta_MATRICULA_ACESSOS_CATRACAS();
-                            Resultado = txtPesquisa.Text;
+                            try
+                            {
+                                var start = DateTime.Parse(txtDataInicio.Text);
+                                var end = DateTime.Parse(txtDataFim.Text);
+                                var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                    "/api/cms/transit/by-matricula?matricula=" + Uri.EscapeDataString(txtPesquisa.Text.Trim())
+                                    + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                    + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                    + "&onlyTurnstiles=true&page=1&pageSize=1000");
+                                var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("DATA E HORA", typeof(DateTime));
+                                tabela.Columns.Add("TAG", typeof(string));
+                                tabela.Columns.Add("ACESSO", typeof(string));
+                                tabela.Columns.Add("EVENTO", typeof(string));
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("DOC / MATRÍCULA", typeof(string));
+                                tabela.Columns.Add("CARTÃO", typeof(string));
+                                tabela.Columns.Add("TIPO", typeof(string));
+                                tabela.Columns.Add("EMPRESA", typeof(string));
+                                tabela.Columns.Add("STATUS", typeof(string));
+                                if (items != null)
+                                {
+                                    foreach (var it in items)
+                                    {
+                                        var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["DATA E HORA"] = d?["TransitDate"] ?? DBNull.Value;
+                                        row["TAG"] = d?["Terminal"];
+                                        row["ACESSO"] = d?["TerminalDescription"];
+                                        row["EVENTO"] = d?["Direction"];
+                                        row["NOME COMPLETO"] = d?["Name"];
+                                        row["DOC / MATRÍCULA"] = txtPesquisa.Text.Trim();
+                                        row["CARTÃO"] = d?["CardNumber"];
+                                        row["TIPO"] = d?["UserType"];
+                                        row["EMPRESA"] = "";
+                                        row["STATUS"] = "Liberado";
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                Resultado = txtPesquisa.Text;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar catracas por Matrícula na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                     }
                     else
@@ -691,7 +1492,8 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                           
+                            MessageBox.Show("Relatório de cancelas será padronizado em versão futura. Use Trânsito por Período para exportar.", "Report Flex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            btnConsultar.Enabled = true;
                         }
                     }
                     else
@@ -728,8 +1530,53 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                            consulta_VISITANTES_ACESSOS();
-                            Resultado = txtPesquisa.Text;
+                            try
+                            {
+                                var documento = txtPesquisa.Text.Trim();
+                                var start = DateTime.Parse(txtDataInicio.Text);
+                                var end = DateTime.Parse(txtDataFim.Text);
+                                var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                    "/api/cms/visitors/by-document?documento=" + Uri.EscapeDataString(documento)
+                                    + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                    + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                    + "&page=1&pageSize=1000");
+                                var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("DOCUMENTO", typeof(string));
+                                tabela.Columns.Add("CONTATO", typeof(string));
+                                tabela.Columns.Add("VISITOU", typeof(string));
+                                tabela.Columns.Add("TELEFONE", typeof(string));
+                                tabela.Columns.Add("EMAIL", typeof(string));
+                                tabela.Columns.Add("ENTRADA", typeof(DateTime));
+                                tabela.Columns.Add("SAÍDA", typeof(DateTime));
+                                if (items != null)
+                                {
+                                    foreach (var it in items)
+                                    {
+                                        var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["NOME COMPLETO"] = d?["Nome"];
+                                        row["DOCUMENTO"] = d?["Documento"];
+                                        row["CONTATO"] = d?["Contato"];
+                                        row["VISITOU"] = d?["Visitou"];
+                                        row["TELEFONE"] = d?["Telefone"];
+                                        row["EMAIL"] = d?["Email"];
+                                        row["ENTRADA"] = d?["Entrada"] ?? DBNull.Value;
+                                        row["SAÍDA"] = d?["Saida"] ?? DBNull.Value;
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                Resultado = txtPesquisa.Text;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar visitantes por documento na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                     }
                     else
@@ -758,8 +1605,53 @@ namespace WindowsFormsApp1
                         }
                         else
                         {
-                            consulta_VISITANTES_EMPRESA();
-                            Resultado = txtPesquisa.Text;
+                            try
+                            {
+                                var empresa = txtPesquisa.Text.Trim();
+                                var start = DateTime.Parse(txtDataInicio.Text);
+                                var end = DateTime.Parse(txtDataFim.Text);
+                                var resp = ApiClient.GetJson<System.Collections.Generic.Dictionary<string, object>>(
+                                    "/api/cms/visitors/by-company?empresa=" + Uri.EscapeDataString(empresa)
+                                    + "&start=" + Uri.EscapeDataString(start.ToString("o"))
+                                    + "&end=" + Uri.EscapeDataString(end.ToString("o"))
+                                    + "&page=1&pageSize=1000");
+                                var items = resp != null && resp.ContainsKey("items") ? (System.Collections.ArrayList)resp["items"] : null;
+                                var tabela = new DataTable();
+                                tabela.Columns.Add("NOME COMPLETO", typeof(string));
+                                tabela.Columns.Add("DOCUMENTO", typeof(string));
+                                tabela.Columns.Add("CONTATO", typeof(string));
+                                tabela.Columns.Add("VISITOU", typeof(string));
+                                tabela.Columns.Add("TELEFONE", typeof(string));
+                                tabela.Columns.Add("EMAIL", typeof(string));
+                                tabela.Columns.Add("ENTRADA", typeof(DateTime));
+                                tabela.Columns.Add("SAÍDA", typeof(DateTime));
+                                if (items != null)
+                                {
+                                    foreach (var it in items)
+                                    {
+                                        var d = it as System.Collections.Generic.Dictionary<string, object>;
+                                        var row = tabela.NewRow();
+                                        row["NOME COMPLETO"] = d?["Nome"];
+                                        row["DOCUMENTO"] = d?["Documento"];
+                                        row["CONTATO"] = d?["Contato"];
+                                        row["VISITOU"] = d?["Visitou"];
+                                        row["TELEFONE"] = d?["Telefone"];
+                                        row["EMAIL"] = d?["Email"];
+                                        row["ENTRADA"] = d?["Entrada"] ?? DBNull.Value;
+                                        row["SAÍDA"] = d?["Saida"] ?? DBNull.Value;
+                                        tabela.Rows.Add(row);
+                                    }
+                                }
+                                dgvDados.DataSource = tabela;
+                                Resultado = txtPesquisa.Text;
+                                btnConsultar.Enabled = true;
+                                UpdateExportButtons();
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Erro ao consultar visitantes por empresa na API: " + ex.Message, "Report Flex | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                btnConsultar.Enabled = true;
+                            }
                         }
                     }
                     else
@@ -845,6 +1737,7 @@ namespace WindowsFormsApp1
 
         private void btnBuscar_Click(object sender, EventArgs e)
         {
+            if (!EnsureCmsConnection()) return;
             descobrir_CRACHA();
 
             if(cboDados.Items.Count == 1)

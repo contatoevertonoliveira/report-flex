@@ -51,8 +51,8 @@ export function AccessPage(){
         )}
       </div>
       <table className="table table-sm">
-        <thead><tr>{['SbiID','Name','LevelId','Level'].map(c=> <th key={c}>{c}</th>)}</tr></thead>
-        <tbody>{rows.map((r,i)=> <tr key={i}>{['SbiID','Name','LevelId','Level'].map(c => <td key={c}>{r[c] ?? ''}</td>)}</tr>)}</tbody>
+        <thead><tr>{['CardNumber','Name','LevelId','Level'].map(c=> <th key={c}>{c === 'CardNumber' ? 'Crachá' : c}</th>)}</tr></thead>
+        <tbody>{rows.map((r,i)=> <tr key={i}>{['CardNumber','Name','LevelId','Level'].map(c => <td key={c}>{r[c] ?? ''}</td>)}</tr>)}</tbody>
       </table>
       {agg.length>0 && (
         <>

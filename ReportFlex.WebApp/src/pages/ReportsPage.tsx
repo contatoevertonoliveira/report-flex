@@ -98,7 +98,7 @@ export function ReportsPage(){
       {mode==='detalhado' ? (
         <DataTable
           columns={[
-            { key:'SbiID', label:'SbiID' },
+            { key:'CardNumber', label:'Crachá' },
             { key:'Name', label:'Name' },
             { key:'Empresa', label:'Empresa' },
             { key:'Terminal', label:'Terminal' },

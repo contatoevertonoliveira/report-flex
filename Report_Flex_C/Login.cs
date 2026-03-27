@@ -92,7 +92,9 @@ namespace WindowsFormsApp1
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Erro ao autenticar via API: " + ex.Message, "Report Flex 1.0 | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                var diag = "";
+                try { diag = ApiClient.GetApiDiagnostics(); } catch { }
+                MessageBox.Show("Erro ao autenticar via API: " + ex.Message + (string.IsNullOrWhiteSpace(diag) ? "" : ("\n\n" + diag + "\n\nAjuste ApiBaseUrl no App.config para apontar para a mesma URL/porta da API que está online.")), "Report Flex 1.0 | Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

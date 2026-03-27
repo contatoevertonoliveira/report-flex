@@ -31,7 +31,7 @@ export function TransitPage(){
     <section>
       <h2>Trânsito</h2>
       <div className="row">
-        <input className="form-control" value={card} onChange={e=>setCard(e.target.value)} placeholder="Cartão (opcional)" />
+        <input className="form-control" value={card} onChange={e=>setCard(e.target.value)} placeholder="Crachá (opcional)" />
         <input className="form-control" value={terminal} onChange={e=>setTerminal(e.target.value)} placeholder="Terminal (opcional)" />
         <input className="form-control" value={userType} onChange={e=>setUserType(e.target.value)} placeholder="Tipo de usuário (opcional)" />
         <input className="form-control" type="date" value={start} onChange={e=>setStart(e.target.value)} />
@@ -47,7 +47,7 @@ export function TransitPage(){
           }catch{ setError('Falha ao buscar trânsitos') } finally{ setLoading(false) }
         }}>Consultar</button>
         {reportOptions.csv && (
-          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','CardNumber','Direction','UserType','Terminal','TerminalDescription','TransitDate'])}>Exportar CSV</button>
+          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['CardNumber','Name','Direction','UserType','Terminal','TerminalDescription','TransitDate'])}>Exportar CSV</button>
         )}
       </div>
       <div className="row" style={{marginTop:8}}>
@@ -73,8 +73,8 @@ export function TransitPage(){
       {loading && <div>Carregando...</div>}
       {error && <div style={{color:'red'}}>{error}</div>}
       <table className="table table-sm">
-        <thead><tr>{['SbiID','Name','CardNumber','Direction','UserType','Terminal','TerminalDescription','TransitDate'].map(c=> <th key={c}>{c}</th>)}</tr></thead>
-        <tbody>{rows.map((r,i)=> <tr key={i}>{['SbiID','Name','CardNumber','Direction','UserType','Terminal','TerminalDescription','TransitDate'].map(c => <td key={c}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody>
+        <thead><tr>{['CardNumber','Name','Direction','UserType','Terminal','TerminalDescription','TransitDate'].map(c=> <th key={c}>{c === 'CardNumber' ? 'Crachá' : c}</th>)}</tr></thead>
+        <tbody>{rows.map((r,i)=> <tr key={i}>{['CardNumber','Name','Direction','UserType','Terminal','TerminalDescription','TransitDate'].map(c => <td key={c}>{String(r[c] ?? '')}</td>)}</tr>)}</tbody>
       </table>
       <div className="row" style={{marginTop:8}}>
         <span>Total: {total}</span>
@@ -88,7 +88,7 @@ export function TransitPage(){
 }
 
 function exportCsv(rows: any[], cols: string[]){
-  const header = cols.join(',')
+  const header = cols.map(c => c === 'CardNumber' ? 'Cracha' : c).join(',')
   const data = rows.map(r=> cols.map(c=> JSON.stringify(String(r[c] ?? '')).replace(/^\"|\"$/g,'')).join(',')).join('\n')
   const blob = new Blob([header+'\n'+data], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)

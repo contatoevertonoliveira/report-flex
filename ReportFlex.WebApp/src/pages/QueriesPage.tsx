@@ -112,7 +112,7 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Total', label: 'Total' }
   ],
   'transit': [
-    { key: 'SbiID', label: 'SbiID' },
+    { key: 'CardNumber', label: 'Crachá' },
     { key: 'Name', label: 'Nome' },
     { key: 'Empresa', label: 'Empresa' },
     { key: 'Terminal', label: 'Terminal' },
@@ -120,23 +120,21 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'TransitDate', label: 'Data/Hora' }
   ],
   'employees': [
-    { key: 'SbiID', label: 'SbiID' },
+    { key: 'CardNumber', label: 'Crachá' },
     { key: 'Name', label: 'Nome' },
     { key: 'Empresa', label: 'Empresa' }
   ],
   'external': [
-    { key: 'SbiID', label: 'SbiID' },
+    { key: 'CardNumber', label: 'Crachá' },
     { key: 'Name', label: 'Nome' },
     { key: 'Empresa', label: 'Empresa' }
   ],
   'card-by-cpf': [
-    { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'CardNumber', label: 'Crachá' },
     { key: 'UserType', label: 'Tipo' }
   ],
   'cpf-info': [
-    { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'CPF', label: 'CPF' },
     { key: 'Matricula', label: 'Matrícula' },
@@ -147,12 +145,11 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Expira', label: 'Expira' }
   ],
   'document-access': [
-    { key: 'Codigo', label: 'Código' },
     { key: 'Name', label: 'Nome' },
     { key: 'CPF', label: 'CPF' },
     { key: 'Matricula', label: 'Matrícula' },
     { key: 'Empresa', label: 'Empresa' },
-    { key: 'Cartao', label: 'Cartão' },
+    { key: 'Cartao', label: 'Crachá' },
     { key: 'Direcao', label: 'Direção' },
     { key: 'Tipo', label: 'Tipo' },
     { key: 'Terminal', label: 'Terminal' },
@@ -160,7 +157,6 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Transito', label: 'Trânsito' }
   ],
   'matricula-info': [
-    { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'CPF', label: 'CPF' },
     { key: 'Matricula', label: 'Matrícula' },
@@ -171,15 +167,14 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Expira', label: 'Expira' }
   ],
   'empresa-info': [
-    { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'CPF', label: 'CPF' },
     { key: 'Matricula', label: 'Matrícula' },
     { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' }
+    { key: 'Tipo', label: 'Tipo' },
+    { key: 'CardNumber', label: 'Crachá' }
   ],
   'cracha-info': [
-    { key: 'SbiID', label: 'SbiID' },
     { key: 'Name', label: 'Nome' },
     { key: 'CPF', label: 'CPF' },
     { key: 'Matricula', label: 'Matrícula' },
@@ -208,7 +203,7 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Evento', label: 'Evento' },
     { key: 'NomeCompleto', label: 'Nome Completo' },
     { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
-    { key: 'Cartao', label: 'Cartão' },
+    { key: 'Cartao', label: 'Crachá' },
     { key: 'Tipo', label: 'Tipo' },
     { key: 'Empresa', label: 'Empresa' },
     { key: 'StatusAcesso', label: 'Status do Acesso' },
@@ -220,6 +215,7 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
 export function QueriesPage(){
   const [mode, setMode] = useState<Mode>('prontas')
   const [quickKind, setQuickKind] = useState<QuickKind>('access-agg')
+  const [queriesCfg, setQueriesCfg] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sqlModal, setSqlModal] = useState(false)
@@ -229,6 +225,7 @@ export function QueriesPage(){
   const [data, setData] = useState<any[]>([])
   const [filters, setFilters] = useState<{[k:string]: any}>({})
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+  const [pdfExportedRun, setPdfExportedRun] = useState<number | null>(null)
   const [lastSuccessfulRun, setLastSuccessfulRun] = useState(0)
   const [progressActive, setProgressActive] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -278,6 +275,11 @@ export function QueriesPage(){
       }catch{}
     })()
     return () => { mounted = false }
+  }, [])
+  React.useEffect(() => {
+    api.getQueriesConfig()
+      .then(c => setQueriesCfg(c || {}))
+      .catch(()=> setQueriesCfg({}))
   }, [])
 
   React.useEffect(() => {
@@ -381,7 +383,13 @@ export function QueriesPage(){
 
   const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf))
 
-  function resetData(){ setData([]); setError(null) }
+  function resetData(){
+    setData([])
+    setError(null)
+    setPdfExportedRun(null)
+    if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+    setPdfUrl(null)
+  }
 
   function mapQuickToDataset(k: QuickKind): Dataset{
     if (k === 'transit-period') return 'transit'
@@ -468,6 +476,9 @@ export function QueriesPage(){
 
   async function runQuick(){
     setError(null); setLoading(true); startProgress()
+    setPdfExportedRun(null)
+    if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+    setPdfUrl(null)
     let ok = false
     try{
       if (quickKind === 'access-agg'){
@@ -485,14 +496,14 @@ export function QueriesPage(){
       }else if (quickKind === 'employees'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'SbiID', dir: 'asc' })
+          const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           return r
         })
         setData(collected)
       }else if (quickKind === 'external'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.externalSearch({ matricula, empresa, page, pageSize: ps, sort: 'SbiID', dir: 'asc' })
+          const r = await api.externalSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           const items = (r as any)?.items ?? r ?? []
           return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
         })
@@ -639,6 +650,9 @@ export function QueriesPage(){
 
   async function runPersonalizada(){
     setError(null); setLoading(true); startProgress()
+    setPdfExportedRun(null)
+    if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+    setPdfUrl(null)
     let ok = false
     try{
       if (dataset === 'access-agg'){
@@ -656,14 +670,14 @@ export function QueriesPage(){
       }else if (dataset === 'employees'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'SbiID', dir: 'asc' })
+          const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           return r
         })
         setData(collected)
       }else if (dataset === 'external'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
-          const r = await api.externalSearch({ matricula, empresa, page, pageSize: ps, sort: 'SbiID', dir: 'asc' })
+          const r = await api.externalSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           const items = (r as any)?.items ?? r ?? []
           return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
         })
@@ -722,6 +736,7 @@ export function QueriesPage(){
         const res = await fetch(url, { headers: h })
         if(!res.ok) return
         const blob = await res.blob()
+        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
         const name = `access-aggregated.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -732,10 +747,14 @@ export function QueriesPage(){
         const { empresa, terminal } = filters as any
         const r0 = rangeIso(filters)
         if(!r0) return
-        const qs = new URLSearchParams(Object.entries({ start: r0.startIso, end: r0.endIso, empresa: empresa||'', terminal: terminal||'', format })).toString()
+        const p: Record<string,string> = { start: r0.startIso, end: r0.endIso, format }
+        if (empresa) p.empresa = empresa
+        if (terminal) p.terminal = terminal
+        const qs = new URLSearchParams(p).toString()
         const res = await fetch(`/api/reports/transit/export?${qs}`, { headers: h })
         if(!res.ok) return
         const blob = await res.blob()
+        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
         const name = `transit.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -749,6 +768,7 @@ export function QueriesPage(){
         const res = await fetch(`/api/reports/door-critical/export?${qs}`, { headers: h })
         if(!res.ok) return
         const blob = await res.blob()
+        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
         const name = `door-critical.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -772,6 +792,7 @@ export function QueriesPage(){
         const res = await fetch(url, { headers: h })
         if(!res.ok){ await showErr(res); return }
         const blob = await res.blob()
+        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
         const name = `acessos-${cpf}.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
@@ -792,7 +813,10 @@ export function QueriesPage(){
         const { empresa, terminal } = filters as any
         const r0 = rangeIso(filters)
         if(!r0){ setError('Informe início e fim'); return }
-        const qs = new URLSearchParams(Object.entries({ start: r0.startIso, end: r0.endIso, empresa: empresa||'', terminal: terminal||'', format:'pdf' })).toString()
+        const p: Record<string,string> = { start: r0.startIso, end: r0.endIso, format:'pdf' }
+        if (empresa) p.empresa = empresa
+        if (terminal) p.terminal = terminal
+        const qs = new URLSearchParams(p).toString()
         url = `/api/reports/transit/export?${qs}`
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = rangeIso(filters)
@@ -1029,7 +1053,7 @@ export function QueriesPage(){
               { key:'cracha', label:'Crachá' },
               { key:'nivel', label:'Nível de Acesso' },
               { key:'visitantes', label:'Visitantes' }
-            ] as {key:QuickKind,label:string}[]).map(opt => {
+            ] as {key:QuickKind,label:string}[]).filter(opt => !!queriesCfg[opt.key]).map(opt => {
               const id = `qsw_${opt.key}`
               return (
                 <div key={opt.key} className="queries-ready-switch">
@@ -1113,49 +1137,63 @@ export function QueriesPage(){
             )}
             {quickKind === 'cpf' && (
               <>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={cpfObter} onChange={e=> setCpfObter(e.target.value as any)}>
-                    <option value="info">Informação de Cadastro</option>
-                    <option value="todos">Todos os Acessos</option>
-                    <option value="catracas">Somente Catracas</option>
-                    <option value="faciais">Somente Faciais</option>
-                  </select>
-                </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
-                  <input className="form-control" placeholder="CPF" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
-                </div>
-                {(cpfObter !== 'info') && (
-                  <>
-                    <div className="form-check form-switch d-flex align-items-center justify-content-between border rounded px-3 py-2">
-                      <label className="form-check-label">Sem período</label>
-                      <input className="form-check-input" type="checkbox" checked={cpfSemPeriodo} onChange={e=> setCpfSemPeriodo(e.target.checked)} />
+                <div style={{display:'grid', gridTemplateColumns:'280px 220px 200px 1fr 1fr', gap:8, alignItems:'center'}}>
+                  <div style={{minWidth:0}}>
+                    <div className="input-group" style={{width:'100%'}}>
+                      <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                      <select className="form-select" value={cpfObter} onChange={e=> setCpfObter(e.target.value as any)}>
+                        <option value="info">Informação de Cadastro</option>
+                        <option value="todos">Todos os Acessos</option>
+                        <option value="catracas">Somente Catracas</option>
+                        <option value="faciais">Somente Faciais</option>
+                      </select>
                     </div>
-                    {!cpfSemPeriodo && (
-                    <>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                  </div>
+                  <div style={{minWidth:0}}>
+                    <div className="input-group" style={{width:'100%'}}>
+                      <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
+                      <input className="form-control" placeholder="CPF" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
                     </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-clock" /></span>
-                      <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-clock" /></span>
-                      <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
-                    </div>
-                    </>
+                  </div>
+                  <div>
+                    {cpfObter !== 'info' && (
+                      <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{paddingLeft:0, margin:0}}>
+                        <input id="cpfSemPeriodoSwitch" className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={cpfSemPeriodo} onChange={e=> setCpfSemPeriodo(e.target.checked)} />
+                        <label className="form-check-label" htmlFor="cpfSemPeriodoSwitch">Sem período</label>
+                      </div>
                     )}
-                  </>
-                )}
+                  </div>
+                  <div>
+                    {cpfObter !== 'info' && !cpfSemPeriodo && (
+                      <div>
+                        <div className="fw-semibold" style={{fontSize:12, marginLeft:2, marginBottom:2}}>Início</div>
+                        <div className="input-group">
+                          <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                          <input className="form-control" type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                        </div>
+                        <div className="input-group" style={{marginTop:6}}>
+                          <span className="input-group-text"><i className="bi bi-clock" /></span>
+                          <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    {cpfObter !== 'info' && !cpfSemPeriodo && (
+                      <div>
+                        <div className="fw-semibold" style={{fontSize:12, marginLeft:2, marginBottom:2}}>Fim</div>
+                        <div className="input-group">
+                          <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                          <input className="form-control" type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                        </div>
+                        <div className="input-group" style={{marginTop:6}}>
+                          <span className="input-group-text"><i className="bi bi-clock" /></span>
+                          <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </>
             )}
             {quickKind === 'matricula' && (
@@ -1313,7 +1351,7 @@ export function QueriesPage(){
               </>
             )}
             {quickKind === 'visitantes' && (
-              <>
+              <div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
                   <select className="form-select" value={visitantesObter} onChange={e=> setVisitantesObter(e.target.value as any)}>
@@ -1351,7 +1389,7 @@ export function QueriesPage(){
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
                   <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
                 </div>
-              </>
+              </div>
             )}
           </div>
           <div className="queries-row" style={{marginBottom:12}}>
@@ -1383,9 +1421,11 @@ export function QueriesPage(){
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
                     </button>
-                    <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
-                      <i className="bi bi-eye me-1" /> Visualizar PDF
-                    </button>
+                    {pdfExportedRun === lastSuccessfulRun && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                        <i className="bi bi-eye me-1" /> Visualizar PDF
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -1510,9 +1550,11 @@ export function QueriesPage(){
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
                     </button>
-                    <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
-                      <i className="bi bi-eye me-1" /> Visualizar PDF
-                    </button>
+                    {pdfExportedRun === lastSuccessfulRun && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                        <i className="bi bi-eye me-1" /> Visualizar PDF
+                      </button>
+                    )}
                   </>
                 )}
               </div>

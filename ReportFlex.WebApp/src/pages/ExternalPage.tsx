@@ -4,7 +4,7 @@ import { api } from '../api'
 export function ExternalPage(){
   const [matricula, setMatricula] = useState('')
   const [empresa, setEmpresa] = useState('')
-  const [sort, setSort] = useState<'SbiID'|'Name'|'Matricula'|'Empresa'>('SbiID')
+  const [sort, setSort] = useState<'CardNumber'|'Name'|'Matricula'|'Empresa'>('CardNumber')
   const [dir, setDir] = useState<'asc'|'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -33,7 +33,7 @@ export function ExternalPage(){
       setRows(res.items ?? []); setTotal(res.total ?? 0)
     }catch{ setError('Falha ao buscar externos') } finally{ setLoading(false) }
   }
-  function headerClick(col: 'SbiID'|'Name'|'Matricula'|'Empresa'){
+  function headerClick(col: 'CardNumber'|'Name'|'Matricula'|'Empresa'){
     if (sort === col) setDir(dir === 'asc' ? 'desc' : 'asc')
     else setSort(col)
     setPage(1)
@@ -46,7 +46,7 @@ export function ExternalPage(){
         <input className="form-control" value={matricula} onChange={e=>setMatricula(e.target.value)} placeholder="Matrícula" />
         <input className="form-control" value={empresa} onChange={e=>setEmpresa(e.target.value)} placeholder="Empresa" />
         <select className="form-select" value={sort} onChange={e=> setSort(e.target.value as any)}>
-          <option value="SbiID">Código</option>
+          <option value="CardNumber">Crachá</option>
           <option value="Name">Nome</option>
           <option value="Matricula">Matrícula</option>
           <option value="Empresa">Empresa</option>
@@ -59,17 +59,17 @@ export function ExternalPage(){
         <input className="form-control" type="number" value={pageSize} onChange={e=>setPageSize(parseInt(e.target.value || '20'))} style={{width:80}} />
         <button className="btn btn-primary" onClick={load}>Buscar</button>
         {reportOptions.csv && (
-          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['SbiID','Name','Surname','PreferredName','Identifier','Empresa','CardNumber'])}>Exportar CSV</button>
+          <button className="btn btn-outline-secondary" onClick={()=> exportCsv(rows, ['CardNumber','Name','Surname','PreferredName','Identifier','Empresa'])}>Exportar CSV</button>
         )}
       </div>
       {loading && <div>Carregando...</div>}
       {error && <div style={{color:'red'}}>{error}</div>}
       <table className="table table-sm">
-        <thead><tr>{['SbiID','Name','Surname','PreferredName','Identifier','Empresa','CardNumber'].map(c=> 
-          <th key={c} onClick={()=> (c==='SbiID'||c==='Name'||c==='Identifier'||c==='Empresa') && headerClick(c as any)} style={{cursor:'pointer'}}>
-            {c}{sort===c ? (dir==='asc'?' ▲':' ▼') : ''}
+        <thead><tr>{['CardNumber','Name','Surname','PreferredName','Identifier','Empresa'].map(c=> 
+          <th key={c} onClick={()=> (c==='CardNumber'||c==='Name'||c==='Identifier'||c==='Empresa') && headerClick(c as any)} style={{cursor:'pointer'}}>
+            {(c === 'CardNumber' ? 'Crachá' : c)}{sort===c ? (dir==='asc'?' ▲':' ▼') : ''}
           </th>)}</tr></thead>
-        <tbody>{rows.map((r,i)=> <tr key={i}>{['SbiID','Name','Surname','PreferredName','Identifier','Empresa','CardNumber'].map(c => <td key={c}>{r[c] ?? ''}</td>)}</tr>)}</tbody>
+        <tbody>{rows.map((r,i)=> <tr key={i}>{['CardNumber','Name','Surname','PreferredName','Identifier','Empresa'].map(c => <td key={c}>{r[c] ?? ''}</td>)}</tr>)}</tbody>
       </table>
       <div className="row" style={{marginTop:8}}>
         <span>Total: {total}</span>
@@ -83,7 +83,7 @@ export function ExternalPage(){
 }
 
 function exportCsv(rows: any[], cols: string[]){
-  const header = cols.join(',')
+  const header = cols.map(c => c === 'CardNumber' ? 'Cracha' : c).join(',')
   const data = rows.map(r=> cols.map(c=> JSON.stringify(String(r[c] ?? '')).replace(/^\"|\"$/g,'')).join(',')).join('\n')
   const blob = new Blob([header+'\n'+data], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)

@@ -525,7 +525,7 @@ app.MapGet("/api/admin/queries-config", () =>
         }
     }
     return Results.Ok(new Dictionary<string, bool>());
-}).RequireAuthorization("NotCliente");
+}).RequireAuthorization();
 
 app.MapPost("/api/admin/queries-config", async (HttpContext ctx) =>
 {
@@ -538,6 +538,25 @@ app.MapPost("/api/admin/queries-config", async (HttpContext ctx) =>
 static string ToOrderDir(string? dir) => string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
 static int ToPage(int page) => page <= 0 ? 1 : page;
 static int ToPageSize(int pageSize) => (pageSize <= 0 || pageSize > 200) ? 20 : pageSize;
+
+async Task<string?> GetDefaultClientNameAsync()
+{
+    var env = LoadEnv();
+    if (!env.TryGetValue("REPORT_DEFAULT_CLIENT_ID", out var v) || !int.TryParse(v, out var cid) || cid <= 0) return null;
+    try
+    {
+        using var cn = new SqlConnection(GetConn("Logins"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT NOME FROM dbo.ClientesPortal WHERE Id=@id";
+        cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
+        return (string?)await cmd.ExecuteScalarAsync();
+    }
+    catch
+    {
+        return null;
+    }
+}
 
 app.MapGet("/api/admin/db-mode", () =>
 {
@@ -2459,14 +2478,16 @@ app.MapGet("/api/login/tokens", async (HttpRequest req) =>
 
 app.MapGet("/api/cms/employees/search", async (string? matricula, string? empresa, int page, int pageSize, string? sort, string? dir) =>
 {
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     var sortMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["Name"] = "e.Name",
         ["SbiID"] = "e.SbiID",
+        ["CardNumber"] = "c.CardNumber",
         ["Matricula"] = "e.Identifier",
         ["Empresa"] = "uf.UF2"
     };
-    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "e.SbiID";
+    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "c.CardNumber";
     var orderDir = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
     if (page <= 0) page = 1;
     if (pageSize <= 0 || pageSize > 200) pageSize = 20;
@@ -2479,9 +2500,10 @@ app.MapGet("/api/cms/employees/search", async (string? matricula, string? empres
     if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
     cmd.CommandText = $@"
-SELECT e.SbiID,e.Name,e.Surname,e.PreferredName,e.Identifier,uf.UF2,uf.UF21
+SELECT e.SbiID,e.Name,e.Surname,e.PreferredName,e.Identifier,uf.UF2,'FUNCIONÁRIO' as Tipo,c.CardNumber
 FROM Employee e
 INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
@@ -2495,14 +2517,16 @@ INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     var items = new List<object>();
     while (await r.ReadAsync())
     {
+        var empresaRow = r.IsDBNull(5) ? null : r.GetString(5);
+        if (string.IsNullOrWhiteSpace(empresaRow)) empresaRow = defaultEmpresa;
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
+            CardNumber = r.IsDBNull(7) ? null : r.GetString(7),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Surname = r.IsDBNull(2) ? null : r.GetString(2),
             PreferredName = r.IsDBNull(3) ? null : r.GetString(3),
             Identifier = r.IsDBNull(4) ? null : r.GetString(4),
-            Empresa = r.IsDBNull(5) ? null : r.GetString(5),
+            Empresa = empresaRow,
             Tipo = r.IsDBNull(6) ? null : r.GetString(6)
         });
     }
@@ -2534,13 +2558,14 @@ app.MapGet("/api/reports/transit", async (string start, string end, string? empr
         cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     }
     cmd.CommandText = $@"
-SELECT e.SbiID,e.Name,u.UF2 as Empresa,t.TERMINAL,v.DESCRIPTION as TerminalDescription,t.TRANSIT_DATE
+SELECT c.CardNumber,e.Name,u.UF2 as Empresa,t.TERMINAL,v.DESCRIPTION as TerminalDescription,t.TRANSIT_DATE
 FROM HA_TRANSIT t
 INNER JOIN Employee e ON e.SbiID = t.SBI_ID
 LEFT JOIN EmployeeUserFields u ON u.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 {where}
-ORDER BY t.TRANSIT_DATE DESC
+ORDER BY c.CardNumber ASC, t.TRANSIT_DATE DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM HA_TRANSIT t
@@ -2555,7 +2580,7 @@ LEFT JOIN EmployeeUserFields u ON u.SbiID = e.SbiID
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
+            CardNumber = r.IsDBNull(0) ? null : r.GetString(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Empresa = r.IsDBNull(2) ? null : r.GetString(2),
             Terminal = r.IsDBNull(3) ? null : r.GetString(3),
@@ -2589,25 +2614,26 @@ app.MapGet("/api/reports/transit/export", async (HttpContext ctx, string start, 
         cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     }
     cmd.CommandText = $@"
-SELECT e.SbiID,e.Name,u.UF2 as Empresa,t.TERMINAL,v.DESCRIPTION as TerminalDescription,t.TRANSIT_DATE
+SELECT c.CardNumber,e.Name,u.UF2 as Empresa,t.TERMINAL,v.DESCRIPTION as TerminalDescription,t.TRANSIT_DATE
 FROM HA_TRANSIT t
 INNER JOIN Employee e ON e.SbiID = t.SBI_ID
 LEFT JOIN EmployeeUserFields u ON u.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 {where}
-ORDER BY t.TRANSIT_DATE DESC";
+ORDER BY c.CardNumber ASC, t.TRANSIT_DATE DESC";
     using var r = await cmd.ExecuteReaderAsync();
-    var rows = new List<(int id, string? name, string? empresa, string? terminal, string? termDesc, DateTime date)>();
+    var rows = new List<(string? card, string? name, string? empresa, string? terminal, string? termDesc, DateTime date)>();
     while (await r.ReadAsync())
     {
-        rows.Add((r.GetInt32(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetDateTime(5)));
+        rows.Add((r.IsDBNull(0) ? null : r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetDateTime(5)));
     }
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
-        sb.AppendLine("SbiID,Name,Empresa,Terminal,TerminalDescription,TransitDate");
+        sb.AppendLine("Cracha,Name,Empresa,Terminal,TerminalDescription,TransitDate");
         foreach (var x in rows)
-            sb.AppendLine($"{x.id},{Escape(x.name)},{Escape(x.empresa)},{Escape(x.terminal)},{Escape(x.termDesc)},{x.date:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"{Escape(x.card)},{Escape(x.name)},{Escape(x.empresa)},{Escape(x.terminal)},{Escape(x.termDesc)},{x.date:yyyy-MM-dd HH:mm:ss}");
         return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "transit.csv");
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
@@ -2626,8 +2652,8 @@ ORDER BY t.TRANSIT_DATE DESC";
                 foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
                 sheetData.Append(row);
             }
-            AddRow("SbiID","Name","Empresa","Terminal","TerminalDescription","TransitDate");
-            foreach (var x in rows) AddRow(x.id.ToString(), x.name ?? "", x.empresa ?? "", x.terminal ?? "", x.termDesc ?? "", x.date.ToString("yyyy-MM-dd HH:mm:ss"));
+            AddRow("Cracha","Name","Empresa","Terminal","TerminalDescription","TransitDate");
+            foreach (var x in rows) AddRow(x.card ?? "", x.name ?? "", x.empresa ?? "", x.terminal ?? "", x.termDesc ?? "", x.date.ToString("yyyy-MM-dd HH:mm:ss"));
         }
         return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "transit.xlsx");
     }
@@ -2695,10 +2721,10 @@ ORDER BY t.TRANSIT_DATE DESC";
                     {
                         c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn();
                     });
-                    table.Cell().Text("SbiID"); table.Cell().Text("Name"); table.Cell().Text("Empresa"); table.Cell().Text("Terminal"); table.Cell().Text("TerminalDescription"); table.Cell().Text("TransitDate");
+                    table.Cell().Text("Crachá"); table.Cell().Text("Name"); table.Cell().Text("Empresa"); table.Cell().Text("Terminal"); table.Cell().Text("TerminalDescription"); table.Cell().Text("TransitDate");
                     foreach (var x in rows)
                     {
-                        table.Cell().Text(x.id.ToString());
+                        table.Cell().Text(x.card ?? "");
                         table.Cell().Text(x.name ?? "");
                         table.Cell().Text(x.empresa ?? "");
                         table.Cell().Text(x.terminal ?? "");
@@ -2767,7 +2793,6 @@ ORDER BY q.TRANSIT_DATE DESC";
     {
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
             Direction = r.IsDBNull(3) ? null : r.GetString(3),
@@ -2810,7 +2835,6 @@ WHERE x.PreferredName = @cpf";
     {
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
             UserType = r.IsDBNull(3) ? null : r.GetString(3)
@@ -3080,6 +3104,7 @@ app.MapGet("/api/access/info/by-document", async (string documento) =>
 {
     var docRaw = (documento ?? "").Trim();
     var docDigits = DigitsOnly(docRaw);
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     var connStr = GetConn("CMS");
     using var cn = new SqlConnection(connStr);
     try
@@ -3099,8 +3124,8 @@ WITH Persons AS (
         e.Name + ' ' + e.Surname AS Name,
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
-        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
-        uf.UF21 AS Tipo,
+        NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
+        'FUNCIONÁRIO' AS Tipo,
         c.CardNumber AS CardNumber,
         e.CommencementDateTime AS Cadastro,
         e.ExpiryDateTime AS Expira
@@ -3118,14 +3143,15 @@ WITH Persons AS (
         x.Name + ' ' + x.Surname AS Name,
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
-        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
-        uf.UF21 AS Tipo,
+        COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
+        'TERCEIRO' AS Tipo,
         c.CardNumber AS CardNumber,
         x.CommencementDateTime AS Cadastro,
         x.ExpiryDateTime AS Expira
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
     LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     WHERE
         x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
         (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
@@ -3143,21 +3169,24 @@ SELECT DISTINCT
     Cadastro,
     Expira
 FROM Persons
-ORDER BY Name, CardNumber;";
+ORDER BY CardNumber, Name;";
     cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
     cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
     while (await r.ReadAsync())
     {
+        var tipo = r.IsDBNull(5) ? null : r.GetString(5);
+        var empresa = r.IsDBNull(4) ? null : r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CPF = r.IsDBNull(2) ? null : r.GetString(2),
             Matricula = r.IsDBNull(3) ? null : r.GetString(3),
-            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
-            Tipo = r.IsDBNull(5) ? null : r.GetValue(5).ToString(),
+            Empresa = empresa,
+            Tipo = tipo,
             CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
             Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
             Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
@@ -3170,6 +3199,7 @@ app.MapGet("/api/access/by-document", async (string documento, string start, str
 {
     var docRaw = (documento ?? "").Trim();
     var docDigits = DigitsOnly(docRaw);
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
     if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
 
@@ -3214,7 +3244,7 @@ WITH People AS (
         e.Name + ' ' + e.Surname AS Name,
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
         'FUNCIONÁRIO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
@@ -3231,12 +3261,13 @@ WITH People AS (
         x.Name + ' ' + x.Surname AS Name,
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
         'TERCEIRO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
     LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     WHERE
         x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
         (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
@@ -3289,7 +3320,7 @@ SELECT
     DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
 FROM EventsFiltered
-ORDER BY TimeTicks DESC
+ORDER BY CardNumber ASC, TimeTicks DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 
 WITH People AS (
@@ -3344,16 +3375,19 @@ WHERE
     var items = new List<object>();
     while (await _r.ReadAsync())
     {
+        var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
+        var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
         items.Add(new
         {
-            Codigo = _r.GetInt32(0),
             Name = _r.IsDBNull(1) ? null : _r.GetString(1),
             CPF = _r.IsDBNull(2) ? null : _r.GetString(2),
             Matricula = _r.IsDBNull(3) ? null : _r.GetString(3),
-            Empresa = _r.IsDBNull(4) ? null : _r.GetString(4),
+            Empresa = empresa,
             Cartao = _r.IsDBNull(5) ? null : _r.GetString(5),
             Direcao = _r.IsDBNull(6) ? null : _r.GetString(6),
-            Tipo = _r.IsDBNull(7) ? null : _r.GetString(7),
+            Tipo = tipo,
             Terminal = _r.IsDBNull(8) ? null : _r.GetString(8),
             TerminalDescription = _r.IsDBNull(9) ? null : _r.GetString(9),
             Transito = _r.GetDateTime(10)
@@ -3368,6 +3402,7 @@ app.MapGet("/api/access/by-document/all", async (string documento, string? mode,
 {
     var docRaw = (documento ?? "").Trim();
     var docDigits = DigitsOnly(docRaw);
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     var modeNorm = string.IsNullOrWhiteSpace(mode) ? "all" : mode.Trim().ToLowerInvariant();
     if (modeNorm != "all" && modeNorm != "catracas" && modeNorm != "faciais") modeNorm = "all";
 
@@ -3395,7 +3430,7 @@ WITH People AS (
         e.Name + ' ' + e.Surname AS Name,
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
         'FUNCIONÁRIO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
@@ -3412,12 +3447,13 @@ WITH People AS (
         x.Name + ' ' + x.Surname AS Name,
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
-        uf.UF2 AS Empresa,
+        COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
         'TERCEIRO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
     LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     WHERE
         x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
         (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
@@ -3469,7 +3505,7 @@ SELECT
     DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
 FROM EventsFiltered
-ORDER BY TimeTicks DESC
+ORDER BY CardNumber ASC, TimeTicks DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 
 WITH People AS (
@@ -3522,16 +3558,19 @@ WHERE
     var items = new List<object>();
     while (await _r.ReadAsync())
     {
+        var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
+        var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
         items.Add(new
         {
-            Codigo = _r.GetInt32(0),
             Name = _r.IsDBNull(1) ? null : _r.GetString(1),
             CPF = _r.IsDBNull(2) ? null : _r.GetString(2),
             Matricula = _r.IsDBNull(3) ? null : _r.GetString(3),
-            Empresa = _r.IsDBNull(4) ? null : _r.GetString(4),
+            Empresa = empresa,
             Cartao = _r.IsDBNull(5) ? null : _r.GetString(5),
             Direcao = _r.IsDBNull(6) ? null : _r.GetString(6),
-            Tipo = _r.IsDBNull(7) ? null : _r.GetString(7),
+            Tipo = tipo,
             Terminal = _r.IsDBNull(8) ? null : _r.GetString(8),
             TerminalDescription = _r.IsDBNull(9) ? null : _r.GetString(9),
             Transito = _r.GetDateTime(10)
@@ -3572,7 +3611,7 @@ app.MapGet("/api/access/by-document/export", async (HttpContext http, string doc
         return Results.Stream(async (stream) =>
         {
             await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
-            await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
+            await writer.WriteLineAsync("Cracha,Nome,CPF,Matricula,Empresa,Direcao,Tipo,Terminal,Descricao,Transito");
 
             using var cn = new SqlConnection(connStr);
             try { await cn.OpenAsync(http.RequestAborted); }
@@ -3678,7 +3717,7 @@ SELECT
     DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
 FROM EventsFiltered
-ORDER BY TimeTicks DESC;
+ORDER BY CardNumber ASC, TimeTicks DESC;
 ";
                 SqlDataReader r;
                 try
@@ -3695,12 +3734,11 @@ ORDER BY TimeTicks DESC;
                 while (await _r.ReadAsync(http.RequestAborted))
                 {
                     var line =
-                        _r.GetInt32(0) + "," +
+                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
                         Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
                         Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
                         Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
                         Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
-                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
                         Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
                         Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
                         Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
@@ -3918,10 +3956,10 @@ ORDER BY TimeTicks DESC;
                 foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
                 sheetData.Append(row);
             }
-            AddRow("Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito");
+            AddRow("Cracha","Nome","CPF","Matricula","Empresa","Direcao","Tipo","Terminal","Descricao","Transito");
             foreach (var x in rows)
             {
-                AddRow(x.Codigo.ToString(), x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Cartao ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
+                AddRow(x.Cartao ?? "", x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
             }
         }
         return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
@@ -3958,7 +3996,7 @@ app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string
         return Results.Stream(async (stream) =>
         {
             await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true);
-            await writer.WriteLineAsync("Codigo,Nome,CPF,Matricula,Empresa,Cartao,Direcao,Tipo,Terminal,Descricao,Transito");
+            await writer.WriteLineAsync("Cracha,Nome,CPF,Matricula,Empresa,Direcao,Tipo,Terminal,Descricao,Transito");
 
             using var cn = new SqlConnection(connStr);
             try { await cn.OpenAsync(http.RequestAborted); }
@@ -4122,7 +4160,7 @@ SELECT
     DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
 FROM EventsFiltered
-ORDER BY TimeTicks DESC;
+ORDER BY CardNumber ASC, TimeTicks DESC;
 ";
                 SqlDataReader r;
                 try { r = await cmd.ExecuteReaderAsync(http.RequestAborted); }
@@ -4136,12 +4174,11 @@ ORDER BY TimeTicks DESC;
                 while (await _r.ReadAsync(http.RequestAborted))
                 {
                     var line =
-                        _r.GetInt32(0) + "," +
+                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
                         Csv(_r.IsDBNull(1) ? null : _r.GetString(1)) + "," +
                         Csv(_r.IsDBNull(2) ? null : _r.GetString(2)) + "," +
                         Csv(_r.IsDBNull(3) ? null : _r.GetString(3)) + "," +
                         Csv(_r.IsDBNull(4) ? null : _r.GetString(4)) + "," +
-                        Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
                         Csv(_r.IsDBNull(6) ? null : _r.GetString(6)) + "," +
                         Csv(_r.IsDBNull(7) ? null : _r.GetString(7)) + "," +
                         Csv(_r.IsDBNull(8) ? null : _r.GetString(8)) + "," +
@@ -4294,7 +4331,7 @@ WHERE
                 sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Acessos" });
                 var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
                 var header = new Row();
-                foreach (var c in new[] { "Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito" })
+                foreach (var c in new[] { "Cracha","Nome","CPF","Matricula","Empresa","Direcao","Tipo","Terminal","Descricao","Transito" })
                     header.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
                 sheetData.Append(header);
             }
@@ -4321,7 +4358,7 @@ WITH People AS (
         e.Name + ' ' + e.Surname AS Name,
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
-        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
+        NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
         'FUNCIONÁRIO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
@@ -4338,12 +4375,13 @@ WITH People AS (
         x.Name + ' ' + x.Surname AS Name,
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
-        COALESCE(NULLIF(uf.UF2,''), NULLIF(uf.UF20,''), NULLIF(uf.UF21,'')) AS Empresa,
+        COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
         'TERCEIRO' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
     LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     WHERE
         x.PreferredName = @docRaw OR x.Identifier = @docRaw OR x.AlternateIdentifier = @docRaw OR
         (@docDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @docDigits) OR
@@ -4396,7 +4434,7 @@ SELECT
     DATEADD(MILLISECOND, CAST((TimeTicks % 864000000000) / 10000 AS int),
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '0001-01-01'))) AS Transito
 FROM EventsFiltered
-ORDER BY TimeTicks DESC;
+ORDER BY CardNumber ASC, TimeTicks DESC;
 ";
         try
         {
@@ -4440,9 +4478,9 @@ ORDER BY TimeTicks DESC;
                 foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
                 sheetData.Append(row);
             }
-            AddRow("Codigo","Nome","CPF","Matricula","Empresa","Cartao","Direcao","Tipo","Terminal","Descricao","Transito");
+            AddRow("Cracha","Nome","CPF","Matricula","Empresa","Direcao","Tipo","Terminal","Descricao","Transito");
             foreach (var x in rows)
-                AddRow(x.Codigo.ToString(), x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Cartao ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
+                AddRow(x.Cartao ?? "", x.Nome ?? "", x.CPF ?? "", x.Matricula ?? "", x.Empresa ?? "", x.Direcao ?? "", x.Tipo ?? "", x.Terminal ?? "", x.Descricao ?? "", x.Transito.ToString("yyyy-MM-dd HH:mm:ss"));
         }
         return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
@@ -4456,6 +4494,7 @@ ORDER BY TimeTicks DESC;
 
 app.MapGet("/api/cms/person/by-card-info", async (string card) =>
 {
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
@@ -4465,8 +4504,8 @@ SELECT DISTINCT
     e.Name + ' ' + e.Surname AS Name,
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
-    uf.UF2 AS Empresa,
-    'Employee' AS Tipo,
+    NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
+    'FUNCIONÁRIO' AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -4480,28 +4519,32 @@ SELECT DISTINCT
     x.Name + ' ' + x.Surname AS Name,
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
-    ux.UF2 AS Empresa,
-    'External' AS Tipo,
+    COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
+    'TERCEIRO' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
 FROM ExternalRegular x
 LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 INNER JOIN Card c ON c.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 WHERE c.CardNumber = @card";
     cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
     while (await r.ReadAsync())
     {
+        var tipo = r.IsDBNull(5) ? null : r.GetString(5);
+        var empresa = r.IsDBNull(4) ? null : r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CPF = r.IsDBNull(2) ? null : r.GetString(2),
             Matricula = r.IsDBNull(3) ? null : r.GetString(3),
-            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
-            Tipo = r.IsDBNull(5) ? null : r.GetString(5),
+            Empresa = empresa,
+            Tipo = tipo,
             CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
             Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
             Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
@@ -4512,6 +4555,7 @@ WHERE c.CardNumber = @card";
 
 app.MapGet("/api/cms/person/by-matricula-info", async (string matricula) =>
 {
+    var defaultEmpresa = await GetDefaultClientNameAsync();
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
@@ -4521,8 +4565,8 @@ SELECT DISTINCT
     e.Name + ' ' + e.Surname AS Name,
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
-    uf.UF2 AS Empresa,
-    'Employee' AS Tipo,
+    NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
+    'FUNCIONÁRIO' AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -4536,28 +4580,32 @@ SELECT DISTINCT
     x.Name + ' ' + x.Surname AS Name,
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
-    ux.UF2 AS Empresa,
-    'External' AS Tipo,
+    COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
+    'TERCEIRO' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
 FROM ExternalRegular x
 LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 LEFT JOIN Card c ON c.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 WHERE x.Identifier = @matricula";
     cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula });
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
     while (await r.ReadAsync())
     {
+        var tipo = r.IsDBNull(5) ? null : r.GetString(5);
+        var empresa = r.IsDBNull(4) ? null : r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CPF = r.IsDBNull(2) ? null : r.GetString(2),
             Matricula = r.IsDBNull(3) ? null : r.GetString(3),
-            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
-            Tipo = r.IsDBNull(5) ? null : r.GetString(5),
+            Empresa = empresa,
+            Tipo = tipo,
             CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
             Cadastro = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
             Expira = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
@@ -4639,7 +4687,6 @@ SELECT COUNT(1) FROM (
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
             Direction = r.IsDBNull(3) ? null : r.GetString(3),
@@ -4729,7 +4776,6 @@ SELECT COUNT(1) FROM (
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
             Direction = r.IsDBNull(3) ? null : r.GetString(3),
@@ -4783,10 +4829,10 @@ app.MapGet("/api/cms/transit/by-level", async (int? levelId, string? levelName, 
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     cmd.CommandText = $@"
-SELECT q.SbiID,q.Name,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE,q.LevelId,q.Level
+SELECT q.CardNumber,q.Name,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE,q.LevelId,q.Level
 FROM (
     SELECT
-        e.SbiID,
+        c.CardNumber,
         e.Name,
         t.TERMINAL,
         v.DESCRIPTION,
@@ -4797,11 +4843,12 @@ FROM (
     INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
     INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
     INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
     UNION ALL
     SELECT
-        x.SbiID,
+        c.CardNumber,
         x.Name,
         t.TERMINAL,
         v.DESCRIPTION,
@@ -4812,10 +4859,11 @@ FROM (
     INNER JOIN SbiSiteBehavior sb ON sb.SbiID = t.SBI_ID
     INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
     INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID ORDER BY CardNumber) c
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end {whereLevel}
 ) q
-ORDER BY q.TRANSIT_DATE DESC
+ORDER BY q.CardNumber ASC, q.TRANSIT_DATE DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1) FROM (
     SELECT t.TRANSIT_DATE
@@ -4838,7 +4886,7 @@ SELECT COUNT(1) FROM (
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
+            CardNumber = r.IsDBNull(0) ? null : r.GetString(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Terminal = r.IsDBNull(2) ? null : r.GetString(2),
             TerminalDescription = r.IsDBNull(3) ? null : r.GetString(3),
@@ -4864,9 +4912,11 @@ SELECT DISTINCT
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
     uf.UF2 AS Empresa,
-    'Employee' AS Tipo
+    'Employee' AS Tipo,
+    c.CardNumber
 FROM Employee e
 INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
 WHERE uf.UF2 = @empresa
 UNION
 SELECT DISTINCT
@@ -4875,9 +4925,11 @@ SELECT DISTINCT
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
     ux.UF2 AS Empresa,
-    'External' AS Tipo
+    'External' AS Tipo,
+    c.CardNumber
 FROM ExternalRegular x
 INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID ORDER BY CardNumber) c
 WHERE ux.UF2 = @empresa";
     cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     using var r = await cmd.ExecuteReaderAsync();
@@ -4886,12 +4938,12 @@ WHERE ux.UF2 = @empresa";
     {
         list.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CPF = r.IsDBNull(2) ? null : r.GetString(2),
             Matricula = r.IsDBNull(3) ? null : r.GetString(3),
-            Empresa = r.IsDBNull(4) ? null : r.GetString(4),
-            Tipo = r.IsDBNull(5) ? null : r.GetString(5)
+            Empresa = r.IsDBNull(4) ? null : r.GetValue(4).ToString(),
+            Tipo = r.IsDBNull(5) ? null : r.GetString(5),
+            CardNumber = r.IsDBNull(6) ? null : r.GetString(6)
         });
     }
     return Results.Ok(list);
@@ -4910,10 +4962,10 @@ app.MapGet("/api/cms/transit/by-empresa", async (string empresa, DateTime start,
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     cmd.CommandText = @"
-SELECT q.SbiID,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+SELECT q.CardNumber,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
 FROM (
     SELECT
-        e.SbiID,
+        c.CardNumber,
         e.Name,
         uf.UF2 AS Empresa,
         t.TERMINAL,
@@ -4922,11 +4974,12 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN Employee e ON e.SbiID = t.SBI_ID
     INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     WHERE uf.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     UNION ALL
     SELECT
-        x.SbiID,
+        c.CardNumber,
         x.Name,
         ux.UF2 AS Empresa,
         t.TERMINAL,
@@ -4935,10 +4988,11 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
     INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID ORDER BY CardNumber) c
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     WHERE ux.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 ) q
-ORDER BY q.TRANSIT_DATE DESC
+ORDER BY q.CardNumber ASC, q.TRANSIT_DATE DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1) FROM (
     SELECT t.TRANSIT_DATE
@@ -4959,7 +5013,7 @@ SELECT COUNT(1) FROM (
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
+            CardNumber = r.IsDBNull(0) ? null : r.GetString(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Empresa = r.IsDBNull(2) ? null : r.GetString(2),
             Terminal = r.IsDBNull(3) ? null : r.GetString(3),
@@ -5082,9 +5136,10 @@ app.MapGet("/api/cms/employees/by-matricula", async (string matricula, int page,
     {
         ["Name"] = "e.Name",
         ["SbiID"] = "e.SbiID",
-        ["Matricula"] = "e.Identifier"
+        ["Matricula"] = "e.Identifier",
+        ["CardNumber"] = "c.CardNumber"
     };
-    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "e.SbiID";
+    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "c.CardNumber";
     var orderDir = ToOrderDir(dir);
     page = ToPage(page); pageSize = ToPageSize(pageSize);
     var offset = (page - 1) * pageSize;
@@ -5108,7 +5163,6 @@ SELECT COUNT(1) FROM Employee WHERE Identifier = @matricula";
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Surname = r.IsDBNull(2) ? null : r.GetString(2),
             PreferredName = r.IsDBNull(3) ? null : r.GetString(3),
@@ -5127,10 +5181,11 @@ app.MapGet("/api/cms/external/search", async (string? matricula, string? empresa
     {
         ["Name"] = "x.Name",
         ["SbiID"] = "x.SbiID",
+        ["CardNumber"] = "c.CardNumber",
         ["Matricula"] = "x.Identifier",
         ["Empresa"] = "ux.UF2"
     };
-    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "x.SbiID";
+    var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "c.CardNumber";
     var orderDir = ToOrderDir(dir);
     page = ToPage(page); pageSize = ToPageSize(pageSize);
     var offset = (page - 1) * pageSize;
@@ -5139,19 +5194,21 @@ app.MapGet("/api/cms/external/search", async (string? matricula, string? empresa
     using var cmd = cn.CreateCommand();
     var where = new List<string>();
     if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("x.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); }
-    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("ux.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name = @empresa OR ux.UF2 = @empresa)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
     cmd.CommandText = $@"
-SELECT x.SbiID,x.Name,x.Surname,x.PreferredName,x.Identifier,ux.UF2,c.CardNumber
+SELECT x.SbiID,x.Name,x.Surname,x.PreferredName,x.Identifier,COALESCE(ec.Name, ux.UF2) as Empresa,c.CardNumber
 FROM ExternalRegular x
 INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 LEFT JOIN Card c ON c.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM ExternalRegular x
 INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 {whereSql}";
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
@@ -5161,7 +5218,6 @@ INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Surname = r.IsDBNull(2) ? null : r.GetString(2),
             PreferredName = r.IsDBNull(3) ? null : r.GetString(3),
@@ -5186,11 +5242,12 @@ app.MapGet("/api/cms/access/by-level", async (int? levelId, string? levelName, i
     if (levelId.HasValue) { where = "WHERE b.BEHAVIOR_ID = @levelId"; cmd.Parameters.Add(new SqlParameter("@levelId", SqlDbType.Int) { Value = levelId.Value }); }
     else if (!string.IsNullOrWhiteSpace(levelName)) { where = "WHERE b.DESCRIPTION = @levelName"; cmd.Parameters.Add(new SqlParameter("@levelName", SqlDbType.VarChar) { Value = levelName }); }
     cmd.CommandText = $@"
-SELECT e.SbiID,e.Name,b.BEHAVIOR_ID,b.DESCRIPTION
+SELECT c.CardNumber,e.Name,b.BEHAVIOR_ID,b.DESCRIPTION
 FROM SbiSiteBehavior sb
 INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
 LEFT JOIN Employee e ON e.SbiID = sb.SbiID
-ORDER BY e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = sb.SbiID ORDER BY CardNumber) c
+ORDER BY c.CardNumber
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1) FROM SbiSiteBehavior sb
 INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
@@ -5203,7 +5260,7 @@ INNER JOIN AC_BEHAVIOR b ON b.BEHAVIOR_ID = sb.Behavior
     {
         items.Add(new
         {
-            SbiID = r.IsDBNull(0) ? (int?)null : r.GetInt32(0),
+            CardNumber = r.IsDBNull(0) ? null : r.GetString(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             LevelId = r.GetInt32(2),
             Level = r.IsDBNull(3) ? null : r.GetString(3)
@@ -5246,7 +5303,7 @@ INNER JOIN Employee e ON e.SbiID = t.SBI_ID
 INNER JOIN Card c ON c.SbiID = e.SbiID
 INNER JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 {where}
-ORDER BY t.TRANSIT_DATE DESC
+ORDER BY c.CardNumber ASC, t.TRANSIT_DATE DESC
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM HA_TRANSIT t
@@ -5261,7 +5318,6 @@ INNER JOIN Card c ON c.SbiID = e.SbiID
     {
         items.Add(new
         {
-            SbiID = r.GetInt32(0),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
             Direction = r.IsDBNull(3) ? null : r.GetString(3),
