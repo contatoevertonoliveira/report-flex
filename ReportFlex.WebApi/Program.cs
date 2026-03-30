@@ -2041,6 +2041,350 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     return Results.BadRequest(new { error = "Formato inválido" });
 }).RequireAuthorization();
 
+// ----------------------------------------------------------------
+// additional door event reports using existing stored procedures
+// JP4: jp4_sp_DoorGeneral, jp4_sp_DoorGeneral_byName, jp4_sp_DoorGeneral_bysite
+// shape the output to the same columns as door-critical for consistency
+static (List<(int EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
+{
+    try
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = procText;
+        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using var r = cmd.ExecuteReader();
+        var rows = new List<(int, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
+        while (r.Read())
+        {
+            rows.Add((
+                r.IsDBNull(0) ? 0 : r.GetInt32(0),
+                r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetString(6),
+                r.IsDBNull(7) ? null : r.GetString(7),
+                r.IsDBNull(8) ? null : r.GetString(8),
+                r.IsDBNull(9) ? null : r.GetString(9),
+                r.IsDBNull(10) ? null : r.GetString(10),
+                r.IsDBNull(11) ? null : r.GetString(11),
+                r.IsDBNull(12) ? null : r.GetString(12)
+            ));
+        }
+        return (rows, null);
+    }
+    catch (Exception ex)
+    {
+        return (new List<(int, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>(), ex.Message);
+    }
+}
+
+app.MapGet("/api/reports/door-general", async (string start, string end) =>
+{
+    try
+    {
+        var startDt = ParseDate(start);
+        var endDt = ParseDate(end);
+        using var cn = new SqlConnection(GetConn("EMS"));
+        await cn.OpenAsync();
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim";
+        var (rows, err) = ExecDoorProc(cn, proc, new[]
+        {
+            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") }
+        });
+        if (err != null) return Results.BadRequest(new { success = false, error = err });
+        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
+            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
+            NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
+            StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
+        }) });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general/export", async (string start, string end, string format) =>
+{
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
+    using var cn = new SqlConnection(GetConn("EMS"));
+    await cn.OpenAsync();
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim";
+    var (rows, err) = ExecDoorProc(cn, proc, new[]
+    {
+        new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") }
+    });
+    if (err != null) return Results.BadRequest(new { error = err });
+    // reuse export logic from critical
+    if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+        foreach (var x in rows) sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora ?? "")},{Escape(x.TAG ?? "")},{Escape(x.Acesso ?? "")},{Escape(x.Evento ?? "")},{Escape(x.NomeCompleto ?? "")},{Escape(x.DocumentoMatricula ?? "")},{Escape(x.Cartao ?? "")},{Escape(x.Tipo ?? "")},{Escape(x.Empresa ?? "")},{Escape(x.StatusAcesso ?? "")},{Escape(x.DetalheStatusAcesso ?? "")}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-general.csv");
+    }
+    if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorGeneral" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
+            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
+            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
+            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
+    }
+    if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        QuestPDF.Settings.License = LicenseType.Community;
+        var bytes = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Margin(20);
+                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais").SemiBold().FontSize(18); });
+                page.Content().Table(table =>
+                {
+                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
+                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
+                    foreach (var x in rows)
+                    {
+                        table.Cell().Text(x.EventID.ToString());
+                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
+                        table.Cell().Text(x.DataHora ?? "");
+                        table.Cell().Text(x.TAG ?? "");
+                        table.Cell().Text(x.Acesso ?? "");
+                        table.Cell().Text(x.Evento ?? "");
+                        table.Cell().Text(x.NomeCompleto ?? "");
+                        table.Cell().Text(x.DocumentoMatricula ?? "");
+                        table.Cell().Text(x.Cartao ?? "");
+                        table.Cell().Text(x.Tipo ?? "");
+                        table.Cell().Text(x.Empresa ?? "");
+                        table.Cell().Text(x.StatusAcesso ?? "");
+                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
+                    }
+                });
+            });
+        }).GeneratePdf();
+        return Results.File(bytes, "application/pdf", "door-general.pdf");
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name) =>
+{
+    try
+    {
+        var startDt = ParseDate(start);
+        var endDt = ParseDate(end);
+        using var cn = new SqlConnection(GetConn("EMS"));
+        await cn.OpenAsync();
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @Name";
+        var (rows, err) = ExecDoorProc(cn, proc, new[]
+        {
+            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@Name", SqlDbType.VarChar, 100) { Value = name ?? "" }
+        });
+        if (err != null) return Results.BadRequest(new { success = false, error = err });
+        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
+            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
+            NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
+            StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
+        }) });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general/by-name/export", async (string start, string end, string name, string format) =>
+{
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
+    using var cn = new SqlConnection(GetConn("EMS"));
+    await cn.OpenAsync();
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @Name";
+    var (rows, err) = ExecDoorProc(cn, proc, new[]
+    {
+        new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@Name", SqlDbType.VarChar, 100) { Value = name ?? "" }
+    });
+    if (err != null) return Results.BadRequest(new { error = err });
+    if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+        foreach (var x in rows) sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora ?? "")},{Escape(x.TAG ?? "")},{Escape(x.Acesso ?? "")},{Escape(x.Evento ?? "")},{Escape(x.NomeCompleto ?? "")},{Escape(x.DocumentoMatricula ?? "")},{Escape(x.Cartao ?? "")},{Escape(x.Tipo ?? "")},{Escape(x.Empresa ?? "")},{Escape(x.StatusAcesso ?? "")},{Escape(x.DetalheStatusAcesso ?? "")}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-general-by-name.csv");
+    }
+    if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorByName" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
+            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
+            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
+            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
+    }
+    if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        QuestPDF.Settings.License = LicenseType.Community;
+        var bytes = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Margin(20);
+                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais por Nome").SemiBold().FontSize(18); });
+                page.Content().Table(table =>
+                {
+                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
+                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
+                    foreach (var x in rows)
+                    {
+                        table.Cell().Text(x.EventID.ToString());
+                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
+                        table.Cell().Text(x.DataHora ?? "");
+                        table.Cell().Text(x.TAG ?? "");
+                        table.Cell().Text(x.Acesso ?? "");
+                        table.Cell().Text(x.Evento ?? "");
+                        table.Cell().Text(x.NomeCompleto ?? "");
+                        table.Cell().Text(x.DocumentoMatricula ?? "");
+                        table.Cell().Text(x.Cartao ?? "");
+                        table.Cell().Text(x.Tipo ?? "");
+                        table.Cell().Text(x.Empresa ?? "");
+                        table.Cell().Text(x.StatusAcesso ?? "");
+                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
+                    }
+                });
+            });
+        }).GeneratePdf();
+        return Results.File(bytes, "application/pdf", "door-general-by-name.pdf");
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general/by-site", async (string start, string end, string site) =>
+{
+    try
+    {
+        var startDt = ParseDate(start);
+        var endDt = ParseDate(end);
+        using var cn = new SqlConnection(GetConn("EMS"));
+        await cn.OpenAsync();
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @Site";
+        var (rows, err) = ExecDoorProc(cn, proc, new[]
+        {
+            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@Site", SqlDbType.VarChar, 100) { Value = site ?? "" }
+        });
+        if (err != null) return Results.BadRequest(new { success = false, error = err });
+        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
+            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
+            NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
+            StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
+        }) });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general/by-site/export", async (string start, string end, string site, string format) =>
+{
+    var startDt = ParseDate(start);
+    var endDt = ParseDate(end);
+    using var cn = new SqlConnection(GetConn("EMS"));
+    await cn.OpenAsync();
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @Site";
+    var (rows, err) = ExecDoorProc(cn, proc, new[]
+    {
+        new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@Site", SqlDbType.VarChar, 100) { Value = site ?? "" }
+    });
+    if (err != null) return Results.BadRequest(new { error = err });
+    if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+        foreach (var x in rows) sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora ?? "")},{Escape(x.TAG ?? "")},{Escape(x.Acesso ?? "")},{Escape(x.Evento ?? "")},{Escape(x.NomeCompleto ?? "")},{Escape(x.DocumentoMatricula ?? "")},{Escape(x.Cartao ?? "")},{Escape(x.Tipo ?? "")},{Escape(x.Empresa ?? "")},{Escape(x.StatusAcesso ?? "")},{Escape(x.DetalheStatusAcesso ?? "")}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-general-by-site.csv");
+    }
+    if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+    {
+        using var ms = new MemoryStream();
+        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
+            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
+            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorBySite" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
+            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
+            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
+            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
+        }
+        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
+    }
+    if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        QuestPDF.Settings.License = LicenseType.Community;
+        var bytes = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Margin(20);
+                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais por Site").SemiBold().FontSize(18); });
+                page.Content().Table(table =>
+                {
+                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
+                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
+                    foreach (var x in rows)
+                    {
+                        table.Cell().Text(x.EventID.ToString());
+                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
+                        table.Cell().Text(x.DataHora ?? "");
+                        table.Cell().Text(x.TAG ?? "");
+                        table.Cell().Text(x.Acesso ?? "");
+                        table.Cell().Text(x.Evento ?? "");
+                        table.Cell().Text(x.NomeCompleto ?? "");
+                        table.Cell().Text(x.DocumentoMatricula ?? "");
+                        table.Cell().Text(x.Cartao ?? "");
+                        table.Cell().Text(x.Tipo ?? "");
+                        table.Cell().Text(x.Empresa ?? "");
+                        table.Cell().Text(x.StatusAcesso ?? "");
+                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
+                    }
+                });
+            });
+        }).GeneratePdf();
+        return Results.File(bytes, "application/pdf", "door-general-by-site.pdf");
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
 app.MapGet("/api/prestadores", async () =>
 {
     var list = new List<object>();

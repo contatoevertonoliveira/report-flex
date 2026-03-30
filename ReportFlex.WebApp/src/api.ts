@@ -130,6 +130,18 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
   },
+  reportsDoorGeneral: async (p: { start: string, end: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/door-general?' + qs, { headers: headers() }))
+  },
+  reportsDoorGeneralByName: async (p: { start: string, end: string, name: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/door-general/by-name?' + qs, { headers: headers() }))
+  },
+  reportsDoorGeneralBySite: async (p: { start: string, end: string, site: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/door-general/by-site?' + qs, { headers: headers() }))
+  },
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
   },

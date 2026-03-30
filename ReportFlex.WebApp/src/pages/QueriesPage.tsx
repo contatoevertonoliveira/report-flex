@@ -252,6 +252,9 @@ export function QueriesPage(){
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
   const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'|'EMS'>('CMS')
   const [dbTableName, setDbTableName] = useState('')
+  const [doorMode, setDoorMode] = useState<'critical'|'general'|'general-by-name'|'general-by-site'>('critical')
+  const [doorName, setDoorName] = useState('')
+  const [doorSite, setDoorSite] = useState('')
 
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
   const canUseDbTables = level !== 'Cliente'
@@ -631,8 +634,25 @@ export function QueriesPage(){
         const eRaw = (filters as any).end || sRaw
         const r0 = rangeIso({ ...filters, start: sRaw, end: eRaw })
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
-        const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
-        setData(Array.isArray(res) ? res : [])
+        if (doorMode === 'critical'){
+          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
+          const list = (res as any)?.data ?? res
+          setData(Array.isArray(list) ? list : [])
+        }else if (doorMode === 'general'){
+          const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso })
+          const list = (res as any)?.data ?? res
+          setData(Array.isArray(list) ? list : [])
+        }else if (doorMode === 'general-by-name'){
+          if (!doorName){ setError('Informe o nome'); setLoading(false); return }
+          const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName })
+          const list = (res as any)?.data ?? res
+          setData(Array.isArray(list) ? list : [])
+        }else if (doorMode === 'general-by-site'){
+          if (!doorSite){ setError('Informe o site'); setLoading(false); return }
+          const res = await api.reportsDoorGeneralBySite({ start: r0.startIso, end: r0.endIso, site: doorSite })
+          const list = (res as any)?.data ?? res
+          setData(Array.isArray(list) ? list : [])
+        }
       }
       ok = true
     }catch(e:any){
@@ -764,12 +784,27 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = rangeIso(filters)
         if(!r0) return
-        const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
-        const res = await fetch(`/api/reports/door-critical/export?${qs}`, { headers: h })
+        let url = ''
+        if (doorMode === 'critical'){
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/reports/door-critical/export?${qs}`
+        }else if (doorMode === 'general'){
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/reports/door-general/export?${qs}`
+        }else if (doorMode === 'general-by-name'){
+          if (!doorName) return
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format }).toString()
+          url = `/api/reports/door-general/by-name/export?${qs}`
+        }else if (doorMode === 'general-by-site'){
+          if (!doorSite) return
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format }).toString()
+          url = `/api/reports/door-general/by-site/export?${qs}`
+        }
+        const res = await fetch(url, { headers: h })
         if(!res.ok) return
         const blob = await res.blob()
         if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
-        const name = `door-critical.${format}`
+        const name = `door-events.${format}`
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
         a.download = name
@@ -821,8 +856,21 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = rangeIso(filters)
         if(!r0){ setError('Informe início e fim'); return }
-        const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
-        url = `/api/reports/door-critical/export?${qs}`
+        if (doorMode === 'critical'){
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
+          url = `/api/reports/door-critical/export?${qs}`
+        }else if (doorMode === 'general'){
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
+          url = `/api/reports/door-general/export?${qs}`
+        }else if (doorMode === 'general-by-name'){
+          if (!doorName){ setError('Informe o nome'); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format:'pdf' }).toString()
+          url = `/api/reports/door-general/by-name/export?${qs}`
+        }else if (doorMode === 'general-by-site'){
+          if (!doorSite){ setError('Informe o site'); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format:'pdf' }).toString()
+          url = `/api/reports/door-general/by-site/export?${qs}`
+        }
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
         const { cpf } = filters as any
         if (!cpf){ setError('Informe o CPF'); return }
@@ -1083,7 +1131,7 @@ export function QueriesPage(){
           </div>
 
           <div className="queries-row" style={{marginBottom:8}}>
-            {(quickKind === 'transit-period' || quickKind === 'door-critical') && (
+            {(quickKind === 'transit-period') && (
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
@@ -1114,6 +1162,49 @@ export function QueriesPage(){
                       <input className="form-control" placeholder="Terminal (opcional)" value={filters.terminal || ''} onChange={e=> setFilters({...filters, terminal: e.target.value})} />
                     </div>
                   </>
+                )}
+              </>
+            )}
+            {(quickKind === 'door-critical') && (
+              <>
+                <div className="input-group" style={{maxWidth:280}}>
+                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                  <select className="form-select" value={doorMode} onChange={e=> setDoorMode(e.target.value as any)}>
+                    <option value="critical">Portas Críticas</option>
+                    <option value="general">Portas Gerais</option>
+                    <option value="general-by-name">Portas Gerais por Nome</option>
+                    <option value="general-by-site">Portas Gerais por Site</option>
+                  </select>
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
+                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-clock" /></span>
+                  <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
+                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                </div>
+                <div className="input-group">
+                  <span className="input-group-text"><i className="bi bi-clock" /></span>
+                  <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
+                </div>
+                {doorMode === 'general-by-name' && (
+                  <div className="input-group">
+                    <span className="input-group-text"><i className="bi bi-tag" /></span>
+                    <input className="form-control" placeholder="Nome da Porta/Site" value={doorName} onChange={e=> setDoorName(e.target.value)} />
+                  </div>
+                )}
+                {doorMode === 'general-by-site' && (
+                  <div className="input-group">
+                    <span className="input-group-text"><i className="bi bi-geo-alt" /></span>
+                    <input className="form-control" placeholder="Site" value={doorSite} onChange={e=> setDoorSite(e.target.value)} />
+                  </div>
                 )}
               </>
             )}
