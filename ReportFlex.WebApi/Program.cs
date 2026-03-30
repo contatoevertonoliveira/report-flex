@@ -168,6 +168,16 @@ static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string 
 // helper used by several export endpoints
 static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
 
+static string SaveReportFile(string fileName, byte[] bytes, IHostEnvironment env)
+{
+    var today = DateTime.Now.ToString("yyyy-MM-dd");
+    var dir = Path.Combine(env.ContentRootPath, "wwwroot", "reports", today);
+    Directory.CreateDirectory(dir);
+    var path = Path.Combine(dir, fileName);
+    System.IO.File.WriteAllBytes(path, bytes);
+    var rel = Path.Combine("reports", today, fileName).Replace("\\", "/");
+    return rel;
+}
 static DateTime ParseDate(string s)
 {
     if (string.IsNullOrWhiteSpace(s)) return DateTime.MinValue;
@@ -1805,7 +1815,7 @@ app.MapGet("/api/reports/door-critical", async (string start, string end) =>
             {
                 items.Add(new
                 {
-                    EventID = r.GetInt32(0),
+                    EventID = r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
                     TimeOrder = r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
                     DataHora = r.IsDBNull(2) ? null : r.GetString(2),
                     TAG = r.IsDBNull(3) ? null : r.GetString(3),
@@ -1859,7 +1869,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             {
                 items.Add(new
                 {
-                    EventID = r2.GetInt32(0),
+                    EventID = r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
                     TimeOrder = r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
                     DataHora = r2.IsDBNull(2) ? null : r2.GetString(2),
                     TAG = r2.IsDBNull(3) ? null : r2.GetString(3),
@@ -1895,15 +1905,15 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
     cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
     cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
 
-    List<(int EventID, DateTime? TimeOrder, string DataHora, string TAG, string Acesso, string Evento, string NomeCompleto, string DocumentoMatricula, string Cartao, string Tipo, string Empresa, string StatusAcesso, string DetalheStatusAcesso)> rows;
+    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
     try
     {
         using var r = await cmd.ExecuteReaderAsync();
-        rows = new List<(int, DateTime?, string, string, string, string, string, string, string, string, string, string, string)>();
+        rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
         while (await r.ReadAsync())
         {
             rows.Add((
-                r.GetInt32(0),
+                r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
                 r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
                 r.IsDBNull(2) ? null : r.GetString(2),
                 r.IsDBNull(3) ? null : r.GetString(3),
@@ -1948,14 +1958,14 @@ LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 ";
-        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
-        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
         using var r2 = await cmd2.ExecuteReaderAsync();
-        rows = new List<(int, DateTime?, string, string, string, string, string, string, string, string, string, string, string)>();
+        rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
         while (await r2.ReadAsync())
         {
             rows.Add((
-                r2.GetInt32(0),
+                r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
                 r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
                 r2.IsDBNull(2) ? null : r2.GetString(2),
                 r2.IsDBNull(3) ? null : r2.GetString(3),
@@ -1980,7 +1990,10 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
         {
             sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora)},{Escape(x.TAG)},{Escape(x.Acesso)},{Escape(x.Evento)},{Escape(x.NomeCompleto)},{Escape(x.DocumentoMatricula)},{Escape(x.Cartao)},{Escape(x.Tipo)},{Escape(x.Empresa)},{Escape(x.StatusAcesso)},{Escape(x.DetalheStatusAcesso)}");
         }
-        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-critical.csv");
+        var bytesCsv = Encoding.UTF8.GetBytes(sb.ToString());
+        var rel = SaveReportFile("door-critical.csv", bytesCsv, app.Environment);
+        ctx.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesCsv, "text/csv", "door-critical.csv");
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
@@ -1999,43 +2012,32 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
                 sheetData.Append(row);
             }
             AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
-            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa, x.StatusAcesso, x.DetalheStatusAcesso);
+            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
         }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
+        var bytesX = ms.ToArray();
+        var rel = SaveReportFile("door-critical.xlsx", bytesX, app.Environment);
+        ctx.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        // reuse PDF helper from earlier (Escape function is already defined earlier in file)
-        QuestPDF.Settings.License = LicenseType.Community;
-        var bytes = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Margin(20);
-                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Críticos").SemiBold().FontSize(18); });
-                page.Content().Table(table =>
-                {
-                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
-                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
-                    foreach (var x in rows)
-                    {
-                        table.Cell().Text(x.EventID.ToString());
-                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
-                        table.Cell().Text(x.DataHora ?? "");
-                        table.Cell().Text(x.TAG ?? "");
-                        table.Cell().Text(x.Acesso ?? "");
-                        table.Cell().Text(x.Evento ?? "");
-                        table.Cell().Text(x.NomeCompleto ?? "");
-                        table.Cell().Text(x.DocumentoMatricula ?? "");
-                        table.Cell().Text(x.Cartao ?? "");
-                        table.Cell().Text(x.Tipo ?? "");
-                        table.Cell().Text(x.Empresa ?? "");
-                        table.Cell().Text(x.StatusAcesso ?? "");
-                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
-                    }
-                });
-            });
-        }).GeneratePdf();
+        var (clientName, clientLogo) = await GetReportClientInfoAsync(ctx);
+        var generatedBy = GetReportUser(ctx);
+        var mapped = rows.Select(x => (
+            Cartao: x.Cartao,
+            NomeCompleto: x.NomeCompleto,
+            Tipo: x.Tipo,
+            DataHora: x.DataHora,
+            Evento: x.Evento,
+            Acesso: x.Acesso,
+            DocumentoMatricula: x.DocumentoMatricula,
+            StatusDisplay: string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            Empresa: x.Empresa,
+            TAG: x.TAG
+        )).ToList();
+        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Críticos", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var rel = SaveReportFile("door-critical.pdf", bytes, app.Environment);
+        ctx.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-critical.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
@@ -2045,7 +2047,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 // additional door event reports using existing stored procedures
 // JP4: jp4_sp_DoorGeneral, jp4_sp_DoorGeneral_byName, jp4_sp_DoorGeneral_bysite
 // shape the output to the same columns as door-critical for consistency
-static (List<(int EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
+static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
 {
     try
     {
@@ -2053,11 +2055,11 @@ static (List<(int EventID, DateTime? TimeOrder, string? DataHora, string? TAG, s
         cmd.CommandText = procText;
         foreach (var p in parameters) cmd.Parameters.Add(p);
         using var r = cmd.ExecuteReader();
-        var rows = new List<(int, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
+        var rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
         while (r.Read())
         {
             rows.Add((
-                r.IsDBNull(0) ? 0 : r.GetInt32(0),
+                r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
                 r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
                 r.IsDBNull(2) ? null : r.GetString(2),
                 r.IsDBNull(3) ? null : r.GetString(3),
@@ -2076,8 +2078,156 @@ static (List<(int EventID, DateTime? TimeOrder, string? DataHora, string? TAG, s
     }
     catch (Exception ex)
     {
-        return (new List<(int, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>(), ex.Message);
+        return (new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>(), ex.Message);
     }
+}
+
+byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Cartao, string? NomeCompleto, string? Tipo, string? DataHora, string? Evento, string? Acesso, string? DocumentoMatricula, string? StatusDisplay, string? Empresa, string? TAG)> rows, string generatedBy)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var isAllDataRange =
+        start != null && end != null &&
+        start.Value.Date <= new DateTime(1900, 1, 1) &&
+        end.Value.Date >= new DateTime(2100, 1, 1);
+    var sub = (!isAllDataRange && start != null && end != null) ? $"Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}" : "";
+    var accent = "#0b3d2e";
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    byte[]? leftLogo = null;
+    byte[]? rightLogo = clientLogo;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var jumperLogoRepo = Path.Combine(repoRoot, "img", "logoJumper.jpg");
+        var jumperLogoWww = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "img", "logoJumper.jpg");
+        if (System.IO.File.Exists(jumperLogoRepo)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoRepo);
+        else if (System.IO.File.Exists(jumperLogoWww)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoWww);
+
+        var env = LoadEnv();
+        if (leftLogo == null && env.TryGetValue("REPORT_LOGO_LEFT", out var lp) && !string.IsNullOrWhiteSpace(lp))
+        {
+            var full = lp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", lp.TrimStart('/')) : lp;
+            if (System.IO.File.Exists(full)) leftLogo = System.IO.File.ReadAllBytes(full);
+        }
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        container.Page(page =>
+        {
+            page.Size(new QuestPDF.Helpers.PageSize(1190.88f, 841.68f));
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Header().PaddingBottom(8).Column(col =>
+            {
+                col.Item().Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().Element(e =>
+                    {
+                        if (leftLogo != null) e.Height(34).Image(leftLogo, ImageScaling.FitHeight);
+                        else e.Text("JumperFour").FontSize(18).SemiBold().FontColor(accent);
+                    });
+                    row.RelativeItem().AlignRight().Element(e =>
+                    {
+                        if (rightLogo != null) e.Height(34).Image(rightLogo, ImageScaling.FitHeight);
+                        else e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827");
+                    });
+                });
+                col.Item().PaddingTop(2).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().Text(title).SemiBold().FontSize(12);
+                    row.RelativeItem().AlignRight().Text(clientName).SemiBold().FontSize(10);
+                });
+                if (!string.IsNullOrWhiteSpace(sub))
+                    col.Item().Text(sub).FontSize(9).FontColor("#374151");
+                col.Item().PaddingTop(6).LineHorizontal(1);
+            });
+
+            page.Content().PaddingTop(8).Table(table =>
+            {
+                table.ColumnsDefinition(c =>
+                {
+                    c.RelativeColumn(1.1f); // Cartão/Crachá
+                    c.RelativeColumn(2.0f); // Nome Completo
+                    c.RelativeColumn(1.0f); // Tipo
+                    c.RelativeColumn(1.3f); // Data/hora
+                    c.RelativeColumn(1.2f); // Evento
+                    c.RelativeColumn(1.4f); // Acesso
+                    c.RelativeColumn(1.5f); // Documento/Matrícula
+                    c.RelativeColumn(1.4f); // Status/Acesso
+                    c.RelativeColumn(1.5f); // Empresa
+                    c.RelativeColumn(1.0f); // TAG
+                });
+
+                IContainer HeaderCell(IContainer x) => x
+                    .Background(headerBg)
+                    .Border(0.5f).BorderColor(border)
+                    .PaddingVertical(4).PaddingHorizontal(6)
+                    .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                IContainer Cell(IContainer x, bool alt) => x
+                    .Background(alt ? rowAlt : "#ffffff")
+                    .Border(0.5f).BorderColor(border)
+                    .PaddingVertical(3).PaddingHorizontal(6);
+
+                table.Header(h =>
+                {
+                    h.Cell().Element(HeaderCell).Text("CARTÃO/CRACHÁ");
+                    h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
+                    h.Cell().Element(HeaderCell).Text("TIPO");
+                    h.Cell().Element(HeaderCell).Text("DATA/HORA");
+                    h.Cell().Element(HeaderCell).Text("EVENTO");
+                    h.Cell().Element(HeaderCell).Text("ACESSO");
+                    h.Cell().Element(HeaderCell).Text("DOCUMENTO/MATRÍCULA");
+                    h.Cell().Element(HeaderCell).Text("STATUS/ACESSO");
+                    h.Cell().Element(HeaderCell).Text("EMPRESA");
+                    h.Cell().Element(HeaderCell).Text("TAG");
+                });
+
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    var r = rows[i];
+                    var alt = i % 2 == 1;
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Cartao ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Evento ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Acesso ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.DocumentoMatricula ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.StatusDisplay ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.TAG ?? "");
+                }
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().LineHorizontal(1);
+                col.Item().PaddingTop(4).Text($"Gerado por {generatedBy} em {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(8).FontColor("#6b7280");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Text("Relatório - JumperFour").FontSize(9).FontColor("#374151");
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
 }
 
 app.MapGet("/api/reports/door-general", async (string start, string end) =>
@@ -2107,7 +2257,7 @@ app.MapGet("/api/reports/door-general", async (string start, string end) =>
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/export", async (string start, string end, string format) =>
+app.MapGet("/api/reports/door-general/export", async (HttpContext http, string start, string end, string format) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
@@ -2126,7 +2276,10 @@ app.MapGet("/api/reports/door-general/export", async (string start, string end, 
         var sb = new StringBuilder();
         sb.AppendLine("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
         foreach (var x in rows) sb.AppendLine($"{x.EventID},{x.TimeOrder},{Escape(x.DataHora ?? "")},{Escape(x.TAG ?? "")},{Escape(x.Acesso ?? "")},{Escape(x.Evento ?? "")},{Escape(x.NomeCompleto ?? "")},{Escape(x.DocumentoMatricula ?? "")},{Escape(x.Cartao ?? "")},{Escape(x.Tipo ?? "")},{Escape(x.Empresa ?? "")},{Escape(x.StatusAcesso ?? "")},{Escape(x.DetalheStatusAcesso ?? "")}");
-        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "door-general.csv");
+        var bytesCsv = Encoding.UTF8.GetBytes(sb.ToString());
+        var rel = SaveReportFile("door-general.csv", bytesCsv, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesCsv, "text/csv", "door-general.csv");
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
@@ -2142,40 +2295,30 @@ app.MapGet("/api/reports/door-general/export", async (string start, string end, 
             AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
             foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
         }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
+        var bytesX = ms.ToArray();
+        var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        QuestPDF.Settings.License = LicenseType.Community;
-        var bytes = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Margin(20);
-                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais").SemiBold().FontSize(18); });
-                page.Content().Table(table =>
-                {
-                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
-                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
-                    foreach (var x in rows)
-                    {
-                        table.Cell().Text(x.EventID.ToString());
-                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
-                        table.Cell().Text(x.DataHora ?? "");
-                        table.Cell().Text(x.TAG ?? "");
-                        table.Cell().Text(x.Acesso ?? "");
-                        table.Cell().Text(x.Evento ?? "");
-                        table.Cell().Text(x.NomeCompleto ?? "");
-                        table.Cell().Text(x.DocumentoMatricula ?? "");
-                        table.Cell().Text(x.Cartao ?? "");
-                        table.Cell().Text(x.Tipo ?? "");
-                        table.Cell().Text(x.Empresa ?? "");
-                        table.Cell().Text(x.StatusAcesso ?? "");
-                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
-                    }
-                });
-            });
-        }).GeneratePdf();
+        var (clientName, clientLogo) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var mapped = rows.Select(x => (
+            Cartao: x.Cartao,
+            NomeCompleto: x.NomeCompleto,
+            Tipo: x.Tipo,
+            DataHora: x.DataHora,
+            Evento: x.Evento,
+            Acesso: x.Acesso,
+            DocumentoMatricula: x.DocumentoMatricula,
+            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            Empresa: x.Empresa,
+            TAG: x.TAG
+        )).ToList();
+        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var rel = SaveReportFile("door-general.pdf", bytes, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
@@ -2209,7 +2352,7 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name/export", async (string start, string end, string name, string format) =>
+app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, string start, string end, string name, string format) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
@@ -2244,40 +2387,30 @@ app.MapGet("/api/reports/door-general/by-name/export", async (string start, stri
             AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
             foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
         }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
+        var bytesX = ms.ToArray();
+        var rel = SaveReportFile("door-general-by-name.xlsx", bytesX, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        QuestPDF.Settings.License = LicenseType.Community;
-        var bytes = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Margin(20);
-                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais por Nome").SemiBold().FontSize(18); });
-                page.Content().Table(table =>
-                {
-                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
-                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
-                    foreach (var x in rows)
-                    {
-                        table.Cell().Text(x.EventID.ToString());
-                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
-                        table.Cell().Text(x.DataHora ?? "");
-                        table.Cell().Text(x.TAG ?? "");
-                        table.Cell().Text(x.Acesso ?? "");
-                        table.Cell().Text(x.Evento ?? "");
-                        table.Cell().Text(x.NomeCompleto ?? "");
-                        table.Cell().Text(x.DocumentoMatricula ?? "");
-                        table.Cell().Text(x.Cartao ?? "");
-                        table.Cell().Text(x.Tipo ?? "");
-                        table.Cell().Text(x.Empresa ?? "");
-                        table.Cell().Text(x.StatusAcesso ?? "");
-                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
-                    }
-                });
-            });
-        }).GeneratePdf();
+        var (clientName, clientLogo) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var mapped = rows.Select(x => (
+            Cartao: x.Cartao,
+            NomeCompleto: x.NomeCompleto,
+            Tipo: x.Tipo,
+            DataHora: x.DataHora,
+            Evento: x.Evento,
+            Acesso: x.Acesso,
+            DocumentoMatricula: x.DocumentoMatricula,
+            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            Empresa: x.Empresa,
+            TAG: x.TAG
+        )).ToList();
+        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var rel = SaveReportFile("door-general-by-name.pdf", bytes, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general-by-name.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
@@ -2311,7 +2444,7 @@ app.MapGet("/api/reports/door-general/by-site", async (string start, string end,
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-site/export", async (string start, string end, string site, string format) =>
+app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, string start, string end, string site, string format) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
@@ -2346,40 +2479,30 @@ app.MapGet("/api/reports/door-general/by-site/export", async (string start, stri
             AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
             foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
         }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
+        var bytesX = ms.ToArray();
+        var rel = SaveReportFile("door-general-by-site.xlsx", bytesX, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        QuestPDF.Settings.License = LicenseType.Community;
-        var bytes = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Margin(20);
-                page.Header().Row(row => { row.RelativeColumn().Text("Eventos Gerais por Site").SemiBold().FontSize(18); });
-                page.Content().Table(table =>
-                {
-                    table.ColumnsDefinition(c => { for(int i=0;i<13;i++) c.RelativeColumn(); });
-                    table.Cell().Text("EventID"); table.Cell().Text("TimeOrder"); table.Cell().Text("DataHora"); table.Cell().Text("TAG"); table.Cell().Text("Acesso"); table.Cell().Text("Evento"); table.Cell().Text("NomeCompleto"); table.Cell().Text("DocumentoMatricula"); table.Cell().Text("Cartao"); table.Cell().Text("Tipo"); table.Cell().Text("Empresa"); table.Cell().Text("StatusAcesso"); table.Cell().Text("DetalheStatusAcesso");
-                    foreach (var x in rows)
-                    {
-                        table.Cell().Text(x.EventID.ToString());
-                        table.Cell().Text(x.TimeOrder?.ToString() ?? "");
-                        table.Cell().Text(x.DataHora ?? "");
-                        table.Cell().Text(x.TAG ?? "");
-                        table.Cell().Text(x.Acesso ?? "");
-                        table.Cell().Text(x.Evento ?? "");
-                        table.Cell().Text(x.NomeCompleto ?? "");
-                        table.Cell().Text(x.DocumentoMatricula ?? "");
-                        table.Cell().Text(x.Cartao ?? "");
-                        table.Cell().Text(x.Tipo ?? "");
-                        table.Cell().Text(x.Empresa ?? "");
-                        table.Cell().Text(x.StatusAcesso ?? "");
-                        table.Cell().Text(x.DetalheStatusAcesso ?? "");
-                    }
-                });
-            });
-        }).GeneratePdf();
+        var (clientName, clientLogo) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var mapped = rows.Select(x => (
+            Cartao: x.Cartao,
+            NomeCompleto: x.NomeCompleto,
+            Tipo: x.Tipo,
+            DataHora: x.DataHora,
+            Evento: x.Evento,
+            Acesso: x.Acesso,
+            DocumentoMatricula: x.DocumentoMatricula,
+            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            Empresa: x.Empresa,
+            TAG: x.TAG
+        )).ToList();
+        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Site", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var rel = SaveReportFile("door-general-by-site.pdf", bytes, app.Environment);
+        http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general-by-site.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });

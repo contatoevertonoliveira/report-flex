@@ -57,6 +57,38 @@ function isoDateToBrValue(s: string | undefined | null): string {
   return `${m[3]}/${m[2]}/${m[1]}`
 }
 
+function formatBrDateTime(v: any): string {
+  if (v == null) return ''
+  if (typeof v === 'string') {
+    const s = v.trim()
+    const m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
+    if (m1) return `${m1[3]}/${m1[2]}/${m1[1]} ${m1[4]}:${m1[5]}:${m1[6]}`
+    const d = new Date(s)
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString('pt-BR')
+    return s
+  }
+  if (v instanceof Date) return v.toLocaleString('pt-BR')
+  try{
+    const d = new Date(v)
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString('pt-BR')
+  }catch{}
+  return String(v)
+}
+
+function getRowValue(row: any, key: string): any {
+  if (!row || !key) return undefined
+  if (row[key] !== undefined) return row[key]
+  const lowerFirst = key.length ? key[0].toLowerCase() + key.slice(1) : key
+  if (row[lowerFirst] !== undefined) return row[lowerFirst]
+  const upperFirst = key.length ? key[0].toUpperCase() + key.slice(1) : key
+  if (row[upperFirst] !== undefined) return row[upperFirst]
+  const target = key.toLowerCase()
+  for (const k of Object.keys(row)) {
+    if (k.toLowerCase() === target) return row[k]
+  }
+  return undefined
+}
+
 function normalizeTimeInput(s: string | undefined | null, fallback: string): string {
   const t = (s || '').trim()
   if (!t) return fallback
@@ -195,19 +227,16 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Saida', label: 'Saída' }
   ],
   'door-critical': [
-    { key: 'EventID', label: 'EventID' },
-    { key: 'TimeOrder', label: 'TimeOrder' },
-    { key: 'DataHora', label: 'Data/Hora' },
-    { key: 'TAG', label: 'TAG' },
-    { key: 'Acesso', label: 'Acesso' },
-    { key: 'Evento', label: 'Evento' },
+    { key: 'Cartao', label: 'Cartão/Crachá' },
     { key: 'NomeCompleto', label: 'Nome Completo' },
-    { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
-    { key: 'Cartao', label: 'Crachá' },
     { key: 'Tipo', label: 'Tipo' },
+    { key: 'DataHora', label: 'Data/hora' },
+    { key: 'Evento', label: 'Evento' },
+    { key: 'Acesso', label: 'Acesso' },
+    { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
+    { key: 'StatusAcessoDisplay', label: 'Status/Acesso' },
     { key: 'Empresa', label: 'Empresa' },
-    { key: 'StatusAcesso', label: 'Status do Acesso' },
-    { key: 'DetalheStatusAcesso', label: 'Detalhe do Status de Acesso' }
+    { key: 'TAG', label: 'TAG' }
   ],
   'db-table': []
 }
@@ -218,6 +247,24 @@ export function QueriesPage(){
   const [queriesCfg, setQueriesCfg] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [exportModal, setExportModal] = useState(false)
+  const [exportMinimized, setExportMinimized] = useState(false)
+  const [exportMaximized, setExportMaximized] = useState(false)
+  const [exportStage, setExportStage] = useState<'generating'|'ready'|'error'>('generating')
+  const [exportFmt, setExportFmt] = useState<'csv'|'xlsx'|'pdf'>('pdf')
+  const [exportFileName, setExportFileName] = useState<string>('')
+  const [exportUrl, setExportUrl] = useState<string | null>(null)
+  const [exportErr, setExportErr] = useState<string | null>(null)
+  const [exportProgress, setExportProgress] = useState(0)
+  const exportTimerRef = React.useRef<any>(null)
+  const [exportPos, setExportPos] = useState<{x:number, y:number}>({x:0, y:0})
+  const exportDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
+  const exportDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
+  const [exportFloatPos, setExportFloatPos] = useState<{x:number, y:number}>({x:0, y:0})
+  const exportFloatDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
+  const exportFloatDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
+  const [reportsModal, setReportsModal] = useState(false)
+  const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }[]>([])
   const [sqlModal, setSqlModal] = useState(false)
   const [sqlUser, setSqlUser] = useState('')
   const [sqlPwd, setSqlPwd] = useState('')
@@ -253,6 +300,7 @@ export function QueriesPage(){
   const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'|'EMS'>('CMS')
   const [dbTableName, setDbTableName] = useState('')
   const [doorMode, setDoorMode] = useState<'critical'|'general'|'general-by-name'|'general-by-site'>('critical')
+  const [doorAllData, setDoorAllData] = useState(false)
   const [doorName, setDoorName] = useState('')
   const [doorSite, setDoorSite] = useState('')
 
@@ -260,6 +308,35 @@ export function QueriesPage(){
   const canUseDbTables = level !== 'Cliente'
 
   const cacheKey = 'rf_queries_cache_v1'
+  const exportHistoryKey = 'rf_export_history_v1'
+
+  const todayKey = (ts?: number) => {
+    const d = new Date(ts ?? Date.now())
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${d.getFullYear()}-${mm}-${dd}`
+  }
+  const formatTime = (ts: number) => {
+    const d = new Date(ts)
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    return `${hh}:${mm}:${ss}`
+  }
+  const loadExportHistory = () => {
+    try{
+      const raw = localStorage.getItem(exportHistoryKey)
+      const list = raw ? JSON.parse(raw) : []
+      return Array.isArray(list) ? list : []
+    }catch{
+      return []
+    }
+  }
+  const saveExportHistory = (items: any[]) => {
+    try{
+      localStorage.setItem(exportHistoryKey, JSON.stringify(items))
+    }catch{}
+  }
 
   React.useEffect(() => {
     let mounted = true
@@ -283,6 +360,10 @@ export function QueriesPage(){
     api.getQueriesConfig()
       .then(c => setQueriesCfg(c || {}))
       .catch(()=> setQueriesCfg({}))
+  }, [])
+
+  React.useEffect(() => {
+    setExportHistory(loadExportHistory())
   }, [])
 
   React.useEffect(() => {
@@ -386,12 +467,41 @@ export function QueriesPage(){
 
   const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf))
 
+  const exportsToday = useMemo(() => {
+    const k = todayKey()
+    return exportHistory.filter(x => todayKey(x.ts) === k).sort((a,b)=> b.ts - a.ts)
+  }, [exportHistory])
+
   function resetData(){
     setData([])
     setError(null)
     setPdfExportedRun(null)
     if (pdfUrl) URL.revokeObjectURL(pdfUrl)
     setPdfUrl(null)
+    if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+    setExportUrl(null)
+    setExportModal(false)
+    setExportMinimized(false)
+    setExportMaximized(false)
+    setExportStage('generating')
+    setExportErr(null)
+    setExportProgress(0)
+    setExportPos({x:0, y:0})
+    setExportFloatPos({x:0, y:0})
+    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+    exportTimerRef.current = null
+    if (exportDragHandlersRef.current){
+      window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
+      window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
+      exportDragHandlersRef.current = null
+    }
+    exportDragRef.current = null
+    if (exportFloatDragHandlersRef.current){
+      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+      exportFloatDragHandlersRef.current = null
+    }
+    exportFloatDragRef.current = null
   }
 
   function mapQuickToDataset(k: QuickKind): Dataset{
@@ -630,28 +740,36 @@ export function QueriesPage(){
           setData(collected)
         }
       }else if (quickKind === 'door-critical'){
-        const sRaw = (filters as any).start || todayBr()
-        const eRaw = (filters as any).end || sRaw
-        const r0 = rangeIso({ ...filters, start: sRaw, end: eRaw })
+        const r0 = doorAllData
+          ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' }
+          : (() => {
+              const sRaw = (filters as any).start || todayBr()
+              const eRaw = (filters as any).end || sRaw
+              return rangeIso({ ...filters, start: sRaw, end: eRaw })
+            })()
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
         if (doorMode === 'critical'){
           const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
           const list = (res as any)?.data ?? res
-          setData(Array.isArray(list) ? list : [])
+          const rows = Array.isArray(list) ? list : []
+          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }else if (doorMode === 'general'){
           const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso })
           const list = (res as any)?.data ?? res
-          setData(Array.isArray(list) ? list : [])
+          const rows = Array.isArray(list) ? list : []
+          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
           const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName })
           const list = (res as any)?.data ?? res
-          setData(Array.isArray(list) ? list : [])
+          const rows = Array.isArray(list) ? list : []
+          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); setLoading(false); return }
           const res = await api.reportsDoorGeneralBySite({ start: r0.startIso, end: r0.endIso, site: doorSite })
           const list = (res as any)?.data ?? res
-          setData(Array.isArray(list) ? list : [])
+          const rows = Array.isArray(list) ? list : []
+          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }
       }
       ok = true
@@ -743,26 +861,24 @@ export function QueriesPage(){
       if (t) h['Authorization'] = `Bearer ${t}`
       const cid = localStorage.getItem('rf_client_id')
       if (cid) h['X-Client-Id'] = cid
+      let url = ''
+      let name = ''
       const showErr = async (res: Response) => {
         try{
           const j: any = await res.json()
-          setError(j?.detail || j?.title || 'Falha ao exportar')
+          const msg = j?.detail || j?.title || 'Falha ao exportar'
+          setError(msg)
+          setExportErr(msg)
+          setExportStage('error')
         }catch{
           setError('Falha ao exportar')
+          setExportErr('Falha ao exportar')
+          setExportStage('error')
         }
       }
       if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')){
-        const url = `/api/reports/access/aggregated/export?format=${format}`
-        const res = await fetch(url, { headers: h })
-        if(!res.ok) return
-        const blob = await res.blob()
-        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
-        const name = `access-aggregated.${format}`
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(blob)
-        a.download = name
-        a.click()
-        URL.revokeObjectURL(a.href)
+        url = `/api/reports/access/aggregated/export?format=${format}`
+        name = `access-aggregated.${format}`
       }else if ((mode === 'prontas' && quickKind === 'transit-period') || (mode === 'personalizadas' && dataset === 'transit')){
         const { empresa, terminal } = filters as any
         const r0 = rangeIso(filters)
@@ -771,50 +887,34 @@ export function QueriesPage(){
         if (empresa) p.empresa = empresa
         if (terminal) p.terminal = terminal
         const qs = new URLSearchParams(p).toString()
-        const res = await fetch(`/api/reports/transit/export?${qs}`, { headers: h })
-        if(!res.ok) return
-        const blob = await res.blob()
-        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
-        const name = `transit.${format}`
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(blob)
-        a.download = name
-        a.click()
-        URL.revokeObjectURL(a.href)
+        url = `/api/reports/transit/export?${qs}`
+        name = `transit.${format}`
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
-        const r0 = rangeIso(filters)
+        const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
-        let url = ''
         if (doorMode === 'critical'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
           url = `/api/reports/door-critical/export?${qs}`
+          name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
           url = `/api/reports/door-general/export?${qs}`
+          name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
           if (!doorName) return
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format }).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
+          name = `portas-gerais-por-nome.${format}`
         }else if (doorMode === 'general-by-site'){
           if (!doorSite) return
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format }).toString()
           url = `/api/reports/door-general/by-site/export?${qs}`
+          name = `portas-gerais-por-site.${format}`
         }
-        const res = await fetch(url, { headers: h })
-        if(!res.ok) return
-        const blob = await res.blob()
-        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
-        const name = `door-events.${format}`
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(blob)
-        a.download = name
-        a.click()
-        URL.revokeObjectURL(a.href)
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
         const { cpf } = filters as any
         if (!cpf) return
         const modeQ = cpfObter === 'todos' ? 'all' : cpfObter
-        let url = ''
         if (cpfSemPeriodo){
           const qs = new URLSearchParams({ documento: cpf, mode: modeQ, format }).toString()
           url = `/api/access/by-document/all/export?${qs}`
@@ -824,23 +924,160 @@ export function QueriesPage(){
           const qs = new URLSearchParams({ documento: cpf, start: r0.startIso, end: r0.endIso, mode: modeQ, format }).toString()
           url = `/api/access/by-document/export?${qs}`
         }
-        const res = await fetch(url, { headers: h })
-        if(!res.ok){ await showErr(res); return }
-        const blob = await res.blob()
-        if (format === 'pdf') setPdfExportedRun(lastSuccessfulRun)
-        const name = `acessos-${cpf}.${format}`
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(blob)
-        a.download = name
-        a.click()
-        URL.revokeObjectURL(a.href)
+        name = `acessos-${cpf}.${format}`
       }
+
+      if (!url || !name) return
+      setExportFmt(format)
+      setExportFileName(name)
+      setExportErr(null)
+      setExportStage('generating')
+      setExportModal(true)
+      setExportMinimized(false)
+      setExportMaximized(false)
+      setExportPos({x:0, y:0})
+      setExportFloatPos({x:0, y:0})
+      if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+      setExportUrl(null)
+      if (format !== 'pdf' && pdfUrl){ URL.revokeObjectURL(pdfUrl); setPdfUrl(null) }
+      setExportProgress(0)
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = setInterval(() => {
+        setExportProgress(p => {
+          if (p >= 92) return p
+          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
+          return Math.min(92, p + inc)
+        })
+      }, 500)
+
+      const res = await fetch(url, { headers: h })
+      if(!res.ok){ await showErr(res); return }
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      setExportUrl(blobUrl)
+      if (format === 'pdf'){
+        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        setPdfUrl(blobUrl)
+        setPdfExportedRun(lastSuccessfulRun)
+      }
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = name
+      a.click()
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = null
+      setExportProgress(100)
+      setExportStage('ready')
+      const label = (() => {
+        if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')) return 'Acessos Agregados'
+        if ((mode === 'prontas' && quickKind === 'transit-period') || (mode === 'personalizadas' && dataset === 'transit')) return 'Trânsito por Período'
+        if (mode === 'prontas' && quickKind === 'door-critical'){
+          if (doorMode === 'critical') return 'Eventos de Porta • Portas Críticas'
+          if (doorMode === 'general') return 'Eventos de Porta • Portas Gerais'
+          if (doorMode === 'general-by-name') return 'Eventos de Porta • Portas Gerais por Nome'
+          if (doorMode === 'general-by-site') return 'Eventos de Porta • Portas Gerais por Site'
+          return 'Eventos de Porta'
+        }
+        if (mode === 'prontas' && quickKind === 'cpf') return 'CPF (Cadastro/Acessos)'
+        return 'Relatório'
+      })()
+      const ts = Date.now()
+      const id = `${ts}-${Math.random().toString(16).slice(2)}`
+      setExportHistory(prev => {
+        const next = [{ id, ts, label, fileName: name, format, requestUrl: url }, ...prev].slice(0, 100)
+        saveExportHistory(next)
+        return next
+      })
     }catch{}
+  }
+
+  const beginExportDrag = (e: React.MouseEvent) => {
+    if (exportMaximized) return
+    const t = e.target as HTMLElement
+    if (t && t.closest('button')) return
+    e.preventDefault()
+    if (exportDragHandlersRef.current){
+      window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
+      window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
+      exportDragHandlersRef.current = null
+    }
+    exportDragRef.current = { startX: e.clientX, startY: e.clientY, origX: exportPos.x, origY: exportPos.y }
+    const move = (ev: MouseEvent) => {
+      const st = exportDragRef.current
+      if (!st) return
+      setExportPos({ x: st.origX + (ev.clientX - st.startX), y: st.origY + (ev.clientY - st.startY) })
+    }
+    const up = () => {
+      if (exportDragHandlersRef.current){
+        window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
+        window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
+        exportDragHandlersRef.current = null
+      }
+      exportDragRef.current = null
+    }
+    exportDragHandlersRef.current = { move, up }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  const beginExportFloatDrag = (e: React.MouseEvent) => {
+    const t = e.target as HTMLElement
+    if (t && t.closest('button, a')) return
+    e.preventDefault()
+    if (exportFloatDragHandlersRef.current){
+      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+      exportFloatDragHandlersRef.current = null
+    }
+    exportFloatDragRef.current = { startX: e.clientX, startY: e.clientY, origX: exportFloatPos.x, origY: exportFloatPos.y }
+    const move = (ev: MouseEvent) => {
+      const st = exportFloatDragRef.current
+      if (!st) return
+      setExportFloatPos({ x: st.origX + (ev.clientX - st.startX), y: st.origY + (ev.clientY - st.startY) })
+    }
+    const up = () => {
+      if (exportFloatDragHandlersRef.current){
+        window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+        window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+        exportFloatDragHandlersRef.current = null
+      }
+      exportFloatDragRef.current = null
+    }
+    exportFloatDragHandlersRef.current = { move, up }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
   }
 
   async function previewPdf(){
     try{
       setError(null)
+      if (pdfUrl && pdfExportedRun === lastSuccessfulRun){
+        const fallbackName = (() => {
+          if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')) return 'access-aggregated.pdf'
+          if ((mode === 'prontas' && quickKind === 'transit-period') || (mode === 'personalizadas' && dataset === 'transit')) return 'transit.pdf'
+          if (mode === 'prontas' && quickKind === 'door-critical'){
+            if (doorMode === 'critical') return 'portas-criticas.pdf'
+            if (doorMode === 'general') return 'portas-gerais.pdf'
+            if (doorMode === 'general-by-name') return 'portas-gerais-por-nome.pdf'
+            if (doorMode === 'general-by-site') return 'portas-gerais-por-site.pdf'
+            return 'portas.pdf'
+          }
+          if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
+            const cpf = (filters as any)?.cpf
+            return cpf ? `acessos-${cpf}.pdf` : 'acessos.pdf'
+          }
+          return 'relatorio.pdf'
+        })()
+        setExportFmt('pdf')
+        setExportFileName(exportFileName && exportFileName.toLowerCase().endsWith('.pdf') ? exportFileName : fallbackName)
+        setExportErr(null)
+        setExportStage('ready')
+        setExportProgress(100)
+        setExportUrl(pdfUrl)
+        setExportModal(true)
+        setExportMinimized(false)
+        return
+      }
       let url: string | null = null
       if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')){
         url = `/api/reports/access/aggregated/export?format=pdf`
@@ -854,7 +1091,7 @@ export function QueriesPage(){
         const qs = new URLSearchParams(p).toString()
         url = `/api/reports/transit/export?${qs}`
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
-        const r0 = rangeIso(filters)
+        const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0){ setError('Informe início e fim'); return }
         if (doorMode === 'critical'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
@@ -893,6 +1130,76 @@ export function QueriesPage(){
       const msg = e?.message || 'Falha ao gerar PDF'
       setError(msg)
       if (/Login failed for user/i.test(msg)) setSqlModal(true)
+    }
+  }
+
+  async function openHistoryItem(it: { fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }){
+    try{
+      setError(null)
+      const h: Record<string,string> = {}
+      const t = localStorage.getItem('rf_token')
+      if (t) h['Authorization'] = `Bearer ${t}`
+      const cid = localStorage.getItem('rf_client_id')
+      if (cid) h['X-Client-Id'] = cid
+
+      setReportsModal(false)
+      setExportFmt(it.format)
+      setExportFileName(it.fileName)
+      setExportErr(null)
+      setExportStage('generating')
+      setExportModal(true)
+      setExportMinimized(false)
+      setExportMaximized(false)
+      setExportPos({x:0, y:0})
+      if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+      setExportUrl(null)
+      setExportProgress(0)
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = setInterval(() => {
+        setExportProgress(p => {
+          if (p >= 92) return p
+          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
+          return Math.min(92, p + inc)
+        })
+      }, 500)
+
+      const res = await fetch(it.requestUrl, { headers: h })
+      if(!res.ok){
+        let msg = `HTTP ${res.status}`
+        try{
+          const j: any = await res.json()
+          msg = j?.detail || j?.title || j?.error || j?.message || msg
+        }catch{}
+        setError(msg)
+        setExportErr(msg)
+        setExportStage('error')
+        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+        exportTimerRef.current = null
+        return
+      }
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      setExportUrl(blobUrl)
+      if (it.format === 'pdf'){
+        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        setPdfUrl(blobUrl)
+      }else{
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = it.fileName
+        a.click()
+      }
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = null
+      setExportProgress(100)
+      setExportStage('ready')
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao abrir relatório'
+      setError(msg)
+      setExportErr(msg)
+      setExportStage('error')
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = null
     }
   }
 
@@ -974,19 +1281,25 @@ export function QueriesPage(){
     return DATASET_COLUMNS[dataset]
   }, [dataset, data])
 
+  const quickColumns = useMemo(()=>{
+    const d = mapQuickToDataset(quickKind)
+    return DATASET_COLUMNS[d]
+  }, [quickKind, cpfObter, matriculaObter, empresaObter, crachaObter, nivelObter])
+
   const visibleColumns = useMemo(()=>{
     if (mode === 'personalizadas'){
       const defs = datasetColumns
       return defs.filter(d => selectedCols.includes(d.key))
     }
-    // modo prontas: usa todas colunas retornadas
-    if (Array.isArray(data) && data[0]) return Object.keys(data[0]).map(k=>({ key:k, label:k }))
+    return quickColumns
+  }, [mode, selectedCols, data, datasetColumns, quickColumns])
+
+  const tableColumns = useMemo(() => {
+    if (mode === 'personalizadas') return visibleColumns
+    if (quickKind === 'door-critical') return quickColumns
+    if (Array.isArray(data) && data[0]) return Object.keys(data[0]).map(k => ({ key: k, label: k }))
     return []
-  }, [mode, dataset, selectedCols, data, datasetColumns])
-  const quickColumns = useMemo(()=>{
-    const d = mapQuickToDataset(quickKind)
-    return DATASET_COLUMNS[d]
-  }, [quickKind, cpfObter, matriculaObter, empresaObter, crachaObter, nivelObter])
+  }, [mode, visibleColumns, quickKind, quickColumns, data])
 
 
   const searchColumnsList = useMemo(()=>{
@@ -1000,7 +1313,7 @@ export function QueriesPage(){
     const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
     return data.filter(row => {
       for (const c of cols){
-        const v = row?.[c]
+        const v = getRowValue(row, c)
         if (v !== undefined && v !== null){
           const s = String(v).toLowerCase()
           if (s.includes(term)) return true
@@ -1027,6 +1340,219 @@ export function QueriesPage(){
   return (
     <section className="queries">
       <h2>Consultas</h2>
+      {exportModal && (
+        !exportMinimized ? <div className="modal-backdrop show" style={{display:'block'}}></div> : null
+      )}
+      {exportModal && (
+        !exportMinimized ? <div className="modal show" style={{display:'block'}}>
+          <div
+            className={exportMaximized ? 'modal-dialog' : 'modal-dialog modal-lg'}
+            style={exportMaximized ? {position:'fixed', inset:0, margin:0, maxWidth:'100vw', width:'100vw', height:'100vh'} : {transform:`translate(${exportPos.x}px, ${exportPos.y}px)`}}
+          >
+            <div className="modal-content" style={exportMaximized ? {height:'100vh', borderRadius:0} : undefined}>
+              <div className="modal-header" onMouseDown={beginExportDrag} style={exportMaximized ? {cursor:'default'} : {cursor:'move'}}>
+                <h5 className="modal-title">Exportação</h5>
+                <div className="d-flex align-items-center" style={{gap:8}}>
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setExportFloatPos({x:0, y:0}); setExportMinimized(true) }} title="Minimizar">
+                    <i className="bi bi-dash-lg" />
+                  </button>
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setExportMaximized(v => !v)} title={exportMaximized ? 'Restaurar' : 'Maximizar'}>
+                    <i className={exportMaximized ? "bi bi-fullscreen-exit" : "bi bi-fullscreen"} />
+                  </button>
+                  <button type="button" className="btn-close" onClick={()=>{
+                    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+                    exportTimerRef.current = null
+                    if (exportDragHandlersRef.current){
+                      window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
+                      window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
+                      exportDragHandlersRef.current = null
+                    }
+                    exportDragRef.current = null
+                    if (exportFloatDragHandlersRef.current){
+                      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+                      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+                      exportFloatDragHandlersRef.current = null
+                    }
+                    exportFloatDragRef.current = null
+                    if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                    setExportUrl(null)
+                    setExportModal(false)
+                    setExportMinimized(false)
+                    setExportMaximized(false)
+                    setExportProgress(0)
+                    setExportPos({x:0, y:0})
+                    setExportFloatPos({x:0, y:0})
+                  }}></button>
+                </div>
+              </div>
+              <div className="modal-body">
+                {exportStage === 'generating' && (
+                  <>
+                    <div className="d-flex align-items-center mb-2">
+                      <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                      Gerando arquivo {exportFmt.toUpperCase()}...
+                    </div>
+                    <div className="progress" style={{height:10}}>
+                      <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                    </div>
+                    <div className="text-muted mt-1" style={{fontSize:12}}>
+                      Progresso estimado: {exportProgress}%
+                    </div>
+                  </>
+                )}
+                {exportStage === 'error' && (
+                  <div className="alert alert-danger mb-0">
+                    {exportErr || 'Falha ao exportar'}
+                  </div>
+                )}
+                {exportStage === 'ready' && (
+                  <>
+                    <div className="d-flex align-items-center justify-content-between">
+                      <div className="text-muted" style={{fontSize:12}}>
+                        Arquivo pronto: {exportFileName}
+                      </div>
+                      {exportUrl && (
+                        <a className="btn btn-sm btn-primary" href={exportUrl} download={exportFileName}>
+                          Baixar novamente
+                        </a>
+                      )}
+                    </div>
+                    {exportFmt === 'pdf' && pdfUrl && (
+                      <div className="mt-2" style={{border:'1px solid #ddd'}}>
+                        <iframe title="PDF Export" src={pdfUrl} style={{width:'100%', height: exportMaximized ? 'calc(100vh - 220px)' : '60vh', border:0}} />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-outline-secondary" onClick={()=>{
+                  if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+                  exportTimerRef.current = null
+                  if (exportDragHandlersRef.current){
+                    window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
+                    window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
+                    exportDragHandlersRef.current = null
+                  }
+                  exportDragRef.current = null
+                  if (exportFloatDragHandlersRef.current){
+                    window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+                    window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+                    exportFloatDragHandlersRef.current = null
+                  }
+                  exportFloatDragRef.current = null
+                  if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                  setExportUrl(null)
+                  setExportModal(false)
+                  setExportMinimized(false)
+                  setExportMaximized(false)
+                  setExportProgress(0)
+                  setExportPos({x:0, y:0})
+                  setExportFloatPos({x:0, y:0})
+                }} disabled={exportStage === 'generating'}>
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div> : null
+      )}
+      {exportModal && exportMinimized && (
+        <div className="export-float" style={{transform:`translate(${exportFloatPos.x}px, ${exportFloatPos.y}px)`}}>
+          <div className="d-flex justify-content-between align-items-center" onMouseDown={beginExportFloatDrag} style={{cursor:'move'}}>
+            <strong style={{fontSize:12}}>Exportação</strong>
+            <div className="d-flex align-items-center" style={{gap:6}}>
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => setExportMinimized(false)} title="Abrir">
+                <i className="bi bi-box-arrow-up-right" />
+              </button>
+              <button className="btn btn-sm btn-outline-secondary" onClick={() => {
+                if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+                exportTimerRef.current = null
+                if (exportFloatDragHandlersRef.current){
+                  window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
+                  window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
+                  exportFloatDragHandlersRef.current = null
+                }
+                exportFloatDragRef.current = null
+                if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                setExportUrl(null)
+                setExportModal(false)
+                setExportMinimized(false)
+                setExportMaximized(false)
+                setExportProgress(0)
+                setExportFloatPos({x:0, y:0})
+              }} title="Fechar">
+                <i className="bi bi-x-lg" />
+              </button>
+            </div>
+          </div>
+          <div style={{fontSize:12, marginTop:4, color:'#111827'}}>
+            {exportStage === 'generating' ? `Gerando ${exportFmt.toUpperCase()}...` : exportStage === 'ready' ? 'Arquivo pronto' : 'Falha ao exportar'}
+          </div>
+          {exportStage === 'generating' && (
+            <div className="progress mt-2" style={{height:8}}>
+              <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+            </div>
+          )}
+          {exportStage === 'ready' && exportUrl && (
+            <a className="btn btn-sm btn-primary mt-2" href={exportUrl} download={exportFileName}>
+              Baixar
+            </a>
+          )}
+        </div>
+      )}
+      {reportsModal && (
+        <div className="modal-backdrop show" style={{display:'block'}}></div>
+      )}
+      {reportsModal && (
+        <div className="modal show" style={{display:'block'}}>
+          <div className="modal-dialog modal-lg">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Relatórios</h5>
+                <button type="button" className="btn-close" onClick={()=> setReportsModal(false)}></button>
+              </div>
+              <div className="modal-body">
+                {exportsToday.length === 0 ? (
+                  <div className="text-muted">Nenhum relatório exportado hoje.</div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table table-sm align-middle">
+                      <thead>
+                        <tr>
+                          <th style={{width:90}}>Hora</th>
+                          <th>Consulta</th>
+                          <th>Arquivo</th>
+                          <th style={{width:80}}>Tipo</th>
+                          <th style={{width:140}}>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportsToday.map(it => (
+                          <tr key={it.id}>
+                            <td>{formatTime(it.ts)}</td>
+                            <td>{it.label}</td>
+                            <td style={{maxWidth:260, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}} title={it.fileName}>{it.fileName}</td>
+                            <td>{it.format.toUpperCase()}</td>
+                            <td>
+                              <button className="btn btn-sm btn-primary" onClick={()=> openHistoryItem(it)}>
+                                {it.format === 'pdf' ? 'Abrir' : 'Baixar'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-outline-secondary" onClick={()=> setReportsModal(false)}>Fechar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {sqlModal && (
         <div className="modal-backdrop show" style={{display:'block'}}></div>
       )}
@@ -1176,24 +1702,30 @@ export function QueriesPage(){
                     <option value="general-by-site">Portas Gerais por Site</option>
                   </select>
                 </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:200, paddingLeft:0, flexShrink:0, marginLeft:8}}>
+                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> setDoorAllData(e.target.checked)} />
+                  <label className="form-check-label">Todos os dados</label>
                 </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-clock" /></span>
-                  <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
-                </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
-                </div>
-                <div className="input-group">
-                  <span className="input-group-text"><i className="bi bi-clock" /></span>
-                  <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
-                </div>
+                {!doorAllData && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" style={{maxWidth:170}} placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-clock" /></span>
+                      <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <input className="form-control" style={{maxWidth:170}} placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-clock" /></span>
+                      <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
+                    </div>
+                  </>
+                )}
                 {doorMode === 'general-by-name' && (
                   <div className="input-group">
                     <span className="input-group-text"><i className="bi bi-tag" /></span>
@@ -1512,6 +2044,11 @@ export function QueriesPage(){
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
                     </button>
+                    {exportsToday.length > 0 && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={()=> setReportsModal(true)}>
+                        <i className="bi bi-journal-text me-1" /> Relatórios
+                      </button>
+                    )}
                     {pdfExportedRun === lastSuccessfulRun && (
                       <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
@@ -1641,6 +2178,11 @@ export function QueriesPage(){
                     <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
                       <i className="bi bi-file-earmark-pdf" />
                     </button>
+                    {exportsToday.length > 0 && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={()=> setReportsModal(true)}>
+                        <i className="bi bi-journal-text me-1" /> Relatórios
+                      </button>
+                    )}
                     {pdfExportedRun === lastSuccessfulRun && (
                       <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
@@ -1719,18 +2261,16 @@ export function QueriesPage(){
       )}
 
       <div className="table-responsive pro-table">
-        <table className="table table-sm table-hover table-striped align-middle">
+        <table className="table table-hover table-striped align-middle">
           <thead>
             <tr>
-              {(mode==='personalizadas' ? visibleColumns : (Array.isArray(data)&&data[0]? Object.keys(data[0]).map(k=>({key:k,label:k})) : []))
-                .map(c=> <th key={c.key}>{c.label}</th>)}
+              {tableColumns.map(c=> <th key={c.key}>{c.label}</th>)}
             </tr>
           </thead>
           <tbody>
             {Array.isArray(pageRows) && pageRows.map((row, idx)=> (
               <tr key={idx}>
-                {(mode==='personalizadas' ? visibleColumns : (Object.keys(row).map(k=>({key:k,label:k}))))
-                  .map(c => <td key={c.key}>{String((row as any)[c.key] ?? '')}</td>)}
+                {tableColumns.map(c => <td key={c.key}>{String(getRowValue(row, c.key) ?? '')}</td>)}
               </tr>
             ))}
           </tbody>
