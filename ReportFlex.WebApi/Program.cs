@@ -1,4 +1,5 @@
 using System.Data;
+using System.Collections.Concurrent;
 using System.Linq;
 using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
@@ -133,6 +134,8 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 ImagesStatic.MapLegacyImages(app);
 
+var exportJobs = new ConcurrentDictionary<string, ExportJob>();
+
 static string? GetDtoString(Dictionary<string, System.Text.Json.JsonElement> d, string key)
 {
     if (!d.TryGetValue(key, out var el)) return null;
@@ -177,6 +180,20 @@ static string SaveReportFile(string fileName, byte[] bytes, IHostEnvironment env
     System.IO.File.WriteAllBytes(path, bytes);
     var rel = Path.Combine("reports", today, fileName).Replace("\\", "/");
     return rel;
+}
+
+static (string absPath, string relPath) PrepareReportFilePath(string subDir, string fileName, IHostEnvironment env)
+{
+    var today = DateTime.Now.ToString("yyyy-MM-dd");
+    var dir = string.IsNullOrWhiteSpace(subDir)
+        ? Path.Combine(env.ContentRootPath, "wwwroot", "reports", today)
+        : Path.Combine(env.ContentRootPath, "wwwroot", "reports", today, subDir);
+    Directory.CreateDirectory(dir);
+    var abs = Path.Combine(dir, fileName);
+    var rel = string.IsNullOrWhiteSpace(subDir)
+        ? Path.Combine("reports", today, fileName)
+        : Path.Combine("reports", today, subDir, fileName);
+    return (abs, rel.Replace("\\", "/"));
 }
 static DateTime ParseDate(string s)
 {
@@ -2047,12 +2064,27 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 // additional door event reports using existing stored procedures
 // JP4: jp4_sp_DoorGeneral, jp4_sp_DoorGeneral_byName, jp4_sp_DoorGeneral_bysite
 // shape the output to the same columns as door-critical for consistency
+static bool IsAllDataRange(DateTime start, DateTime end) =>
+    start.Date <= new DateTime(1900, 1, 2) && end.Date >= new DateTime(2100, 1, 1);
+
+static int GetDoorProcTimeoutSeconds()
+{
+    try
+    {
+        var v = Environment.GetEnvironmentVariable("DOOR_PROC_TIMEOUT_SECONDS");
+        if (int.TryParse(v, out var n) && n > 0) return n;
+    }
+    catch { }
+    return 180;
+}
+
 static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
 {
     try
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = procText;
+        cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
         foreach (var p in parameters) cmd.Parameters.Add(p);
         using var r = cmd.ExecuteReader();
         var rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
@@ -2230,22 +2262,332 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
     }).GeneratePdf();
 }
 
-app.MapGet("/api/reports/door-general", async (string start, string end) =>
+static async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(string conn, int daysBack)
+{
+    using var cn = new SqlConnection(conn);
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    CAST(vmE.Source AS varchar(200)) AS [Key],
+    CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
+FROM emsevents..ems_vw_EMSevents vmE
+LEFT JOIN cms..JP4_Merc_TAGs JMT ON JMT.MercTag = vmE.Source
+WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) <> ''
+  AND vmE.ConditionName IN ('Granted','Denied')
+  AND (vmE.Category = 16 OR vmE.Category = 5)
+  AND (@daysBack <= 0 OR emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) >= DATEADD(day, -@daysBack, GETDATE()))
+ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
+         CAST(vmE.Source AS varchar(200));
+";
+    cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = daysBack });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<(string, string)>();
+    while (await r.ReadAsync())
+    {
+        var k = r.IsDBNull(0) ? "" : r.GetString(0);
+        var d = r.IsDBNull(1) ? "" : r.GetString(1);
+        if (!string.IsNullOrWhiteSpace(k)) list.Add((k, d));
+    }
+    return list;
+}
+
+static async Task<List<(string Key, string Description)>> GetDoorTagSourcesByRangeAsync(string conn, DateTime start, DateTime end)
+{
+    using var cn = new SqlConnection(conn);
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    CAST(vmE.Source AS varchar(200)) AS [Key],
+    CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
+FROM emsevents..ems_vw_EMSevents vmE
+LEFT JOIN cms..JP4_Merc_TAGs JMT ON JMT.MercTag = vmE.Source
+WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) <> ''
+  AND vmE.ConditionName IN ('Granted','Denied')
+  AND (vmE.Category = 16 OR vmE.Category = 5)
+  AND emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) BETWEEN @start AND @end
+ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
+         CAST(vmE.Source AS varchar(200));
+";
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    using var r = await cmd.ExecuteReaderAsync();
+    var list = new List<(string, string)>();
+    while (await r.ReadAsync())
+    {
+        var k = r.IsDBNull(0) ? "" : r.GetString(0);
+        var d = r.IsDBNull(1) ? "" : r.GetString(1);
+        if (!string.IsNullOrWhiteSpace(k)) list.Add((k, d));
+    }
+    return list;
+}
+
+static string BuildSourceListCsv(IEnumerable<string> keys) =>
+    string.Join(";", keys.Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).Distinct(StringComparer.OrdinalIgnoreCase));
+
+static HashSet<string> ParseSourceList(string? sourceList)
+{
+    var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (string.IsNullOrWhiteSpace(sourceList)) return set;
+    var parts = sourceList
+        .Split(new[] { ';', ',', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    foreach (var p in parts)
+    {
+        if (!string.IsNullOrWhiteSpace(p)) set.Add(p);
+    }
+    return set;
+}
+
+app.MapGet("/api/reports/door-sources", async (int? daysBack) =>
+{
+    try
+    {
+        var days = daysBack ?? 3650;
+        var list = await GetDoorTagSourcesByDaysAsync(GetConn("EMS"), days);
+        return Results.Ok(new
+        {
+            success = true,
+            items = list.Select(x => new
+            {
+                key = x.Key,
+                description = x.Description,
+                group = x.Key.Contains('_') ? x.Key.Split('_')[0] : x.Key,
+                subGroup = x.Key.Contains('_') ? (x.Key.Split('_').Length > 1 ? x.Key.Split('_')[1] : "") : ""
+            })
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-sources/debug", async (int? daysBack) =>
+{
+    var days = daysBack ?? 3650;
+    async Task<object> ProbeAsync(string name, string conn)
+    {
+        try
+        {
+            using var cn = new SqlConnection(conn);
+            await cn.OpenAsync();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = @"
+SELECT
+    CAST(CASE WHEN OBJECT_ID('cms..JP4_Merc_TAGs','U') IS NOT NULL THEN 1 ELSE 0 END AS int) AS HasMercTags;
+
+SELECT TOP 5
+    CAST(vmE.Source AS varchar(200)) AS [Key],
+    CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
+FROM emsevents..ems_vw_EMSevents vmE
+LEFT JOIN cms..JP4_Merc_TAGs JMT ON JMT.MercTag = vmE.Source
+WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) <> ''
+  AND vmE.ConditionName IN ('Granted','Denied')
+  AND (vmE.Category = 16 OR vmE.Category = 5)
+  AND (@daysBack <= 0 OR emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) >= DATEADD(day, -@daysBack, GETDATE()))
+ORDER BY CAST(vmE.Source AS varchar(200));
+";
+            cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = days });
+            using var r = await cmd.ExecuteReaderAsync();
+            await r.ReadAsync();
+            var hasMerc = r.GetInt32(0) == 1;
+            var samples = new List<object>();
+            if (await r.NextResultAsync())
+            {
+                while (await r.ReadAsync())
+                {
+                    samples.Add(new { key = r.GetString(0), description = r.GetString(1) });
+                }
+            }
+            return new { name, hasMercTags = hasMerc, samples };
+        }
+        catch (Exception ex)
+        {
+            return new { name, error = ex.Message };
+        }
+    }
+
+    var ems = await ProbeAsync("EMS", GetConn("EMS"));
+    return Results.Ok(new { success = true, daysBack = days, ems });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/export-jobs/{id}", (string id) =>
+{
+    if (!exportJobs.TryGetValue(id, out var job))
+        return Results.NotFound(new { success = false, error = "Job não encontrado" });
+    return Results.Ok(new
+    {
+        success = true,
+        id = job.Id,
+        kind = job.Kind,
+        format = job.Format,
+        fileName = job.FileName,
+        status = job.Status,
+        progress = job.Progress,
+        rowsWritten = job.RowsWritten,
+        error = job.Error,
+        downloadUrl = job.ReportPath == null ? null : "/" + job.ReportPath
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/reports/export-jobs/{id}", (string id) =>
+{
+    if (!exportJobs.TryGetValue(id, out var job))
+        return Results.NotFound(new { success = false, error = "Job não encontrado" });
+    try { job.Cts?.Cancel(); } catch { }
+    job.Status = "canceled";
+    job.FinishedAt = DateTime.UtcNow;
+    return Results.Ok(new { success = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, DoorGeneralExportJobRequest req) =>
+{
+    var format = (req.Format ?? "").Trim().ToLowerInvariant();
+    if (format is not ("csv" or "xlsx" or "pdf"))
+        return Results.BadRequest(new { success = false, error = "Formato inválido" });
+    if (format != "csv")
+        return Results.BadRequest(new { success = false, error = "Para grandes volumes, use CSV (job assíncrono)." });
+
+    var startDt = ParseDate(req.Start);
+    var endDt = ParseDate(req.End);
+    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(req.SourceList))
+        return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
+
+    var jobId = Guid.NewGuid().ToString("N");
+    var fileName = string.IsNullOrWhiteSpace(req.Name) ? $"door-general-{jobId}.csv" : $"door-general-by-name-{jobId}.csv";
+    var job = new ExportJob
+    {
+        Id = jobId,
+        Kind = string.IsNullOrWhiteSpace(req.Name) ? "door-general" : "door-general-by-name",
+        Format = format,
+        FileName = fileName,
+        CreatedAt = DateTime.UtcNow,
+        Status = "queued",
+        Progress = 0,
+        RowsWritten = 0,
+        Cts = new CancellationTokenSource()
+    };
+    exportJobs[jobId] = job;
+
+    _ = Task.Run(async () =>
+    {
+        job.StartedAt = DateTime.UtcNow;
+        job.Status = "running";
+        job.Progress = 5;
+        try
+        {
+            var src = req.SourceList;
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+                src = BuildSourceListCsv(tags.Select(x => x.Key));
+            }
+
+            var proc = string.IsNullOrWhiteSpace(req.Name)
+                ? "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList"
+                : "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
+
+            using var cn = new SqlConnection(GetConn("EMS"));
+            await cn.OpenAsync(job.Cts!.Token);
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = proc;
+            cmd.CommandTimeout = Math.Max(GetDoorProcTimeoutSeconds(), 600);
+            cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+            cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+            cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" });
+            if (!string.IsNullOrWhiteSpace(req.Name))
+                cmd.Parameters.Add(new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = req.Name ?? "" });
+
+            var (absPath, relPath) = PrepareReportFilePath("jobs", fileName, app.Environment);
+            await using var fs = new FileStream(absPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            await using var sw = new StreamWriter(fs, new UTF8Encoding(false));
+            await sw.WriteLineAsync("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+
+            using var r = await cmd.ExecuteReaderAsync(job.Cts.Token);
+            while (await r.ReadAsync(job.Cts.Token))
+            {
+                var line = string.Join(",", new[]
+                {
+                    r.IsDBNull(0) ? "" : Convert.ToInt64(r.GetValue(0)).ToString(),
+                    r.IsDBNull(1) ? "" : r.GetDateTime(1).ToString("O"),
+                    Escape(r.IsDBNull(2) ? "" : r.GetString(2)),
+                    Escape(r.IsDBNull(3) ? "" : r.GetString(3)),
+                    Escape(r.IsDBNull(4) ? "" : r.GetString(4)),
+                    Escape(r.IsDBNull(5) ? "" : r.GetString(5)),
+                    Escape(r.IsDBNull(6) ? "" : r.GetString(6)),
+                    Escape(r.IsDBNull(7) ? "" : r.GetString(7)),
+                    Escape(r.IsDBNull(8) ? "" : r.GetString(8)),
+                    Escape(r.IsDBNull(9) ? "" : r.GetString(9)),
+                    Escape(r.IsDBNull(10) ? "" : r.GetString(10)),
+                    Escape(r.IsDBNull(11) ? "" : r.GetString(11)),
+                    Escape(r.IsDBNull(12) ? "" : r.GetString(12))
+                });
+                await sw.WriteLineAsync(line);
+                job.RowsWritten++;
+                if (job.RowsWritten % 5000 == 0)
+                {
+                    job.Progress = Math.Min(95, 5 + (int)(job.RowsWritten / 5000));
+                    await sw.FlushAsync();
+                }
+            }
+            await sw.FlushAsync();
+            job.ReportPath = relPath;
+            job.Progress = 100;
+            job.Status = "done";
+            job.FinishedAt = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException)
+        {
+            job.Status = "canceled";
+            job.FinishedAt = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            job.Status = "error";
+            job.Error = ex.Message;
+            job.FinishedAt = DateTime.UtcNow;
+        }
+    });
+
+    return Results.Ok(new { success = true, id = jobId });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/door-general", async (string start, string end, string? sourceList) =>
 {
     try
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
+        if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
+            return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
+        if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
+            return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
         using var cn = new SqlConnection(GetConn("EMS"));
         await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim";
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
+        var explicitSrc = sourceList;
+        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
+        var src = explicitSrc;
+        if (string.IsNullOrWhiteSpace(src))
+        {
+            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+            src = BuildSourceListCsv(tags.Select(x => x.Key));
+        }
         var (rows, err) = ExecDoorProc(cn, proc, new[]
         {
             new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") }
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
         });
         if (err != null) return Results.BadRequest(new { success = false, error = err });
-        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
+        var filtered = rows;
+        if (hasExplicitSrc)
+        {
+            var allow = ParseSourceList(explicitSrc);
+            filtered = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
+        }
+        return Results.Ok(new { success = true, count = filtered.Count, data = filtered.Select(x => new {
             EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
             NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
             StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
@@ -2257,19 +2599,35 @@ app.MapGet("/api/reports/door-general", async (string start, string end) =>
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/export", async (HttpContext http, string start, string end, string format) =>
+app.MapGet("/api/reports/door-general/export", async (HttpContext http, string start, string end, string format, string? sourceList) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
+    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
+        return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim";
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
+    var explicitSrc = sourceList;
+    var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
+    var src = explicitSrc;
+    if (string.IsNullOrWhiteSpace(src))
+    {
+        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+        src = BuildSourceListCsv(tags.Select(x => x.Key));
+    }
     var (rows, err) = ExecDoorProc(cn, proc, new[]
     {
         new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") }
+        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+        new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
+    if (hasExplicitSrc)
+    {
+        var allow = ParseSourceList(explicitSrc);
+        rows = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
+    }
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -2324,23 +2682,42 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     return Results.BadRequest(new { error = "Formato inválido" });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name) =>
+app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name, string? sourceList) =>
 {
     try
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
+        if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
+            return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
+        if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
+            return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
         using var cn = new SqlConnection(GetConn("EMS"));
         await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @Name";
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
+        var explicitSrc = sourceList;
+        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
+        var src = explicitSrc;
+        if (string.IsNullOrWhiteSpace(src))
+        {
+            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+            src = BuildSourceListCsv(tags.Select(x => x.Key));
+        }
         var (rows, err) = ExecDoorProc(cn, proc, new[]
         {
             new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
             new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@Name", SqlDbType.VarChar, 100) { Value = name ?? "" }
+            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" },
+            new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
         });
         if (err != null) return Results.BadRequest(new { success = false, error = err });
-        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
+        var filtered = rows;
+        if (hasExplicitSrc)
+        {
+            var allow = ParseSourceList(explicitSrc);
+            filtered = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
+        }
+        return Results.Ok(new { success = true, count = filtered.Count, data = filtered.Select(x => new {
             EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
             NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
             StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
@@ -2352,20 +2729,36 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, string start, string end, string name, string format) =>
+app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, string start, string end, string name, string format, string? sourceList) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
+    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
+        return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @Name";
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
+    var explicitSrc = sourceList;
+    var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
+    var src = explicitSrc;
+    if (string.IsNullOrWhiteSpace(src))
+    {
+        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+        src = BuildSourceListCsv(tags.Select(x => x.Key));
+    }
     var (rows, err) = ExecDoorProc(cn, proc, new[]
     {
         new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
         new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@Name", SqlDbType.VarChar, 100) { Value = name ?? "" }
+        new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" },
+        new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
+    if (hasExplicitSrc)
+    {
+        var allow = ParseSourceList(explicitSrc);
+        rows = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
+    }
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
@@ -2424,12 +2817,12 @@ app.MapGet("/api/reports/door-general/by-site", async (string start, string end,
         var endDt = ParseDate(end);
         using var cn = new SqlConnection(GetConn("EMS"));
         await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @Site";
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
         var (rows, err) = ExecDoorProc(cn, proc, new[]
         {
             new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
             new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@Site", SqlDbType.VarChar, 100) { Value = site ?? "" }
+            new SqlParameter("@DC", SqlDbType.VarChar, 10) { Value = site ?? "" }
         });
         if (err != null) return Results.BadRequest(new { success = false, error = err });
         return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
@@ -2450,12 +2843,12 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
     var endDt = ParseDate(end);
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @Site";
+    var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
     var (rows, err) = ExecDoorProc(cn, proc, new[]
     {
         new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
         new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@Site", SqlDbType.VarChar, 100) { Value = site ?? "" }
+        new SqlParameter("@DC", SqlDbType.VarChar, 10) { Value = site ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
@@ -2952,7 +3345,10 @@ app.MapGet("/api/cms/employees/search", async (string? matricula, string? empres
         ["SbiID"] = "e.SbiID",
         ["CardNumber"] = "c.CardNumber",
         ["Matricula"] = "e.Identifier",
-        ["Empresa"] = "uf.UF2"
+        ["Empresa"] = "uf.UF2",
+        ["Cadastro"] = "e.CommencementDateTime",
+        ["Expira"] = "e.ExpiryDateTime",
+        ["UltimoAcesso"] = "la.LastAccess"
     };
     var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "c.CardNumber";
     var orderDir = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
@@ -2967,16 +3363,34 @@ app.MapGet("/api/cms/employees/search", async (string? matricula, string? empres
     if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
     cmd.CommandText = $@"
-SELECT e.SbiID,e.Name,e.Surname,e.PreferredName,e.Identifier,uf.UF2,'FUNCIONÁRIO' as Tipo,c.CardNumber
+SELECT
+    e.SbiID,
+    e.Name,
+    e.Surname,
+    e.PreferredName,
+    e.Identifier,
+    uf.UF2,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'TERCEIRO' ELSE 'FUNCIONÁRIO' END AS Tipo,
+    COALESCE(TRY_CONVERT(int, uf.UF6), 20001) AS CodigoTipo,
+    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira,
+    CASE
+        WHEN e.CommencementDateTime IS NOT NULL AND e.CommencementDateTime > GETDATE() THEN 'INATIVO'
+        WHEN e.ExpiryDateTime IS NOT NULL AND e.ExpiryDateTime < GETDATE() THEN 'INATIVO'
+        ELSE 'ATIVO'
+    END AS StatusCadastro,
+    la.LastAccess AS UltimoAcesso
 FROM Employee e
-INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
-OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = e.SbiID ORDER BY t.TRANSIT_DATE DESC) la
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM Employee e
-INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
 {whereSql}";
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
@@ -2988,13 +3402,18 @@ INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
         if (string.IsNullOrWhiteSpace(empresaRow)) empresaRow = defaultEmpresa;
         items.Add(new
         {
-            CardNumber = r.IsDBNull(7) ? null : r.GetString(7),
+            CardNumber = r.IsDBNull(8) ? null : r.GetString(8),
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             Surname = r.IsDBNull(2) ? null : r.GetString(2),
             PreferredName = r.IsDBNull(3) ? null : r.GetString(3),
             Identifier = r.IsDBNull(4) ? null : r.GetString(4),
             Empresa = empresaRow,
-            Tipo = r.IsDBNull(6) ? null : r.GetString(6)
+            Tipo = r.IsDBNull(6) ? null : r.GetString(6),
+            CodigoTipo = r.GetInt32(7),
+            Cadastro = r.IsDBNull(9) ? (DateTime?)null : r.GetDateTime(9),
+            Expira = r.IsDBNull(10) ? (DateTime?)null : r.GetDateTime(10),
+            StatusCadastro = r.IsDBNull(11) ? null : r.GetString(11),
+            UltimoAcesso = r.IsDBNull(12) ? (DateTime?)null : r.GetDateTime(12)
         });
     }
     int total = 0;
@@ -5650,7 +6069,10 @@ app.MapGet("/api/cms/external/search", async (string? matricula, string? empresa
         ["SbiID"] = "x.SbiID",
         ["CardNumber"] = "c.CardNumber",
         ["Matricula"] = "x.Identifier",
-        ["Empresa"] = "ux.UF2"
+        ["Empresa"] = "ux.UF2",
+        ["Cadastro"] = "x.CommencementDateTime",
+        ["Expira"] = "x.ExpiryDateTime",
+        ["UltimoAcesso"] = "la.LastAccess"
     };
     var orderCol = sort != null && sortMap.ContainsKey(sort) ? sortMap[sort] : "c.CardNumber";
     var orderDir = ToOrderDir(dir);
@@ -5664,11 +6086,29 @@ app.MapGet("/api/cms/external/search", async (string? matricula, string? empresa
     if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name = @empresa OR ux.UF2 = @empresa)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
     cmd.CommandText = $@"
-SELECT x.SbiID,x.Name,x.Surname,x.PreferredName,x.Identifier,COALESCE(ec.Name, ux.UF2) as Empresa,c.CardNumber
+SELECT
+    x.SbiID,
+    x.Name,
+    x.Surname,
+    x.PreferredName,
+    x.Identifier,
+    COALESCE(ec.Name, ux.UF2) as Empresa,
+    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
+    CASE WHEN TRY_CONVERT(int, ux.UF6) = 20001 THEN 'FUNCIONÁRIO' ELSE 'TERCEIRO' END AS Tipo,
+    COALESCE(TRY_CONVERT(int, ux.UF6), 20002) AS CodigoTipo,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira,
+    CASE
+        WHEN x.CommencementDateTime IS NOT NULL AND x.CommencementDateTime > GETDATE() THEN 'INATIVO'
+        WHEN x.ExpiryDateTime IS NOT NULL AND x.ExpiryDateTime < GETDATE() THEN 'INATIVO'
+        ELSE 'ATIVO'
+    END AS StatusCadastro,
+    la.LastAccess AS UltimoAcesso
 FROM ExternalRegular x
 INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-LEFT JOIN Card c ON c.SbiID = x.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = x.SbiID ORDER BY t.TRANSIT_DATE DESC) la
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
@@ -5690,7 +6130,13 @@ LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
             PreferredName = r.IsDBNull(3) ? null : r.GetString(3),
             Identifier = r.IsDBNull(4) ? null : r.GetString(4),
             Empresa = r.IsDBNull(5) ? null : r.GetString(5),
-            CardNumber = r.IsDBNull(6) ? null : r.GetString(6)
+            CardNumber = r.IsDBNull(6) ? null : r.GetString(6),
+            Tipo = r.IsDBNull(7) ? null : r.GetString(7),
+            CodigoTipo = r.GetInt32(8),
+            Cadastro = r.IsDBNull(9) ? (DateTime?)null : r.GetDateTime(9),
+            Expira = r.IsDBNull(10) ? (DateTime?)null : r.GetDateTime(10),
+            StatusCadastro = r.IsDBNull(11) ? null : r.GetString(11),
+            UltimoAcesso = r.IsDBNull(12) ? (DateTime?)null : r.GetDateTime(12)
         });
     }
     int total = 0;
@@ -5800,3 +6246,22 @@ INNER JOIN Card c ON c.SbiID = e.SbiID
 }).RequireAuthorization();
 
 app.Run();
+
+sealed class ExportJob
+{
+    public required string Id { get; init; }
+    public required string Kind { get; init; }
+    public required string Format { get; init; }
+    public required string FileName { get; set; }
+    public required DateTime CreatedAt { get; init; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? FinishedAt { get; set; }
+    public string Status { get; set; } = "queued";
+    public int Progress { get; set; }
+    public long RowsWritten { get; set; }
+    public string? Error { get; set; }
+    public string? ReportPath { get; set; }
+    public CancellationTokenSource? Cts { get; set; }
+}
+
+record DoorGeneralExportJobRequest(string Start, string End, string? SourceList, string? Name, string Format);

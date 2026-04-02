@@ -2,6 +2,7 @@ ReportFlex.WebApp/node_modules/
 ReportFlex.WebApp/dist/
 ReportFlex.WebApi/bin/
 ReportFlex.WebApi/obj/
+ReportFlex.WebApi/wwwroot/reports/
 .vscode/
 Report_Flex_C/bin/
 Report_Flex_C/obj/

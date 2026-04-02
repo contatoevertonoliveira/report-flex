@@ -154,11 +154,21 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'employees': [
     { key: 'CardNumber', label: 'Crachá' },
     { key: 'Name', label: 'Nome' },
+    { key: 'Identifier', label: 'Matrícula' },
+    { key: 'StatusCadastro', label: 'Status' },
+    { key: 'Cadastro', label: 'Cadastro' },
+    { key: 'Expira', label: 'Expira' },
+    { key: 'UltimoAcesso', label: 'Último Acesso' },
     { key: 'Empresa', label: 'Empresa' }
   ],
   'external': [
     { key: 'CardNumber', label: 'Crachá' },
     { key: 'Name', label: 'Nome' },
+    { key: 'Identifier', label: 'Matrícula' },
+    { key: 'StatusCadastro', label: 'Status' },
+    { key: 'Cadastro', label: 'Cadastro' },
+    { key: 'Expira', label: 'Expira' },
+    { key: 'UltimoAcesso', label: 'Último Acesso' },
     { key: 'Empresa', label: 'Empresa' }
   ],
   'card-by-cpf': [
@@ -257,6 +267,8 @@ export function QueriesPage(){
   const [exportErr, setExportErr] = useState<string | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
   const exportTimerRef = React.useRef<any>(null)
+  const [exportJobId, setExportJobId] = useState<string | null>(null)
+  const exportJobPollRef = React.useRef<any>(null)
   const [exportPos, setExportPos] = useState<{x:number, y:number}>({x:0, y:0})
   const exportDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
   const exportDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
@@ -301,6 +313,13 @@ export function QueriesPage(){
   const [dbTableName, setDbTableName] = useState('')
   const [doorMode, setDoorMode] = useState<'critical'|'general'|'general-by-name'|'general-by-site'>('critical')
   const [doorAllData, setDoorAllData] = useState(false)
+  const [doorAllSources, setDoorAllSources] = useState(true)
+  const [doorSources, setDoorSources] = useState<{ key: string, description?: string, group?: string, subGroup?: string }[]>([])
+  const [doorSourcesLoading, setDoorSourcesLoading] = useState(false)
+  const [doorSourcesErr, setDoorSourcesErr] = useState<string | null>(null)
+  const [doorSelectedSources, setDoorSelectedSources] = useState<string[]>([])
+  const [doorPickSource, setDoorPickSource] = useState<string>('')
+  const [doorSourceFilter, setDoorSourceFilter] = useState<string>('')
   const [doorName, setDoorName] = useState('')
   const [doorSite, setDoorSite] = useState('')
 
@@ -309,6 +328,7 @@ export function QueriesPage(){
 
   const cacheKey = 'rf_queries_cache_v1'
   const exportHistoryKey = 'rf_export_history_v1'
+  const doorSourcesCacheKey = 'rf_door_sources_cache_v1'
 
   const todayKey = (ts?: number) => {
     const d = new Date(ts ?? Date.now())
@@ -364,6 +384,29 @@ export function QueriesPage(){
 
   React.useEffect(() => {
     setExportHistory(loadExportHistory())
+  }, [])
+
+  React.useEffect(() => {
+    try{
+      const raw = localStorage.getItem(doorSourcesCacheKey)
+      const st = raw ? JSON.parse(raw) : null
+      if (st && Array.isArray(st.items)) setDoorSources(st.items)
+    }catch{}
+    setDoorSourcesLoading(true)
+    setDoorSourcesErr(null)
+    api.reportsDoorSources({ daysBack: 3650 })
+      .then((r: any) => {
+        const items = Array.isArray(r?.items) ? r.items : []
+        setDoorSources(items)
+        try{
+          localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items }))
+        }catch{}
+      })
+      .catch((e:any) => {
+        setDoorSources([])
+        setDoorSourcesErr(e?.message || 'Falha ao carregar portas')
+      })
+      .finally(() => setDoorSourcesLoading(false))
   }, [])
 
   React.useEffect(() => {
@@ -466,11 +509,85 @@ export function QueriesPage(){
   }, [canExport, mode, quickKind, cpfObter, dataset])
 
   const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf))
+  const readyQueryEnabled = mode !== 'prontas' ? true : !!queriesCfg[quickKind]
+  const enabledReadyKeys = useMemo(() => {
+    const keys: QuickKind[] = [
+      'access-agg', 'transit-period', 'door-critical',
+      'employees', 'external', 'card-by-cpf',
+      'cpf', 'matricula', 'empresa', 'cracha', 'nivel', 'visitantes'
+    ]
+    return keys.filter(k => !!queriesCfg[k])
+  }, [queriesCfg])
+
+  React.useEffect(() => {
+    if (mode !== 'prontas') return
+    if (readyQueryEnabled) return
+    if (enabledReadyKeys.length === 0) return
+    setQuickKind(enabledReadyKeys[0])
+    setData([])
+    setError(null)
+  }, [mode, readyQueryEnabled, enabledReadyKeys])
 
   const exportsToday = useMemo(() => {
     const k = todayKey()
     return exportHistory.filter(x => todayKey(x.ts) === k).sort((a,b)=> b.ts - a.ts)
   }, [exportHistory])
+
+  const doorSourcesGrouped = useMemo(() => {
+    const map = new Map<string, { label: string, items: { key: string, label: string }[] }>()
+    for (const s of doorSources) {
+      const g = (s.group || '').trim() || 'Outros'
+      const sg = (s.subGroup || '').trim()
+      const groupKey = `${g}__${sg}`
+      const label = sg ? `${g} • ${sg}` : g
+      const optLabel = s.description ? `${s.description} (${s.key})` : s.key
+      if (!map.has(groupKey)) map.set(groupKey, { label, items: [] })
+      map.get(groupKey)!.items.push({ key: s.key, label: optLabel })
+    }
+    const groups = Array.from(map.values())
+    groups.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
+    for (const g of groups) {
+      g.items.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
+    }
+    return groups
+  }, [doorSources])
+
+  const doorSourceLabelByKey = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const s of doorSources) {
+      const label = s.description ? `${s.description} (${s.key})` : s.key
+      m.set(s.key, label)
+    }
+    return m
+  }, [doorSources])
+
+  const doorShortKey = (key: string) => {
+    const parts = (key || '').split('_').filter(Boolean)
+    if (parts.length >= 3) {
+      const last = parts[2]
+      const m = last.match(/^RDR(\d+)$/i)
+      const lastShort = m ? `R${m[1]}` : last
+      return `${parts[0]}-${parts[1]}-${lastShort}`
+    }
+    if (parts.length === 2) return `${parts[0]}-${parts[1]}`
+    return (key || '').length > 18 ? (key || '').slice(0, 18) + '…' : (key || '')
+  }
+
+  const filteredDoorSourcesGrouped = useMemo(() => {
+    const term = (doorSourceFilter || '').trim().toLowerCase()
+    if (!term) return doorSourcesGrouped
+    const groups = []
+    for (const g of doorSourcesGrouped) {
+      const items = g.items.filter(it => {
+        const l = it.label.toLowerCase()
+        const k = it.key.toLowerCase()
+        const sk = doorShortKey(it.key).toLowerCase()
+        return l.includes(term) || k.includes(term) || sk.includes(term)
+      })
+      if (items.length) groups.push({ label: g.label, items })
+    }
+    return groups
+  }, [doorSourceFilter, doorSourcesGrouped])
 
   function resetData(){
     setData([])
@@ -486,10 +603,13 @@ export function QueriesPage(){
     setExportStage('generating')
     setExportErr(null)
     setExportProgress(0)
+    setExportJobId(null)
     setExportPos({x:0, y:0})
     setExportFloatPos({x:0, y:0})
     if (exportTimerRef.current) clearInterval(exportTimerRef.current)
     exportTimerRef.current = null
+    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+    exportJobPollRef.current = null
     if (exportDragHandlersRef.current){
       window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
       window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
@@ -612,7 +732,16 @@ export function QueriesPage(){
           const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           return r
         })
-        setData(collected)
+        setData(collected.map((x:any) => ({
+          CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
+          Name: x?.Name ?? x?.name ?? null,
+          Identifier: x?.Identifier ?? x?.identifier ?? null,
+          StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
+          Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
+          Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
+          UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
+          Empresa: x?.Empresa ?? x?.empresa ?? null
+        })))
       }else if (quickKind === 'external'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
@@ -620,7 +749,16 @@ export function QueriesPage(){
           const items = (r as any)?.items ?? r ?? []
           return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
         })
-        setData(collected)
+        setData(collected.map((x:any) => ({
+          CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
+          Name: x?.Name ?? x?.name ?? null,
+          Identifier: x?.Identifier ?? x?.identifier ?? null,
+          StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
+          Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
+          Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
+          UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
+          Empresa: x?.Empresa ?? x?.empresa ?? null
+        })))
       }else if (quickKind === 'card-by-cpf'){
         const { cpf } = filters as any
         if (!cpf){ setError('Informe o CPF'); setLoading(false); return }
@@ -748,19 +886,21 @@ export function QueriesPage(){
               return rangeIso({ ...filters, start: sRaw, end: eRaw })
             })()
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
+        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
+        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
           const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
           setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }else if (doorMode === 'general'){
-          const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso })
+          const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
           setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
-          const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName })
+          const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
           setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
@@ -811,7 +951,16 @@ export function QueriesPage(){
           const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           return r
         })
-        setData(collected)
+        setData(collected.map((x:any) => ({
+          CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
+          Name: x?.Name ?? x?.name ?? null,
+          Identifier: x?.Identifier ?? x?.identifier ?? null,
+          StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
+          Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
+          Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
+          UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
+          Empresa: x?.Empresa ?? x?.empresa ?? null
+        })))
       }else if (dataset === 'external'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
@@ -819,7 +968,16 @@ export function QueriesPage(){
           const items = (r as any)?.items ?? r ?? []
           return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
         })
-        setData(collected)
+        setData(collected.map((x:any) => ({
+          CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
+          Name: x?.Name ?? x?.name ?? null,
+          Identifier: x?.Identifier ?? x?.identifier ?? null,
+          StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
+          Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
+          Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
+          UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
+          Empresa: x?.Empresa ?? x?.empresa ?? null
+        })))
       }else if (dataset === 'db-table'){
         if (!canUseDbTables){
           setError('Apenas usuários internos podem consultar tabelas completas.')
@@ -863,6 +1021,62 @@ export function QueriesPage(){
       if (cid) h['X-Client-Id'] = cid
       let url = ''
       let name = ''
+      const startDoorExportJob = async (p: { start: string, end: string, sourceList?: string, name?: string }, downloadName: string) => {
+        setExportFmt('csv')
+        setExportFileName(downloadName)
+        setExportErr(null)
+        setExportStage('generating')
+        setExportModal(true)
+        setExportMinimized(false)
+        setExportMaximized(false)
+        setExportProgress(0)
+        setExportJobId(null)
+        if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
+        setExportUrl(null)
+        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+        exportTimerRef.current = null
+        if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+        exportJobPollRef.current = null
+        const res = await fetch('/api/reports/door-general/export-jobs', {
+          method: 'POST',
+          headers: { ...h, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, format: 'csv' })
+        })
+        if (!res.ok){ await showErr(res); return }
+        const j: any = await res.json()
+        const id = j?.id
+        if (!id){ setExportErr('Falha ao iniciar exportação'); setExportStage('error'); return }
+        setExportJobId(id)
+        setExportProgress(5)
+        exportJobPollRef.current = setInterval(async () => {
+          try{
+            const st = await fetch(`/api/reports/export-jobs/${id}`, { headers: h })
+            if (!st.ok) return
+            const s: any = await st.json()
+            const status = s?.status
+            const prog = Number(s?.progress ?? 0)
+            if (!Number.isNaN(prog)) setExportProgress(Math.max(0, Math.min(100, prog)))
+            if (status === 'done' && s?.downloadUrl){
+              if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+              exportJobPollRef.current = null
+              setExportUrl(s.downloadUrl)
+              setExportStage('ready')
+              setExportProgress(100)
+              const a = document.createElement('a')
+              a.href = s.downloadUrl
+              a.download = downloadName
+              a.click()
+            }else if (status === 'error'){
+              if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+              exportJobPollRef.current = null
+              const msg = s?.error || 'Falha ao exportar'
+              setError(msg)
+              setExportErr(msg)
+              setExportStage('error')
+            }
+          }catch{}
+        }, 1200)
+      }
       const showErr = async (res: Response) => {
         try{
           const j: any = await res.json()
@@ -892,22 +1106,29 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
+        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
+        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src) return
+        const daysRange = Math.abs((new Date(r0.endIso).getTime() - new Date(r0.startIso).getTime()) / 86400000)
         if (doorMode === 'critical'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
           url = `/api/reports/door-critical/export?${qs}`
           name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src }, `portas-gerais.${format}`); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
           name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
           if (!doorName) return
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format }).toString()
+          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: doorName }, `portas-gerais-por-nome.${format}`); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
           name = `portas-gerais-por-nome.${format}`
         }else if (doorMode === 'general-by-site'){
           if (!doorSite) return
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format } as any).toString()
           url = `/api/reports/door-general/by-site/export?${qs}`
           name = `portas-gerais-por-site.${format}`
         }
@@ -1093,19 +1314,21 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0){ setError('Informe início e fim'); return }
+        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
+        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); return }
         if (doorMode === 'critical'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
           url = `/api/reports/door-critical/export?${qs}`
         }else if (doorMode === 'general'){
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf' }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf', ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); return }
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format:'pdf' }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format:'pdf', ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); return }
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format:'pdf' }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format:'pdf' } as any).toString()
           url = `/api/reports/door-general/by-site/export?${qs}`
         }
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
@@ -1362,6 +1585,9 @@ export function QueriesPage(){
                   <button type="button" className="btn-close" onClick={()=>{
                     if (exportTimerRef.current) clearInterval(exportTimerRef.current)
                     exportTimerRef.current = null
+                    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+                    exportJobPollRef.current = null
+                    setExportJobId(null)
                     if (exportDragHandlersRef.current){
                       window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
                       window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
@@ -1374,7 +1600,7 @@ export function QueriesPage(){
                       exportFloatDragHandlersRef.current = null
                     }
                     exportFloatDragRef.current = null
-                    if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                    if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
                     setExportUrl(null)
                     setExportModal(false)
                     setExportMinimized(false)
@@ -1429,6 +1655,9 @@ export function QueriesPage(){
                 <button className="btn btn-outline-secondary" onClick={()=>{
                   if (exportTimerRef.current) clearInterval(exportTimerRef.current)
                   exportTimerRef.current = null
+                  if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+                  exportJobPollRef.current = null
+                  setExportJobId(null)
                   if (exportDragHandlersRef.current){
                     window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
                     window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
@@ -1441,7 +1670,7 @@ export function QueriesPage(){
                     exportFloatDragHandlersRef.current = null
                   }
                   exportFloatDragRef.current = null
-                  if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                  if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
                   setExportUrl(null)
                   setExportModal(false)
                   setExportMinimized(false)
@@ -1468,13 +1697,16 @@ export function QueriesPage(){
               <button className="btn btn-sm btn-outline-secondary" onClick={() => {
                 if (exportTimerRef.current) clearInterval(exportTimerRef.current)
                 exportTimerRef.current = null
+                if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+                exportJobPollRef.current = null
+                setExportJobId(null)
                 if (exportFloatDragHandlersRef.current){
                   window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
                   window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
                   exportFloatDragHandlersRef.current = null
                 }
                 exportFloatDragRef.current = null
-                if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
+                if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
                 setExportUrl(null)
                 setExportModal(false)
                 setExportMinimized(false)
@@ -1644,6 +1876,9 @@ export function QueriesPage(){
                         setQuickKind(opt.key)
                         setData([])
                         setError(null)
+                        setSearchTerm('')
+                        setSearchColumn('*')
+                        setCurrentPage(1)
                         if (opt.key === 'door-critical') {
                           const today = todayBr()
                           setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }))
@@ -1656,6 +1891,13 @@ export function QueriesPage(){
             })}
           </div>
 
+          {!readyQueryEnabled && (
+            <div className="alert alert-warning py-2" style={{marginBottom:8}}>
+              Nenhuma consulta pronta habilitada para exibição. Ative em Consultas Config.
+            </div>
+          )}
+
+          {readyQueryEnabled && (
           <div className="queries-row" style={{marginBottom:8}}>
             {(quickKind === 'transit-period') && (
               <>
@@ -1702,29 +1944,117 @@ export function QueriesPage(){
                     <option value="general-by-site">Portas Gerais por Site</option>
                   </select>
                 </div>
+                {doorMode === 'general-by-site' && (
+                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
+                    Nesta opção o filtro é pelo texto do Acesso (DC), não por lista de portas (TAG).
+                  </div>
+                )}
                 <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:200, paddingLeft:0, flexShrink:0, marginLeft:8}}>
-                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> setDoorAllData(e.target.checked)} />
+                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> {
+                    const v = e.target.checked
+                    setDoorAllData(v)
+                    if (v && (doorMode === 'general' || doorMode === 'general-by-name')) setDoorAllSources(false)
+                  }} />
                   <label className="form-check-label">Todos os dados</label>
                 </div>
+                <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:220, paddingLeft:0, flexShrink:0, marginLeft:8}}>
+                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
+                  <label className="form-check-label">Todas as portas</label>
+                  <span className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"} style={{fontSize:11}}>
+                    {doorSourcesLoading ? "Carregando..." : `Portas: ${doorSources.length}`}
+                  </span>
+                </div>
+                {doorAllData && doorAllSources && (doorMode === 'general' || doorMode === 'general-by-name') && (
+                  <div className="text-danger" style={{fontSize:12, marginLeft:8}}>
+                    Para evitar timeout, desmarque "Todas as portas" e selecione uma ou mais portas.
+                  </div>
+                )}
+                {doorSourcesErr && (
+                  <div className="text-danger" style={{fontSize:12, marginLeft:8}}>
+                    {doorSourcesErr}
+                  </div>
+                )}
                 {!doorAllData && (
                   <>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" style={{maxWidth:170}} placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
+                    <div style={{display:'flex', flexDirection:'column', gap:4}}>
+                      <div className="input-group">
+                        <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                        <input className="form-control" style={{maxWidth:170}} placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
+                      </div>
+                      <div className="input-group">
+                        <span className="input-group-text"><i className="bi bi-clock" /></span>
+                        <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
+                      </div>
                     </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-clock" /></span>
-                      <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" style={{maxWidth:170}} placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-clock" /></span>
-                      <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
+                    <div style={{display:'flex', flexDirection:'column', gap:4}}>
+                      <div className="input-group">
+                        <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                        <input className="form-control" style={{maxWidth:170}} placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
+                      </div>
+                      <div className="input-group">
+                        <span className="input-group-text"><i className="bi bi-clock" /></span>
+                        <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
+                      </div>
                     </div>
                   </>
+                )}
+                {doorMode !== 'general-by-site' && !doorAllSources && (
+                  <div className="d-flex align-items-start" style={{gap:12, minWidth:520}}>
+                    <div style={{flex:1, minWidth:320}}>
+                      {doorSelectedSources.length === 0 && (
+                        <div className="text-muted" style={{fontSize:12, paddingBottom:6}}>Nenhuma porta selecionada</div>
+                      )}
+                      <div className="input-group mb-2">
+                        <span className="input-group-text"><i className="bi bi-search" /></span>
+                        <input className="form-control" placeholder="Buscar porta..." value={doorSourceFilter} onChange={e=> setDoorSourceFilter(e.target.value)} />
+                        {doorSourceFilter && (
+                          <button className="btn btn-outline-secondary" type="button" onClick={()=> setDoorSourceFilter('')}>Limpar</button>
+                        )}
+                      </div>
+                      <div className="input-group">
+                        <span className="input-group-text"><i className="bi bi-door-open" /></span>
+                        <select
+                          className="form-select"
+                          value={doorPickSource}
+                          disabled={doorSourcesLoading || doorSources.length === 0}
+                          onChange={e => {
+                            const v = e.target.value
+                            setDoorPickSource(v)
+                            if (!v) return
+                            setDoorSelectedSources(prev => prev.includes(v) ? prev : [...prev, v])
+                          }}
+                        >
+                          <option value="">
+                            {doorSourcesLoading ? 'Carregando portas...' : doorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
+                          </option>
+                          {!doorSourcesLoading && doorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
+                              <optgroup key={g.label} label={g.label}>
+                                {g.items.map(it => (
+                                  <option key={it.key} value={it.key}>{it.label}</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                        </select>
+                        {doorSelectedSources.length > 0 && (
+                          <button className="btn btn-outline-secondary" type="button" onClick={()=> { setDoorSelectedSources([]); setDoorPickSource('') }}>
+                            Limpar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{minWidth:200, maxWidth:360}}>
+                      {doorSelectedSources.length > 0 ? (
+                        <div className="d-flex flex-wrap gap-1">
+                          {doorSelectedSources.map(k => (
+                            <span key={k} className="badge rounded-pill text-bg-secondary" title={doorSourceLabelByKey.get(k) || k} style={{cursor:'pointer'}} onClick={() => setDoorSelectedSources(prev => prev.filter(x => x !== k))}>
+                              {doorShortKey(k)}
+                              <span style={{marginLeft:6}}>×</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 )}
                 {doorMode === 'general-by-name' && (
                   <div className="input-group">
@@ -2015,6 +2345,24 @@ export function QueriesPage(){
               </div>
             )}
           </div>
+          )}
+
+          {(data.length > 0 || searchTerm) && (
+            <div className="queries-row" style={{marginBottom:8}}>
+              <select className="form-select" style={{width:220}} value={searchColumn} onChange={e=> { setSearchColumn(e.target.value); setCurrentPage(1) }}>
+                <option value="*">Todas as colunas</option>
+                {searchColumnsList.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+              </select>
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-search" /></span>
+                <input className="form-control" placeholder="Filtrar resultados (nome, crachá...)" value={searchTerm} onChange={e=> { setSearchTerm(e.target.value); setCurrentPage(1) }} />
+                {searchTerm && (
+                  <button className="btn btn-outline-secondary" type="button" onClick={()=> { setSearchTerm(''); setCurrentPage(1) }}>Limpar</button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="queries-row" style={{marginBottom:12}}>
             <button className="btn btn-primary d-flex align-items-center" onClick={runQuick} disabled={loading}>
               {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Consultando...</> : <><i className="bi bi-play-fill me-1" /> Consultar</>}
@@ -2260,7 +2608,7 @@ export function QueriesPage(){
         </div>
       )}
 
-      <div className="table-responsive pro-table">
+      <div className={`table-responsive${mode === 'prontas' && quickKind === 'door-critical' ? ' pro-table' : ''}`}>
         <table className="table table-hover table-striped align-middle">
           <thead>
             <tr>
