@@ -15,6 +15,8 @@ import { SettingsPage } from './pages/SettingsPage'
 import { MessagesPage } from './pages/MessagesPage'
 import { AdminMessagesPage } from './pages/AdminMessagesPage'
 import { ConsultasConfigPage } from './pages/ConsultasConfigPage'
+import { ChangePasswordPage } from './pages/ChangePasswordPage'
+import { LogsPage } from './pages/LogsPage'
 
 export default function App() {
   const [expanded, setExpanded] = React.useState(true)
@@ -60,8 +62,10 @@ export default function App() {
         )}
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/alterar-senha" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
           <Route path="/consultas" element={<RequireAuth><QueriesPage /></RequireAuth>} />
           <Route path="/consultas-config" element={<RequireAdminOrSuper><ConsultasConfigPage /></RequireAdminOrSuper>} />
+          <Route path="/logs" element={<RequireAdminOrSuper><LogsPage /></RequireAdminOrSuper>} />
           <Route path="/mensagens" element={<RequireAuth><MessagesPage /></RequireAuth>} />
           <Route path="/inbox" element={<RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin>} />
           <Route path="/configuracoes" element={<RequireNotClient><SettingsPage /></RequireNotClient>} />

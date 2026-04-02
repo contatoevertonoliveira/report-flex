@@ -36,10 +36,17 @@ function isTokenValid(): boolean {
   }
 }
 
+function isPwdChangeRequired(): boolean {
+  return localStorage.getItem('rf_pwd_change_required') === '1'
+}
+
 export function RequireAuth({ children }: { children: React.ReactNode }){
   const location = useLocation()
   if(!isTokenValid()){
     return <Navigate to="/login" state={{ from: location }} replace />
+  }
+  if (isPwdChangeRequired() && location.pathname !== '/alterar-senha'){
+    return <Navigate to="/alterar-senha" state={{ from: location }} replace />
   }
   return <>{children}</>
 }
@@ -48,6 +55,9 @@ export function RequireSuperAdmin({ children }: { children: React.ReactNode }){
   const location = useLocation()
   if(!isTokenValid()){
     return <Navigate to="/login" state={{ from: location }} replace />
+  }
+  if (isPwdChangeRequired() && location.pathname !== '/alterar-senha'){
+    return <Navigate to="/alterar-senha" state={{ from: location }} replace />
   }
   const level = localStorage.getItem('rf_level')
   if (level !== 'SuperAdmin'){
@@ -61,6 +71,9 @@ export function RequireNotClient({ children }: { children: React.ReactNode }){
   if(!isTokenValid()){
     return <Navigate to="/login" state={{ from: location }} replace />
   }
+  if (isPwdChangeRequired() && location.pathname !== '/alterar-senha'){
+    return <Navigate to="/alterar-senha" state={{ from: location }} replace />
+  }
   const level = localStorage.getItem('rf_level')
   if (level === 'Cliente'){
     return <Navigate to="/consultas" state={{ from: location }} replace />
@@ -72,6 +85,9 @@ export function RequireAdminOrSuper({ children }: { children: React.ReactNode })
   const location = useLocation()
   if(!isTokenValid()){
     return <Navigate to="/login" state={{ from: location }} replace />
+  }
+  if (isPwdChangeRequired() && location.pathname !== '/alterar-senha'){
+    return <Navigate to="/alterar-senha" state={{ from: location }} replace />
   }
   const level = localStorage.getItem('rf_level')
   if (level !== 'Administrador' && level !== 'SuperAdmin'){

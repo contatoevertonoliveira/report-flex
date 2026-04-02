@@ -3,7 +3,8 @@ import { api, setToken } from '../api'
 import { useNavigate } from 'react-router-dom'
 
 export function LoginPage() {
-  const [tokenInput, setTokenInput] = useState('')
+  const [email, setEmail] = useState('')
+  const [senha, setSenha] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -11,18 +12,25 @@ export function LoginPage() {
     window.dispatchEvent(new CustomEvent('app:toast', { detail: { type, message } }))
   }
   async function handleLogin(){
-    if (!tokenInput.trim()){
-      setError('Informe o token')
-      toast('error', 'Informe o token')
+    if (!email.trim()){
+      setError('Informe o email')
+      toast('error', 'Informe o email')
+      return
+    }
+    if (!senha){
+      setError('Informe a senha')
+      toast('error', 'Informe a senha')
       return
     }
     setLoading(true)
     setError(null)
     try{
-      const res = await api.signinToken(tokenInput)
+      const res = await api.signin(email.trim(), senha)
       if (res?.token){
         setToken(res.token)
         if (res?.nivel) localStorage.setItem('rf_level', res.nivel)
+        if (res?.mustChangePassword) localStorage.setItem('rf_pwd_change_required', '1')
+        else localStorage.removeItem('rf_pwd_change_required')
         if (res?.clientId){
           localStorage.setItem('rf_client_id', String(res.clientId))
           if (res?.clientName) localStorage.setItem('rf_client_name', res.clientName)
@@ -40,10 +48,11 @@ export function LoginPage() {
           }
         }catch{}
         toast('success', 'Login realizado com sucesso')
-        navigate('/consultas')
+        if (res?.mustChangePassword) navigate('/alterar-senha')
+        else navigate('/consultas')
       } else {
-        setError('Token inválido')
-        toast('error', 'Token inválido')
+        setError('Credenciais inválidas')
+        toast('error', 'Credenciais inválidas')
       }
     }catch{
       setError('Falha de autenticação')
@@ -61,9 +70,17 @@ export function LoginPage() {
         <form className="login-actions" onSubmit={e=>{ e.preventDefault(); handleLogin() }}>
           <input
             className="form-control"
-            value={tokenInput}
-            onChange={e=>setTokenInput(e.target.value)}
-            placeholder="Token"
+            value={email}
+            onChange={e=>setEmail(e.target.value)}
+            placeholder="Email"
+            disabled={loading}
+          />
+          <input
+            className="form-control"
+            type="password"
+            value={senha}
+            onChange={e=>setSenha(e.target.value)}
+            placeholder="Senha"
             disabled={loading}
           />
           <button className="btn btn-secondary" type="submit" disabled={loading}>

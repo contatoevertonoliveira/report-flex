@@ -71,13 +71,20 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/cms/transit/by-empresa?' + qs, { headers: headers() }))
   },
-  signin: async (usuario: string, senha: string) => (await apiFetch('/api/login/signin', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ usuario, senha }) })).json(),
+  signin: async (email: string, senha: string) => (await apiFetch('/api/login/signin', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ email, senha }) })).json(),
+  changePassword: async (p: { currentPassword: string, newPassword: string }) =>
+    withAuth(apiFetch('/api/login/change-password', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   signinToken: async (token: string) => {
     const r = await apiFetch('/api/login/signin-token?token=' + encodeURIComponent(token))
     if(!r.ok) return {}
     return await r.json()
   },
   loginTokens: async () => (await apiFetch('/api/login/tokens')).json(),
+  adminActivityLog: async (p: { page?: number, pageSize?: number } = {}) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    const url = qs ? '/api/admin/activity-log?' + qs : '/api/admin/activity-log'
+    return await withAuth(apiFetch(url, { headers: headers() }))
+  },
   employeesSearch: async (p: { matricula?: string, empresa?: string, page?: number, pageSize?: number, sort?: string, dir?: 'asc'|'desc' }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/cms/employees/search?' + qs, { headers: headers() }))
@@ -231,6 +238,7 @@ export function logout(){
   localStorage.removeItem('rf_client_id')
   localStorage.removeItem('rf_client_name')
   localStorage.removeItem('rf_level')
+  localStorage.removeItem('rf_pwd_change_required')
   clearSessionCaches()
 }
 

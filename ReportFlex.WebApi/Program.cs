@@ -13,6 +13,8 @@ using QuestPDF.Infrastructure;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://*:5001");
@@ -54,21 +56,47 @@ builder.Services.AddAuthentication().AddJwtBearer(opt =>
 });
 var envPathRepoRoot = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 var envLock = new object();
+IEnumerable<string> CandidateEnvPaths()
+{
+    var bases = new List<string>();
+    try { bases.Add(builder.Environment.ContentRootPath); } catch { }
+    try { bases.Add(AppContext.BaseDirectory); } catch { }
+    try { bases.Add(Directory.GetCurrentDirectory()); } catch { }
+    foreach (var b in bases.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+    {
+        var dir = new DirectoryInfo(Path.GetFullPath(b));
+        for (int i = 0; i < 6 && dir != null; i++)
+        {
+            yield return Path.Combine(dir.FullName, ".env");
+            yield return Path.Combine(dir.FullName, "ReportFlex.WebApp", ".env");
+            yield return Path.Combine(dir.FullName, "reportflex.webapp", ".env");
+            dir = dir.Parent;
+        }
+    }
+}
+
 Dictionary<string,string> LoadEnv()
 {
     var dict = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
     try
     {
-        if (File.Exists(envPathRepoRoot))
+        foreach (var path in CandidateEnvPaths().Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            foreach (var line in File.ReadAllLines(envPathRepoRoot))
+            if (!File.Exists(path)) continue;
+            foreach (var line in File.ReadAllLines(path))
             {
                 var trimmed = line.Trim();
                 if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#", StringComparison.Ordinal)) continue;
+                if (trimmed.StartsWith("export ", StringComparison.OrdinalIgnoreCase)) trimmed = trimmed.Substring(7).Trim();
                 var idx = trimmed.IndexOf('=');
                 if (idx <= 0) continue;
-                var key = trimmed.Substring(0, idx).Trim();
+                var key = trimmed.Substring(0, idx).Trim().Trim('\uFEFF');
                 var val = trimmed.Substring(idx + 1).Trim();
+                if ((val.StartsWith("\"", StringComparison.Ordinal) && val.EndsWith("\"", StringComparison.Ordinal)) ||
+                    (val.StartsWith("'", StringComparison.Ordinal) && val.EndsWith("'", StringComparison.Ordinal)))
+                {
+                    val = val.Length >= 2 ? val.Substring(1, val.Length - 2) : "";
+                }
                 dict[key] = val;
             }
         }
@@ -102,6 +130,14 @@ void SaveEnv(IDictionary<string,string> values)
 }
 
 var initialEnv = LoadEnv();
+foreach (var kv in initialEnv)
+{
+    if (string.IsNullOrWhiteSpace(kv.Key)) continue;
+    if (Environment.GetEnvironmentVariable(kv.Key) == null)
+    {
+        Environment.SetEnvironmentVariable(kv.Key, kv.Value);
+    }
+}
 var dbMode = initialEnv.TryGetValue("DB_MODE", out var m) && !string.IsNullOrWhiteSpace(m)
     ? (string.Equals(m, "Real", StringComparison.OrdinalIgnoreCase) ? "Real" : "Demo")
     : "Demo";
@@ -130,6 +166,70 @@ app.UseResponseCompression();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.HasValue ? ctx.Request.Path.Value! : "";
+    if (!path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+    var sw = Stopwatch.StartNew();
+    try
+    {
+        await next();
+    }
+    finally
+    {
+        sw.Stop();
+        try
+        {
+            var user = ctx.User;
+            var isAuth = user?.Identity?.IsAuthenticated == true;
+            var method = ctx.Request.Method ?? "";
+            var status = ctx.Response?.StatusCode ?? 0;
+            var action = $"{method} {path}";
+            var usuario = isAuth ? (user?.FindFirst("usuario")?.Value ?? user?.FindFirst(ClaimTypes.NameIdentifier)?.Value) : null;
+            var nome = isAuth ? user?.FindFirst("nome")?.Value : null;
+            var nivel = isAuth ? user?.FindFirst("nivel")?.Value : null;
+            var clientId = isAuth ? user?.FindFirst("clientId")?.Value : null;
+            var ip = ctx.Connection.RemoteIpAddress?.ToString();
+            var ua = ctx.Request.Headers.UserAgent.ToString();
+            var ms = (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds);
+            var qs = "";
+            if (!path.StartsWith("/api/login", StringComparison.OrdinalIgnoreCase))
+            {
+                qs = ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value ?? "" : "";
+                if (qs.Length > 800) qs = qs.Substring(0, 800);
+            }
+            var shouldLog = isAuth || path.StartsWith("/api/login", StringComparison.OrdinalIgnoreCase);
+            if (shouldLog)
+            {
+            using var cn = new SqlConnection(GetConn("Logins"));
+            await cn.OpenAsync();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,@Nome,@Nivel,@ClientId,@Action,@Path,@Query,@StatusCode,@DurationMs,@Ip,@UserAgent)";
+            cmd.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = (object?)usuario ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = (object?)nome ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@Nivel", SqlDbType.VarChar, 50) { Value = (object?)nivel ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@ClientId", SqlDbType.Int) { Value = (object?)((clientId != null && int.TryParse(clientId, out var cid) && cid > 0) ? cid : null) ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@Action", SqlDbType.VarChar, 300) { Value = action.Length > 300 ? action.Substring(0, 300) : action });
+            cmd.Parameters.Add(new SqlParameter("@Path", SqlDbType.VarChar, 300) { Value = path.Length > 300 ? path.Substring(0, 300) : path });
+            cmd.Parameters.Add(new SqlParameter("@Query", SqlDbType.VarChar, 900) { Value = (object?)qs ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@StatusCode", SqlDbType.Int) { Value = status });
+            cmd.Parameters.Add(new SqlParameter("@DurationMs", SqlDbType.Int) { Value = ms });
+            cmd.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = (object?)ip ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+            await cmd.ExecuteNonQueryAsync();
+            }
+        }
+        catch
+        {
+        }
+    }
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 ImagesStatic.MapLegacyImages(app);
@@ -453,11 +553,135 @@ BEGIN
         CreatedAt DATETIME NOT NULL DEFAULT(GETDATE()),
         Status VARCHAR(50) NULL
     );
+END
+
+IF OBJECT_ID('dbo.ActivityLog','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ActivityLog(
+        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        TsUtc DATETIME2(0) NOT NULL DEFAULT(SYSUTCDATETIME()),
+        Usuario VARCHAR(200) NULL,
+        Nome VARCHAR(200) NULL,
+        Nivel VARCHAR(50) NULL,
+        ClientId INT NULL,
+        Action VARCHAR(300) NOT NULL,
+        Path VARCHAR(300) NOT NULL,
+        QueryString VARCHAR(900) NULL,
+        StatusCode INT NULL,
+        DurationMs INT NULL,
+        Ip VARCHAR(80) NULL,
+        UserAgent VARCHAR(400) NULL
+    );
+    CREATE INDEX IX_ActivityLog_TsUtc ON dbo.ActivityLog(TsUtc DESC);
+    CREATE INDEX IX_ActivityLog_Usuario ON dbo.ActivityLog(Usuario);
+END
+
+IF COL_LENGTH('dbo.Login','EMAIL') IS NULL
+    ALTER TABLE dbo.Login ADD EMAIL VARCHAR(200) NULL;
+IF COL_LENGTH('dbo.Login','SENHA_HASH') IS NULL
+    ALTER TABLE dbo.Login ADD SENHA_HASH VARCHAR(400) NULL;
+IF COL_LENGTH('dbo.Login','MUST_CHANGE_PWD') IS NULL
+    ALTER TABLE dbo.Login ADD MUST_CHANGE_PWD BIT NOT NULL CONSTRAINT DF_Login_MustChangePwd DEFAULT(0);
+IF COL_LENGTH('dbo.Login','PWD_UPDATED_AT') IS NULL
+    ALTER TABLE dbo.Login ADD PWD_UPDATED_AT DATETIME2(0) NULL;
+IF COL_LENGTH('dbo.Login','LAST_LOGIN_AT') IS NULL
+    ALTER TABLE dbo.Login ADD LAST_LOGIN_AT DATETIME2(0) NULL;
+IF COL_LENGTH('dbo.Login','EMAIL') IS NOT NULL
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Login_Email' AND object_id = OBJECT_ID('dbo.Login'))
+        CREATE INDEX IX_Login_Email ON dbo.Login(EMAIL);
+END
+
+IF OBJECT_ID('dbo.PortalUsers','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PortalUsers(
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        Email VARCHAR(200) NOT NULL,
+        Nome VARCHAR(200) NOT NULL,
+        Nivel VARCHAR(50) NOT NULL,
+        PasswordHash VARCHAR(400) NULL,
+        MustChangePassword BIT NOT NULL CONSTRAINT DF_PortalUsers_MustChange DEFAULT(1),
+        IsActive BIT NOT NULL CONSTRAINT DF_PortalUsers_IsActive DEFAULT(1),
+        CreatedAtUtc DATETIME2(0) NOT NULL DEFAULT(SYSUTCDATETIME()),
+        LastLoginAtUtc DATETIME2(0) NULL,
+        PasswordUpdatedAtUtc DATETIME2(0) NULL
+    );
+    CREATE UNIQUE INDEX IX_PortalUsers_Email ON dbo.PortalUsers(Email);
 END";
     cmdInit.ExecuteNonQuery();
 }
 catch
 {
+}
+
+static string HashPassword(string password)
+{
+    var salt = RandomNumberGenerator.GetBytes(16);
+    var iters = 120_000;
+    using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, iters, HashAlgorithmName.SHA256);
+    var hash = pbkdf2.GetBytes(32);
+    return $"PBKDF2${iters}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+}
+
+static bool VerifyPassword(string password, string stored)
+{
+    try
+    {
+        var parts = (stored ?? "").Split('$');
+        if (parts.Length != 4) return false;
+        if (!string.Equals(parts[0], "PBKDF2", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!int.TryParse(parts[1], out var iters) || iters < 10_000) return false;
+        var salt = Convert.FromBase64String(parts[2]);
+        var expected = Convert.FromBase64String(parts[3]);
+        using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, iters, HashAlgorithmName.SHA256);
+        var actual = pbkdf2.GetBytes(expected.Length);
+        return CryptographicOperations.FixedTimeEquals(actual, expected);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+static bool PasswordMeetsPolicy(string password)
+{
+    if (string.IsNullOrEmpty(password) || password.Length < 8) return false;
+    bool hasUpper = false, hasLower = false, hasSpecial = false;
+    foreach (var ch in password)
+    {
+        if (char.IsUpper(ch)) hasUpper = true;
+        else if (char.IsLower(ch)) hasLower = true;
+        else if (!char.IsLetterOrDigit(ch)) hasSpecial = true;
+    }
+    return hasUpper && hasLower && hasSpecial;
+}
+
+static string GenerateTempPassword()
+{
+    const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const string lower = "abcdefghijkmnopqrstuvwxyz";
+    const string digits = "23456789";
+    const string special = "!@#$%*_-+?";
+    var all = upper + lower + digits + special;
+    var bytes = RandomNumberGenerator.GetBytes(32);
+    var chars = new List<char>(12)
+    {
+        upper[bytes[0] % upper.Length],
+        lower[bytes[1] % lower.Length],
+        special[bytes[2] % special.Length],
+        digits[bytes[3] % digits.Length]
+    };
+    for (int i = 4; i < 12; i++)
+    {
+        chars.Add(all[bytes[i] % all.Length]);
+    }
+    for (int i = chars.Count - 1; i > 0; i--)
+    {
+        int j = bytes[16 + i] % (i + 1);
+        (chars[i], chars[j]) = (chars[j], chars[i]);
+    }
+    var pwd = new string(chars.ToArray());
+    return PasswordMeetsPolicy(pwd) ? pwd : (pwd + "Aa!");
 }
 
 app.MapGet("/api/admin/report-options", () =>
@@ -2581,13 +2805,7 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
             new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
         });
         if (err != null) return Results.BadRequest(new { success = false, error = err });
-        var filtered = rows;
-        if (hasExplicitSrc)
-        {
-            var allow = ParseSourceList(explicitSrc);
-            filtered = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
-        }
-        return Results.Ok(new { success = true, count = filtered.Count, data = filtered.Select(x => new {
+        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
             EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
             NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
             StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
@@ -2623,11 +2841,6 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
         new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
-    if (hasExplicitSrc)
-    {
-        var allow = ParseSourceList(explicitSrc);
-        rows = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
-    }
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -2711,13 +2924,7 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
             new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
         });
         if (err != null) return Results.BadRequest(new { success = false, error = err });
-        var filtered = rows;
-        if (hasExplicitSrc)
-        {
-            var allow = ParseSourceList(explicitSrc);
-            filtered = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
-        }
-        return Results.Ok(new { success = true, count = filtered.Count, data = filtered.Select(x => new {
+        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
             EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
             NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
             StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
@@ -2754,11 +2961,6 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
-    if (hasExplicitSrc)
-    {
-        var allow = ParseSourceList(explicitSrc);
-        rows = rows.Where(x => allow.Contains(x.TAG ?? "")).ToList();
-    }
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
@@ -2932,28 +3134,360 @@ app.MapGet("/api/prestadores", async () =>
     return Results.Ok(list);
 }).RequireAuthorization();
 
-app.MapPost("/api/login/signin", async (string usuario, string senha) =>
+app.MapPost("/api/login/signin", async (HttpContext ctx) =>
 {
+    string email = "";
+    string password = "";
+    try
+    {
+        var doc = await ctx.Request.ReadFromJsonAsync<System.Text.Json.JsonDocument>();
+        if (doc != null)
+        {
+            if (doc.RootElement.TryGetProperty("email", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String) email = e.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("senha", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.String) password = s.GetString() ?? "";
+            if (string.IsNullOrWhiteSpace(password) && doc.RootElement.TryGetProperty("password", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String) password = p.GetString() ?? "";
+        }
+    }
+    catch
+    {
+    }
+    if (string.IsNullOrWhiteSpace(email)) email = ctx.Request.Query["email"].ToString();
+    if (string.IsNullOrWhiteSpace(password)) password = ctx.Request.Query["senha"].ToString();
+    email = (email ?? "").Trim();
+    password = password ?? "";
+    if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password)) return Results.BadRequest(new { error = "Informe email e senha" });
+
     using var cn = new SqlConnection(GetConn("Logins"));
     await cn.OpenAsync();
-    using var cmd = cn.CreateCommand();
-    cmd.CommandText = "SELECT NOME,NIVEL FROM dbo.Login WHERE USUARIO=@u AND SENHA=@s AND STATUS='Habilitado'";
-    cmd.Parameters.Add(new SqlParameter("@u", SqlDbType.VarChar) { Value = usuario });
-    cmd.Parameters.Add(new SqlParameter("@s", SqlDbType.VarChar) { Value = senha });
-    using var r = await cmd.ExecuteReaderAsync();
-    if (!r.HasRows) return Results.Unauthorized();
-    await r.ReadAsync();
-    var nome = r.GetString(0);
-    var nivel = r.GetString(1);
+
+    try
+    {
+        string? pEmail = null;
+        string? pNome = null;
+        string? pNivel = null;
+        string? pHash = null;
+        bool pMustChange = false;
+        using (var cmdP = cn.CreateCommand())
+        {
+            cmdP.CommandText = @"
+SELECT TOP 1 Email,Nome,Nivel,PasswordHash,MustChangePassword
+FROM dbo.PortalUsers
+WHERE IsActive=1 AND Email=@e";
+            cmdP.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+            using var rp = await cmdP.ExecuteReaderAsync();
+            if (rp.HasRows)
+            {
+                await rp.ReadAsync();
+                pEmail = rp.IsDBNull(0) ? null : rp.GetString(0);
+                pNome = rp.IsDBNull(1) ? null : rp.GetString(1);
+                pNivel = rp.IsDBNull(2) ? null : rp.GetString(2);
+                pHash = rp.IsDBNull(3) ? null : rp.GetString(3);
+                pMustChange = !rp.IsDBNull(4) && rp.GetBoolean(4);
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(pEmail))
+        {
+            if (string.IsNullOrWhiteSpace(pHash) || !VerifyPassword(password, pHash))
+            {
+                try
+                {
+                    using var cmdFail = cn.CreateCommand();
+                    cmdFail.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,NULL,NULL,NULL,'LOGIN_FAIL','/api/login/signin',NULL,401,NULL,@Ip,@UserAgent)";
+                    cmdFail.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = pEmail.Length > 200 ? pEmail.Substring(0, 200) : pEmail });
+                    cmdFail.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = (object?)ctx.Connection.RemoteIpAddress?.ToString() ?? DBNull.Value });
+                    var ua = ctx.Request.Headers.UserAgent.ToString();
+                    cmdFail.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+                    await cmdFail.ExecuteNonQueryAsync();
+                }
+                catch
+                {
+                }
+                return Results.Unauthorized();
+            }
+            try
+            {
+                using var cmdLast = cn.CreateCommand();
+                cmdLast.CommandText = "UPDATE dbo.PortalUsers SET LastLoginAtUtc=SYSUTCDATETIME() WHERE Email=@e";
+                cmdLast.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = pEmail });
+                await cmdLast.ExecuteNonQueryAsync();
+            }
+            catch
+            {
+            }
+            var credsPortal = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            var claimsPortal = new List<Claim>();
+            claimsPortal.Add(new Claim("usuario", pEmail));
+            if (!string.IsNullOrEmpty(pNome)) claimsPortal.Add(new Claim("nome", pNome));
+            if (!string.IsNullOrEmpty(pNivel)) claimsPortal.Add(new Claim("nivel", pNivel));
+            if (pMustChange) claimsPortal.Add(new Claim("pwdChangeRequired", "1"));
+            var tokenPortal = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claimsPortal, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: credsPortal);
+            var tokenStrPortal = new JwtSecurityTokenHandler().WriteToken(tokenPortal);
+            try
+            {
+                using var cmdOk = cn.CreateCommand();
+                cmdOk.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,@Nome,@Nivel,NULL,'LOGIN_OK','/api/login/signin',NULL,200,NULL,@Ip,@UserAgent)";
+                cmdOk.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = pEmail.Length > 200 ? pEmail.Substring(0, 200) : pEmail });
+                cmdOk.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = (object?)pNome ?? DBNull.Value });
+                cmdOk.Parameters.Add(new SqlParameter("@Nivel", SqlDbType.VarChar, 50) { Value = (object?)pNivel ?? DBNull.Value });
+                cmdOk.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = (object?)ctx.Connection.RemoteIpAddress?.ToString() ?? DBNull.Value });
+                var ua = ctx.Request.Headers.UserAgent.ToString();
+                cmdOk.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+                await cmdOk.ExecuteNonQueryAsync();
+            }
+            catch
+            {
+            }
+            return Results.Ok(new { token = tokenStrPortal, nome = pNome, usuario = pEmail, nivel = pNivel, mustChangePassword = pMustChange });
+        }
+    }
+    catch
+    {
+    }
+    string? usuarioDb = null;
+    string? nome = null;
+    string? nivel = null;
+    string? senhaHash = null;
+    string? senhaPlain = null;
+    bool mustChange = false;
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT TOP 1
+  USUARIO,
+  NOME,
+  NIVEL,
+  EMAIL,
+  SENHA_HASH,
+  SENHA,
+  ISNULL(MUST_CHANGE_PWD,0)
+FROM dbo.Login
+WHERE STATUS='Habilitado' AND (EMAIL=@e OR USUARIO=@e)";
+        cmd.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+        using var r = await cmd.ExecuteReaderAsync();
+        if (!r.HasRows) return Results.Unauthorized();
+        await r.ReadAsync();
+        usuarioDb = r.IsDBNull(0) ? null : r.GetString(0);
+        nome = r.IsDBNull(1) ? null : r.GetString(1);
+        nivel = r.IsDBNull(2) ? null : r.GetString(2);
+        var emailDb = r.IsDBNull(3) ? null : r.GetString(3);
+        senhaHash = r.IsDBNull(4) ? null : r.GetString(4);
+        senhaPlain = r.IsDBNull(5) ? null : r.GetString(5);
+        mustChange = !r.IsDBNull(6) && r.GetBoolean(6);
+        if (!string.IsNullOrWhiteSpace(emailDb)) usuarioDb = emailDb;
+    }
+
+    bool ok = false;
+    bool upgraded = false;
+    if (!string.IsNullOrWhiteSpace(senhaHash))
+    {
+        ok = VerifyPassword(password, senhaHash);
+    }
+    else if (!string.IsNullOrEmpty(senhaPlain))
+    {
+        ok = string.Equals(password, senhaPlain, StringComparison.Ordinal);
+        if (ok)
+        {
+            senhaHash = HashPassword(password);
+            upgraded = true;
+        }
+    }
+    if (!ok)
+    {
+        try
+        {
+            using var cmdFail = cn.CreateCommand();
+            cmdFail.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,NULL,NULL,NULL,'LOGIN_FAIL','/api/login/signin',NULL,401,NULL,@Ip,@UserAgent)";
+            cmdFail.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = email.Length > 200 ? email.Substring(0, 200) : email });
+            cmdFail.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = (object?)ctx.Connection.RemoteIpAddress?.ToString() ?? DBNull.Value });
+            var ua = ctx.Request.Headers.UserAgent.ToString();
+            cmdFail.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+            await cmdFail.ExecuteNonQueryAsync();
+        }
+        catch
+        {
+        }
+        return Results.Unauthorized();
+    }
+
+    if (upgraded && !string.IsNullOrWhiteSpace(senhaHash))
+    {
+        try
+        {
+            using var cmdUp = cn.CreateCommand();
+            cmdUp.CommandText = "UPDATE dbo.Login SET SENHA_HASH=@h, SENHA=NULL WHERE (EMAIL=@e OR USUARIO=@e) AND STATUS='Habilitado'";
+            cmdUp.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = senhaHash });
+            cmdUp.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+            await cmdUp.ExecuteNonQueryAsync();
+        }
+        catch
+        {
+        }
+    }
+    try
+    {
+        using var cmdLast = cn.CreateCommand();
+        cmdLast.CommandText = "UPDATE dbo.Login SET LAST_LOGIN_AT=SYSUTCDATETIME() WHERE (EMAIL=@e OR USUARIO=@e) AND STATUS='Habilitado'";
+        cmdLast.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+        await cmdLast.ExecuteNonQueryAsync();
+    }
+    catch
+    {
+    }
+
+    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var claims = new List<Claim>();
+    var usuarioClaim = !string.IsNullOrWhiteSpace(usuarioDb) ? usuarioDb : email;
+    if (!string.IsNullOrEmpty(usuarioClaim)) claims.Add(new Claim("usuario", usuarioClaim));
+    if (!string.IsNullOrEmpty(nome)) claims.Add(new Claim("nome", nome));
+    if (!string.IsNullOrEmpty(nivel)) claims.Add(new Claim("nivel", nivel));
+    if (mustChange) claims.Add(new Claim("pwdChangeRequired", "1"));
+    var token = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claims, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: creds);
+    var tokenStr = new JwtSecurityTokenHandler().WriteToken(token);
+
+    try
+    {
+        using var cmdOk = cn.CreateCommand();
+        cmdOk.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,@Nome,@Nivel,NULL,'LOGIN_OK','/api/login/signin',NULL,200,NULL,@Ip,@UserAgent)";
+        cmdOk.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = usuarioClaim.Length > 200 ? usuarioClaim.Substring(0, 200) : usuarioClaim });
+        cmdOk.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = (object?)nome ?? DBNull.Value });
+        cmdOk.Parameters.Add(new SqlParameter("@Nivel", SqlDbType.VarChar, 50) { Value = (object?)nivel ?? DBNull.Value });
+        cmdOk.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = (object?)ctx.Connection.RemoteIpAddress?.ToString() ?? DBNull.Value });
+        var ua = ctx.Request.Headers.UserAgent.ToString();
+        cmdOk.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+        await cmdOk.ExecuteNonQueryAsync();
+    }
+    catch
+    {
+    }
+
+    return Results.Ok(new { token = tokenStr, nome, usuario = usuarioClaim, nivel, mustChangePassword = mustChange });
+});
+
+app.MapPost("/api/login/change-password", async (HttpContext ctx) =>
+{
+    var usuario = ctx.User?.FindFirst("usuario")?.Value;
+    if (string.IsNullOrWhiteSpace(usuario)) return Results.Unauthorized();
+    string current = "";
+    string nextPwd = "";
+    try
+    {
+        var doc = await ctx.Request.ReadFromJsonAsync<System.Text.Json.JsonDocument>();
+        if (doc != null)
+        {
+            if (doc.RootElement.TryGetProperty("currentPassword", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String) current = c.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("newPassword", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String) nextPwd = n.GetString() ?? "";
+        }
+    }
+    catch
+    {
+    }
+    if (string.IsNullOrEmpty(current) || string.IsNullOrEmpty(nextPwd)) return Results.BadRequest(new { error = "Informe a senha atual e a nova senha" });
+    if (!PasswordMeetsPolicy(nextPwd)) return Results.BadRequest(new { error = "A senha deve ter pelo menos 8 caracteres, uma letra maiúscula, uma letra minúscula e um caractere especial." });
+
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    try
+    {
+        string? pEmail = null;
+        string? pNome = null;
+        string? pNivel = null;
+        string? pHash = null;
+        using (var cmdP = cn.CreateCommand())
+        {
+            cmdP.CommandText = @"
+SELECT TOP 1 Email,Nome,Nivel,PasswordHash
+FROM dbo.PortalUsers
+WHERE IsActive=1 AND Email=@e";
+            cmdP.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = usuario });
+            using var r = await cmdP.ExecuteReaderAsync();
+            if (r.HasRows)
+            {
+                await r.ReadAsync();
+                pEmail = r.IsDBNull(0) ? null : r.GetString(0);
+                pNome = r.IsDBNull(1) ? null : r.GetString(1);
+                pNivel = r.IsDBNull(2) ? null : r.GetString(2);
+                pHash = r.IsDBNull(3) ? null : r.GetString(3);
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(pEmail))
+        {
+            if (string.IsNullOrWhiteSpace(pHash) || !VerifyPassword(current, pHash)) return Results.BadRequest(new { error = "Senha atual inválida" });
+            var newHashPortal = HashPassword(nextPwd);
+            using (var cmdUp = cn.CreateCommand())
+            {
+                cmdUp.CommandText = @"
+UPDATE dbo.PortalUsers
+SET PasswordHash=@h, MustChangePassword=0, PasswordUpdatedAtUtc=SYSUTCDATETIME()
+WHERE Email=@e";
+                cmdUp.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = newHashPortal });
+                cmdUp.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = pEmail });
+                await cmdUp.ExecuteNonQueryAsync();
+            }
+            var credsPortal = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            var claimsPortal = new List<Claim>();
+            claimsPortal.Add(new Claim("usuario", pEmail));
+            if (!string.IsNullOrEmpty(pNome)) claimsPortal.Add(new Claim("nome", pNome));
+            if (!string.IsNullOrEmpty(pNivel)) claimsPortal.Add(new Claim("nivel", pNivel));
+            var jwtPortal = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claimsPortal, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: credsPortal);
+            var jwtStrPortal = new JwtSecurityTokenHandler().WriteToken(jwtPortal);
+            return Results.Ok(new { ok = true, token = jwtStrPortal });
+        }
+    }
+    catch
+    {
+    }
+    string? nome = null;
+    string? nivel = null;
+    string? senhaHash = null;
+    string? senhaPlain = null;
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT TOP 1 NOME,NIVEL,SENHA_HASH,SENHA
+FROM dbo.Login
+WHERE STATUS='Habilitado' AND (EMAIL=@e OR USUARIO=@e)";
+        cmd.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = usuario });
+        using var r = await cmd.ExecuteReaderAsync();
+        if (!r.HasRows) return Results.Unauthorized();
+        await r.ReadAsync();
+        nome = r.IsDBNull(0) ? null : r.GetString(0);
+        nivel = r.IsDBNull(1) ? null : r.GetString(1);
+        senhaHash = r.IsDBNull(2) ? null : r.GetString(2);
+        senhaPlain = r.IsDBNull(3) ? null : r.GetString(3);
+    }
+    bool ok = false;
+    if (!string.IsNullOrWhiteSpace(senhaHash)) ok = VerifyPassword(current, senhaHash);
+    else if (!string.IsNullOrEmpty(senhaPlain)) ok = string.Equals(current, senhaPlain, StringComparison.Ordinal);
+    if (!ok) return Results.BadRequest(new { error = "Senha atual inválida" });
+
+    var newHash = HashPassword(nextPwd);
+    using (var cmdUp = cn.CreateCommand())
+    {
+        cmdUp.CommandText = @"
+UPDATE dbo.Login
+SET SENHA_HASH=@h, SENHA=NULL, MUST_CHANGE_PWD=0, PWD_UPDATED_AT=SYSUTCDATETIME()
+WHERE STATUS='Habilitado' AND (EMAIL=@e OR USUARIO=@e)";
+        cmdUp.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = newHash });
+        cmdUp.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = usuario });
+        await cmdUp.ExecuteNonQueryAsync();
+    }
     var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
     var claims = new List<Claim>();
     if (!string.IsNullOrEmpty(usuario)) claims.Add(new Claim("usuario", usuario));
     if (!string.IsNullOrEmpty(nome)) claims.Add(new Claim("nome", nome));
     if (!string.IsNullOrEmpty(nivel)) claims.Add(new Claim("nivel", nivel));
-    var token = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claims, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: creds);
-    var tokenStr = new JwtSecurityTokenHandler().WriteToken(token);
-    return Results.Ok(new { token = tokenStr, nome, usuario, nivel });
-});
+    var jwt = new JwtSecurityToken(jwtIssuer, jwtAudience, claims: claims, expires: DateTime.UtcNow.AddMinutes(jwtExpires), signingCredentials: creds);
+    var jwtStr = new JwtSecurityTokenHandler().WriteToken(jwt);
+    return Results.Ok(new { ok = true, token = jwtStr });
+}).RequireAuthorization();
 
 app.MapPost("/api/login/signin-token", async (HttpRequest req) =>
 {
@@ -3236,6 +3770,220 @@ OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
     return Results.Ok(new { total, items });
 }).RequireAuthorization("AdminsOnly");
 
+app.MapGet("/api/admin/activity-log", async (HttpContext ctx) =>
+{
+    int page = 1;
+    int pageSize = 50;
+    if (int.TryParse(ctx.Request.Query["page"], out var p) && p > 0) page = p;
+    if (int.TryParse(ctx.Request.Query["pageSize"], out var ps) && ps > 0 && ps <= 200) pageSize = ps;
+    int offset = (page - 1) * pageSize;
+    var items = new List<object>();
+    long total = 0;
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using (var cmdCount = cn.CreateCommand())
+    {
+        cmdCount.CommandText = "SELECT COUNT(*) FROM dbo.ActivityLog";
+        var scalar = await cmdCount.ExecuteScalarAsync();
+        total = scalar == null || scalar == DBNull.Value ? 0 : Convert.ToInt64(scalar);
+    }
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT Id,TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent
+FROM dbo.ActivityLog
+ORDER BY TsUtc DESC, Id DESC
+OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
+        cmd.Parameters.Add(new SqlParameter("@Offset", SqlDbType.Int) { Value = offset });
+        cmd.Parameters.Add(new SqlParameter("@PageSize", SqlDbType.Int) { Value = pageSize });
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            items.Add(new
+            {
+                Id = r.GetInt64(0),
+                TsUtc = r.GetDateTime(1),
+                Usuario = r.IsDBNull(2) ? null : r.GetString(2),
+                Nome = r.IsDBNull(3) ? null : r.GetString(3),
+                Nivel = r.IsDBNull(4) ? null : r.GetString(4),
+                ClientId = r.IsDBNull(5) ? (int?)null : r.GetInt32(5),
+                Action = r.IsDBNull(6) ? null : r.GetString(6),
+                Path = r.IsDBNull(7) ? null : r.GetString(7),
+                QueryString = r.IsDBNull(8) ? null : r.GetString(8),
+                StatusCode = r.IsDBNull(9) ? (int?)null : r.GetInt32(9),
+                DurationMs = r.IsDBNull(10) ? (int?)null : r.GetInt32(10),
+                Ip = r.IsDBNull(11) ? null : r.GetString(11),
+                UserAgent = r.IsDBNull(12) ? null : r.GetString(12)
+            });
+        }
+    }
+    return Results.Ok(new { total, items });
+}).RequireAuthorization("AdminsOnly");
+
+app.MapGet("/api/admin/users", async (HttpContext ctx) =>
+{
+    int page = 1;
+    int pageSize = 50;
+    if (int.TryParse(ctx.Request.Query["page"], out var p) && p > 0) page = p;
+    if (int.TryParse(ctx.Request.Query["pageSize"], out var ps) && ps > 0 && ps <= 200) pageSize = ps;
+    int offset = (page - 1) * pageSize;
+    var items = new List<object>();
+    long total = 0;
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using (var cmdCount = cn.CreateCommand())
+    {
+        cmdCount.CommandText = "SELECT COUNT(*) FROM dbo.PortalUsers";
+        var scalar = await cmdCount.ExecuteScalarAsync();
+        total = scalar == null || scalar == DBNull.Value ? 0 : Convert.ToInt64(scalar);
+    }
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+SELECT Id,Email,Nome,Nivel,MustChangePassword,IsActive,CreatedAtUtc,LastLoginAtUtc,PasswordUpdatedAtUtc
+FROM dbo.PortalUsers
+ORDER BY CreatedAtUtc DESC, Id DESC
+OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
+        cmd.Parameters.Add(new SqlParameter("@Offset", SqlDbType.Int) { Value = offset });
+        cmd.Parameters.Add(new SqlParameter("@PageSize", SqlDbType.Int) { Value = pageSize });
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            items.Add(new
+            {
+                Id = r.GetInt32(0),
+                Email = r.GetString(1),
+                Nome = r.GetString(2),
+                Nivel = r.GetString(3),
+                MustChangePassword = r.GetBoolean(4),
+                IsActive = r.GetBoolean(5),
+                CreatedAtUtc = r.GetDateTime(6),
+                LastLoginAtUtc = r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+                PasswordUpdatedAtUtc = r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+            });
+        }
+    }
+    return Results.Ok(new { total, items });
+}).RequireAuthorization("AdminsOnly");
+
+app.MapPost("/api/admin/users", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    string? email = GetDtoString(dto, "email");
+    string? nome = GetDtoString(dto, "nome");
+    string? nivel = GetDtoString(dto, "nivel");
+    email = (email ?? "").Trim();
+    nome = (nome ?? "").Trim();
+    nivel = (nivel ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(email) || !email.Contains('@')) return Results.BadRequest(new { error = "Email inválido" });
+    if (string.IsNullOrWhiteSpace(nome)) return Results.BadRequest(new { error = "Nome é obrigatório" });
+    if (string.IsNullOrWhiteSpace(nivel)) nivel = "Padrão";
+
+    var tempPassword = GenerateTempPassword();
+    var hash = HashPassword(tempPassword);
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    using (var chk = cn.CreateCommand())
+    {
+        chk.CommandText = "SELECT COUNT(*) FROM dbo.PortalUsers WHERE Email=@e";
+        chk.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+        var count = Convert.ToInt32(await chk.ExecuteScalarAsync() ?? 0);
+        if (count > 0) return Results.BadRequest(new { error = "Usuário já existe" });
+    }
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+INSERT INTO dbo.PortalUsers(Email,Nome,Nivel,PasswordHash,MustChangePassword,IsActive)
+VALUES(@Email,@Nome,@Nivel,@Hash,1,1)";
+        cmd.Parameters.Add(new SqlParameter("@Email", SqlDbType.VarChar, 200) { Value = email });
+        cmd.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = nome });
+        cmd.Parameters.Add(new SqlParameter("@Nivel", SqlDbType.VarChar, 50) { Value = nivel });
+        cmd.Parameters.Add(new SqlParameter("@Hash", SqlDbType.VarChar, 400) { Value = hash });
+        await cmd.ExecuteNonQueryAsync();
+    }
+    return Results.Ok(new { ok = true, email, nome, nivel, tempPassword });
+}).RequireAuthorization("AdminsOnly");
+
+app.MapPost("/api/admin/bootstrap-superadmin", async (HttpContext ctx) =>
+{
+    var secret = Environment.GetEnvironmentVariable("RF_BOOTSTRAP_SECRET") ?? Environment.GetEnvironmentVariable("BOOTSTRAP_SECRET");
+    var ip = ctx.Connection.RemoteIpAddress;
+    if (ip == null || !System.Net.IPAddress.IsLoopback(ip)) return Results.NotFound();
+    var provided = ctx.Request.Headers.TryGetValue("X-Bootstrap-Secret", out var hdr) ? hdr.ToString() : "";
+    var debug = ctx.Request.Headers.TryGetValue("X-Bootstrap-Debug", out var dbg) && string.Equals(dbg.ToString(), "1", StringComparison.Ordinal);
+    if (debug)
+    {
+        return Results.Ok(new
+        {
+            ok = true,
+            hasSecret = !string.IsNullOrWhiteSpace(secret),
+            headerPresent = !string.IsNullOrWhiteSpace(provided),
+            headerMatches = !string.IsNullOrWhiteSpace(secret) && string.Equals(provided, secret, StringComparison.Ordinal),
+            hasSuperAdminEmail = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RF_SUPERADMIN_EMAIL")),
+            hasSuperAdminPassword = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RF_SUPERADMIN_PASSWORD"))
+        });
+    }
+    if (string.IsNullOrWhiteSpace(secret)) return Results.NotFound();
+    if (!string.Equals(provided, secret, StringComparison.Ordinal)) return Results.NotFound();
+
+    Dictionary<string, System.Text.Json.JsonElement>? dto = null;
+    try { dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(); } catch { }
+    dto ??= new Dictionary<string, System.Text.Json.JsonElement>();
+
+    string? email = GetDtoString(dto, "email") ?? Environment.GetEnvironmentVariable("RF_SUPERADMIN_EMAIL");
+    string? nome = GetDtoString(dto, "nome") ?? Environment.GetEnvironmentVariable("RF_SUPERADMIN_NAME");
+    string? senha = GetDtoString(dto, "senha") ?? Environment.GetEnvironmentVariable("RF_SUPERADMIN_PASSWORD");
+    email = (email ?? "").Trim();
+    nome = (nome ?? "").Trim();
+    senha = senha ?? "";
+    if (string.IsNullOrWhiteSpace(email) || !email.Contains('@')) return Results.BadRequest(new { error = "Email inválido" });
+    if (string.IsNullOrWhiteSpace(nome)) nome = "SUPERADMIN";
+    if (string.IsNullOrEmpty(senha)) return Results.BadRequest(new { error = "Senha é obrigatória" });
+    if (!PasswordMeetsPolicy(senha)) return Results.BadRequest(new { error = "A senha deve ter pelo menos 8 caracteres, uma letra maiúscula, uma letra minúscula e um caractere especial." });
+
+    var hash = HashPassword(senha);
+    using var cn = new SqlConnection(GetConn("Logins"));
+    await cn.OpenAsync();
+    int rowsAffected;
+    using (var cmd = cn.CreateCommand())
+    {
+        cmd.CommandText = @"
+IF EXISTS (SELECT 1 FROM dbo.PortalUsers WHERE Email=@Email)
+BEGIN
+  UPDATE dbo.PortalUsers
+  SET Nome=@Nome, Nivel='SuperAdmin', PasswordHash=@Hash, MustChangePassword=1, IsActive=1
+  WHERE Email=@Email;
+END
+ELSE
+BEGIN
+  INSERT INTO dbo.PortalUsers(Email,Nome,Nivel,PasswordHash,MustChangePassword,IsActive)
+  VALUES(@Email,@Nome,'SuperAdmin',@Hash,1,1);
+END";
+        cmd.Parameters.Add(new SqlParameter("@Email", SqlDbType.VarChar, 200) { Value = email });
+        cmd.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = nome });
+        cmd.Parameters.Add(new SqlParameter("@Hash", SqlDbType.VarChar, 400) { Value = hash });
+        rowsAffected = await cmd.ExecuteNonQueryAsync();
+    }
+    try
+    {
+        using var cmdLog = cn.CreateCommand();
+        cmdLog.CommandText = @"
+INSERT INTO dbo.ActivityLog(TsUtc,Usuario,Nome,Nivel,ClientId,Action,Path,QueryString,StatusCode,DurationMs,Ip,UserAgent)
+VALUES(SYSUTCDATETIME(),@Usuario,@Nome,'SuperAdmin',NULL,'BOOTSTRAP_SUPERADMIN','/api/admin/bootstrap-superadmin',NULL,200,NULL,@Ip,@UserAgent)";
+        cmdLog.Parameters.Add(new SqlParameter("@Usuario", SqlDbType.VarChar, 200) { Value = email.Length > 200 ? email.Substring(0, 200) : email });
+        cmdLog.Parameters.Add(new SqlParameter("@Nome", SqlDbType.VarChar, 200) { Value = nome.Length > 200 ? nome.Substring(0, 200) : nome });
+        cmdLog.Parameters.Add(new SqlParameter("@Ip", SqlDbType.VarChar, 80) { Value = ip.ToString() });
+        var ua = ctx.Request.Headers.UserAgent.ToString();
+        cmdLog.Parameters.Add(new SqlParameter("@UserAgent", SqlDbType.VarChar, 400) { Value = string.IsNullOrWhiteSpace(ua) ? (object)DBNull.Value : (ua.Length > 400 ? ua.Substring(0, 400) : ua) });
+        await cmdLog.ExecuteNonQueryAsync();
+    }
+    catch
+    {
+    }
+    return Results.Ok(new { ok = true, email, nivel = "SuperAdmin", mustChangePassword = true, rowsAffected });
+}).AllowAnonymous();
+
 app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
 {
     var input = (req.Query.ContainsKey("token") ? req.Query["token"].ToString() : "").Trim();
@@ -3243,58 +3991,42 @@ app.MapGet("/api/login/signin-token", async (HttpRequest req) =>
     string? usuario = null, nome = null, nivel = null;
     int? clientId = null;
     string? clientName = null;
-    var fallback = new Dictionary<string, (string usuario, string nome, string nivel)>(StringComparer.OrdinalIgnoreCase)
+    try
     {
-        ["0001"] = ("superadmin","SUPERADMIN","SuperAdmin"),
-        ["011"] = ("admin","EVERTON","Administrador"),
-        ["022"] = ("user","EVERTON","Padrão"),
-        ["021"] = ("gerente","ALANA","Padrão"),
-        ["031"] = ("basico","ALANA","Básico")
-    };
-    if (fallback.ContainsKey(input))
-    {
-        var f = fallback[input];
-        usuario = f.usuario; nome = f.nome; nivel = f.nivel;
-    }
-    else
-    {
-        try
+        using var cn = new SqlConnection(GetConn("Logins"));
+        await cn.OpenAsync();
+        using (var cmdCli = cn.CreateCommand())
         {
-            using var cn = new SqlConnection(GetConn("Logins"));
-            await cn.OpenAsync();
-            using (var cmdCli = cn.CreateCommand())
+            cmdCli.CommandText = "SELECT Id,NOME FROM dbo.ClientesPortal WHERE RTRIM(LTRIM(CLIENT_TOKEN))=@t AND ISNULL(ATIVO,1)=1";
+            cmdCli.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
+            using var rCli = await cmdCli.ExecuteReaderAsync();
+            if (rCli.HasRows)
             {
-                cmdCli.CommandText = "SELECT Id,NOME FROM dbo.ClientesPortal WHERE RTRIM(LTRIM(CLIENT_TOKEN))=@t AND ISNULL(ATIVO,1)=1";
-                cmdCli.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
-                using var rCli = await cmdCli.ExecuteReaderAsync();
-                if (rCli.HasRows)
-                {
-                    await rCli.ReadAsync();
-                    clientId = rCli.GetInt32(0);
-                    clientName = rCli.IsDBNull(1) ? null : rCli.GetString(1);
-                    usuario = "cliente";
-                    nome = clientName ?? "Cliente";
-                    nivel = "Cliente";
-                }
-            }
-            if (usuario == null)
-            {
-                using var cmd = cn.CreateCommand();
-                cmd.CommandText = "SELECT USUARIO,NOME,NIVEL FROM dbo.Login WHERE RTRIM(LTRIM(TOKEN))=@t AND STATUS='Habilitado'";
-                cmd.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
-                using var r = await cmd.ExecuteReaderAsync();
-                if (r.HasRows)
-                {
-                    await r.ReadAsync();
-                    usuario = r.GetString(0);
-                    nome = r.GetString(1);
-                    nivel = r.GetString(2);
-                }
+                await rCli.ReadAsync();
+                clientId = rCli.GetInt32(0);
+                clientName = rCli.IsDBNull(1) ? null : rCli.GetString(1);
+                usuario = "cliente";
+                nome = clientName ?? "Cliente";
+                nivel = "Cliente";
             }
         }
-        catch { }
-        if (usuario == null) return Results.Unauthorized();
+        if (usuario == null)
+        {
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "SELECT USUARIO,NOME,NIVEL FROM dbo.Login WHERE RTRIM(LTRIM(TOKEN))=@t AND STATUS='Habilitado'";
+            cmd.Parameters.Add(new SqlParameter("@t", SqlDbType.VarChar) { Value = input });
+            using var r = await cmd.ExecuteReaderAsync();
+            if (r.HasRows)
+            {
+                await r.ReadAsync();
+                usuario = r.GetString(0);
+                nome = r.GetString(1);
+                nivel = r.GetString(2);
+            }
+        }
     }
+    catch { }
+    if (usuario == null) return Results.Unauthorized();
     var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
     var claims = new List<Claim>();
     if (!string.IsNullOrEmpty(usuario)) claims.Add(new Claim("usuario", usuario));
@@ -3313,28 +4045,22 @@ app.MapGet("/api/login/tokens", async (HttpRequest req) =>
     cmd.CommandText = "SELECT USUARIO,NOME,NIVEL,TOKEN FROM dbo.Login WHERE STATUS='Habilitado'";
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
-    var unmasked = req.Query.ContainsKey("unmasked");
     while (await r.ReadAsync())
     {
         var usuario = r.IsDBNull(0) ? null : r.GetString(0);
         var nome = r.IsDBNull(1) ? null : r.GetString(1);
         var nivel = r.IsDBNull(2) ? null : r.GetString(2);
         var token = r.IsDBNull(3) ? null : r.GetString(3);
-        if (unmasked)
-            list.Add(new { usuario, nome, nivel, token });
-        else
+        string mask = "";
+        if (!string.IsNullOrEmpty(token))
         {
-            string mask = "";
-            if (!string.IsNullOrEmpty(token))
-            {
-                var visible = token.Length >= 4 ? token.Substring(token.Length - 4) : token;
-                mask = new string('*', Math.Max(0, token.Length - visible.Length)) + visible;
-            }
-            list.Add(new { usuario, nome, nivel, tokenMasked = mask });
+            var visible = token.Length >= 4 ? token.Substring(token.Length - 4) : token;
+            mask = new string('*', Math.Max(0, token.Length - visible.Length)) + visible;
         }
+        list.Add(new { usuario, nome, nivel, tokenMasked = mask });
     }
     return Results.Ok(list);
-});
+}).RequireAuthorization("AdminsOnly");
 
 app.MapGet("/api/cms/employees/search", async (string? matricula, string? empresa, int page, int pageSize, string? sort, string? dir) =>
 {

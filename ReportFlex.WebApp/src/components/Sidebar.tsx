@@ -66,6 +66,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   const links = [
     { label: 'Consultas', href: '/consultas', icon: 'bi-search' },
     ...((isAdmin || isSuperAdmin) ? [{ label: 'Consultas Config', href: '/consultas-config', icon: 'bi-sliders' }] : []),
+    ...((isAdmin || isSuperAdmin) ? [{ label: 'Logs', href: '/logs', icon: 'bi-clipboard-data' }] : []),
     { label: 'Mensagens', href: '/mensagens', icon: 'bi-chat-dots' },
     ...(isClient ? [] : [{ label: 'Configurações', href: '/configuracoes', icon: 'bi-gear' }]),
     ...(isSuperAdmin ? [{ label: 'Clientes', href: '/clientes', icon: 'bi-people' }] : []),

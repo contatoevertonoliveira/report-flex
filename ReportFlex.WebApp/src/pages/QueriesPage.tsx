@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import { DOOR_LOCATIONS } from '../doorLocations'
 
 type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
 type Mode = 'prontas' | 'personalizadas'
@@ -55,6 +56,63 @@ function isoDateToBrValue(s: string | undefined | null): string {
   const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (!m) return normalizeBrDateInput(t)
   return `${m[3]}/${m[2]}/${m[1]}`
+}
+
+type BrDateInputProps = {
+  value: string | undefined | null
+  placeholder: string
+  onChange: (value: string) => void
+  inputStyle?: React.CSSProperties
+}
+
+function BrDateInput({ value, placeholder, onChange, inputStyle }: BrDateInputProps) {
+  const dateRef = useRef<HTMLInputElement>(null)
+
+  const openPicker = () => {
+    const el = dateRef.current
+    if (!el) return
+    try {
+      const anyEl = el as any
+      el.focus()
+      if (typeof anyEl.showPicker === 'function') anyEl.showPicker()
+      else el.click()
+    } catch {}
+  }
+
+  return (
+    <>
+      <input
+        className="form-control"
+        style={inputStyle}
+        placeholder={placeholder}
+        value={isoDateToBrValue(value)}
+        onChange={e => onChange(normalizeBrDateInput(e.target.value))}
+        onKeyDown={e => {
+          if ((e.altKey && e.key === 'ArrowDown') || e.key === 'F4') {
+            e.preventDefault()
+            openPicker()
+          }
+        }}
+      />
+      <span className="btn btn-outline-secondary" title="Calendário" style={{ position: 'relative' }}>
+        <i className="bi bi-calendar3" />
+        <input
+          ref={dateRef}
+          type="date"
+          value={toIsoDateOnlyValue(value)}
+          onChange={e => onChange(isoDateToBrValue(e.target.value))}
+          onClick={() => {
+            const el = dateRef.current as any
+            if (!el) return
+            try { if (typeof el.showPicker === 'function') el.showPicker() } catch {}
+          }}
+          tabIndex={-1}
+          aria-label="Selecionar data"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+        />
+      </span>
+    </>
+  )
 }
 
 function formatBrDateTime(v: any): string {
@@ -540,7 +598,8 @@ export function QueriesPage(){
       const sg = (s.subGroup || '').trim()
       const groupKey = `${g}__${sg}`
       const label = sg ? `${g} • ${sg}` : g
-      const optLabel = s.description ? `${s.description} (${s.key})` : s.key
+      const desc = DOOR_LOCATIONS[s.key] || s.description
+      const optLabel = desc ? `${desc} (${s.key})` : s.key
       if (!map.has(groupKey)) map.set(groupKey, { label, items: [] })
       map.get(groupKey)!.items.push({ key: s.key, label: optLabel })
     }
@@ -555,7 +614,8 @@ export function QueriesPage(){
   const doorSourceLabelByKey = useMemo(() => {
     const m = new Map<string, string>()
     for (const s of doorSources) {
-      const label = s.description ? `${s.description} (${s.key})` : s.key
+      const desc = DOOR_LOCATIONS[s.key] || s.description
+      const label = desc ? `${desc} (${s.key})` : s.key
       m.set(s.key, label)
     }
     return m
@@ -573,21 +633,32 @@ export function QueriesPage(){
     return (key || '').length > 18 ? (key || '').slice(0, 18) + '…' : (key || '')
   }
 
+  const normalizeDoorSearch = (s: string) => {
+    const t = (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    return t.replace(/[^a-z0-9]+/g, ' ').trim()
+  }
+
   const filteredDoorSourcesGrouped = useMemo(() => {
-    const term = (doorSourceFilter || '').trim().toLowerCase()
-    if (!term) return doorSourcesGrouped
+    const tokens = normalizeDoorSearch(doorSourceFilter || '').split(' ').filter(Boolean)
+    if (tokens.length === 0) return doorSourcesGrouped
     const groups = []
     for (const g of doorSourcesGrouped) {
       const items = g.items.filter(it => {
-        const l = it.label.toLowerCase()
-        const k = it.key.toLowerCase()
-        const sk = doorShortKey(it.key).toLowerCase()
-        return l.includes(term) || k.includes(term) || sk.includes(term)
+        const hay = normalizeDoorSearch(`${it.label} ${it.key} ${doorShortKey(it.key)}`)
+        return tokens.every(t => hay.includes(t))
       })
       if (items.length) groups.push({ label: g.label, items })
     }
     return groups
   }, [doorSourceFilter, doorSourcesGrouped])
+
+  const filteredDoorKeys = useMemo(() => {
+    const keys: string[] = []
+    for (const g of filteredDoorSourcesGrouped) {
+      for (const it of g.items) keys.push(it.key)
+    }
+    return Array.from(new Set(keys))
+  }, [filteredDoorSourcesGrouped])
 
   function resetData(){
     setData([])
@@ -1903,8 +1974,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -1912,8 +1982,7 @@ export function QueriesPage(){
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={filters.end || ''} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -1979,7 +2048,7 @@ export function QueriesPage(){
                     <div style={{display:'flex', flexDirection:'column', gap:4}}>
                       <div className="input-group">
                         <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                        <input className="form-control" style={{maxWidth:170}} placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
+                        <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" inputStyle={{maxWidth:170}} onChange={v=> setFilters({...filters, start: v})} />
                       </div>
                       <div className="input-group">
                         <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -1989,7 +2058,7 @@ export function QueriesPage(){
                     <div style={{display:'flex', flexDirection:'column', gap:4}}>
                       <div className="input-group">
                         <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                        <input className="form-control" style={{maxWidth:170}} placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
+                        <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" inputStyle={{maxWidth:170}} onChange={v=> setFilters({...filters, end: v})} />
                       </div>
                       <div className="input-group">
                         <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -1998,7 +2067,12 @@ export function QueriesPage(){
                     </div>
                   </>
                 )}
-                {doorMode !== 'general-by-site' && !doorAllSources && (
+                {doorMode === 'critical' && (
+                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
+                    Nesta opção não há filtro por portas selecionadas. Para filtrar por portas, use "Portas Gerais".
+                  </div>
+                )}
+                {doorMode !== 'general-by-site' && doorMode !== 'critical' && !doorAllSources && (
                   <div className="d-flex align-items-start" style={{gap:12, minWidth:520}}>
                     <div style={{flex:1, minWidth:320}}>
                       {doorSelectedSources.length === 0 && (
@@ -2007,6 +2081,22 @@ export function QueriesPage(){
                       <div className="input-group mb-2">
                         <span className="input-group-text"><i className="bi bi-search" /></span>
                         <input className="form-control" placeholder="Buscar porta..." value={doorSourceFilter} onChange={e=> setDoorSourceFilter(e.target.value)} />
+                        {doorSelectedSources.length === 0 && (
+                          <button
+                            className="btn btn-outline-secondary"
+                            type="button"
+                            disabled={!doorSourceFilter.trim() || filteredDoorKeys.length === 0}
+                            onClick={() => {
+                              if (!doorSourceFilter.trim()) return
+                              setDoorAllSources(false)
+                              setDoorSelectedSources(filteredDoorKeys)
+                              setDoorPickSource('')
+                            }}
+                            title="Seleciona todas as portas visíveis no filtro"
+                          >
+                            Selecionar filtradas
+                          </button>
+                        )}
                         {doorSourceFilter && (
                           <button className="btn btn-outline-secondary" type="button" onClick={()=> setDoorSourceFilter('')}>Limpar</button>
                         )}
@@ -2122,7 +2212,7 @@ export function QueriesPage(){
                         <div className="fw-semibold" style={{fontSize:12, marginLeft:2, marginBottom:2}}>Início</div>
                         <div className="input-group">
                           <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                          <input className="form-control" type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                          <BrDateInput value={filters.start} placeholder="dd/mm/aaaa" onChange={v=> setFilters({...filters, start: v})} />
                         </div>
                         <div className="input-group" style={{marginTop:6}}>
                           <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2137,7 +2227,7 @@ export function QueriesPage(){
                         <div className="fw-semibold" style={{fontSize:12, marginLeft:2, marginBottom:2}}>Fim</div>
                         <div className="input-group">
                           <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                          <input className="form-control" type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                          <BrDateInput value={filters.end} placeholder="dd/mm/aaaa" onChange={v=> setFilters({...filters, end: v})} />
                         </div>
                         <div className="input-group" style={{marginTop:6}}>
                           <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2167,8 +2257,7 @@ export function QueriesPage(){
                   <>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2176,8 +2265,7 @@ export function QueriesPage(){
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2204,8 +2292,7 @@ export function QueriesPage(){
                   <>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2213,8 +2300,7 @@ export function QueriesPage(){
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2242,8 +2328,7 @@ export function QueriesPage(){
                   <>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2251,8 +2336,7 @@ export function QueriesPage(){
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                      <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                      <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                      <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                     </div>
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2285,8 +2369,7 @@ export function QueriesPage(){
                 )}
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2294,8 +2377,7 @@ export function QueriesPage(){
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2326,8 +2408,7 @@ export function QueriesPage(){
                 )}
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2335,8 +2416,7 @@ export function QueriesPage(){
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2429,8 +2509,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Início (dd/mm/aaaa)" value={isoDateToBrValue(filters.start)} onChange={e=> setFilters({...filters, start: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.start)} onChange={e=> setFilters({...filters, start: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
@@ -2438,8 +2517,7 @@ export function QueriesPage(){
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                  <input className="form-control" placeholder="Fim (dd/mm/aaaa)" value={isoDateToBrValue(filters.end)} onChange={e=> setFilters({...filters, end: normalizeBrDateInput(e.target.value)})} />
-                  <input className="form-control" style={{maxWidth:170}} type="date" value={toIsoDateOnlyValue(filters.end)} onChange={e=> setFilters({...filters, end: isoDateToBrValue(e.target.value)})} />
+                  <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                 </div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
