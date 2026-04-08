@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 
 export function SettingsPage(){
+  const [tab, setTab] = useState<'Relatorios'|'Banco'>('Relatorios')
   const [mode, setMode] = useState<'Real'|'Demo'>('Demo')
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
@@ -11,8 +12,8 @@ export function SettingsPage(){
   const [emsPath, setEmsPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }>({
-    txt: false, xlsx: true, pdf: true, word: false, excel: true, csv: true
+  const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape' }>({
+    xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape'
   })
   const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
   const [useSqlAuth, setUseSqlAuth] = useState(false)
@@ -78,12 +79,12 @@ export function SettingsPage(){
         try{
           const opts = await api.getReportOptions()
           setReportOptions({
-            txt: !!opts.txt,
             xlsx: !!opts.xlsx,
             pdf: !!opts.pdf,
-            word: !!opts.word,
             excel: !!opts.excel,
-            csv: !!opts.csv
+            cover: !!opts.cover,
+            coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
+            reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape')
           })
         }catch{}
       }catch{}
@@ -241,14 +242,14 @@ export function SettingsPage(){
     setErr(null); setMsg(null)
     setReportOptionsLoading(true)
     try{
-      const r = await api.setReportOptions(reportOptions)
+      const r = await api.setReportOptions(reportOptions as any)
       setReportOptions({
-        txt: !!r.txt,
         xlsx: !!r.xlsx,
         pdf: !!r.pdf,
-        word: !!r.word,
         excel: !!r.excel,
-        csv: !!r.csv
+        cover: !!r.cover,
+        coverOrientation: (r.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
+        reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape')
       })
       setMsg('Opções de formatos de relatórios salvas')
     }catch(e:any){
@@ -261,6 +262,18 @@ export function SettingsPage(){
   return (
     <section>
       <h2>Configurações</h2>
+      <ul className="nav nav-tabs" style={{marginBottom:12}}>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Relatorios' ? ' active' : '')} type="button" onClick={()=> setTab('Relatorios')}>Relatórios</button>
+        </li>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Banco' ? ' active' : '')} type="button" onClick={()=> setTab('Banco')}>Banco</button>
+        </li>
+      </ul>
+      {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
+      {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
+      {tab === 'Banco' && (
+      <>
       <div className="card">
         <div className="card-header d-flex align-items-center" style={{gap:8}}>
           <i className="bi bi-gear" /> Preferências do Banco de Dados
@@ -362,8 +375,6 @@ export function SettingsPage(){
             </button>
             <div className="text-muted" style={{fontSize:12}}>Cria empresas solicitadas, 20 funcionários e acessos em dias úteis</div>
           </div>
-          {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
-          {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
         </div>
       </div>
       <div className="card" style={{marginTop:16}}>
@@ -480,6 +491,9 @@ export function SettingsPage(){
           )}
         </div>
       </div>
+      </>
+      )}
+      {tab === 'Relatorios' && (
       <div className="card" style={{marginTop:16}}>
         <div className="card-header d-flex align-items-center" style={{gap:8}}>
           <i className="bi bi-filetype-pdf" /> Formatos de relatórios disponíveis
@@ -489,14 +503,6 @@ export function SettingsPage(){
             Os formatos ativados aqui aparecerão como botões de sugestão quando uma consulta retornar dados.
           </p>
           <div className="d-flex flex-wrap" style={{gap:12}}>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repTxt" checked={reportOptions.txt} onChange={e=> setReportOptions(o=> ({...o, txt: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repTxt">TXT</label>
-            </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repCsv" checked={reportOptions.csv} onChange={e=> setReportOptions(o=> ({...o, csv: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repCsv">CSV</label>
-            </div>
             <div className="form-check form-switch">
               <input className="form-check-input" type="checkbox" id="repXlsx" checked={reportOptions.xlsx} onChange={e=> setReportOptions(o=> ({...o, xlsx: e.target.checked}))} />
               <label className="form-check-label" htmlFor="repXlsx">XLSX</label>
@@ -510,8 +516,24 @@ export function SettingsPage(){
               <label className="form-check-label" htmlFor="repPdf">PDF</label>
             </div>
             <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repWord" checked={reportOptions.word} onChange={e=> setReportOptions(o=> ({...o, word: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repWord">Word</label>
+              <input className="form-check-input" type="checkbox" id="repPdfCover" checked={reportOptions.cover} onChange={e=> setReportOptions(o=> ({...o, cover: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repPdfCover">Incluir capa nos PDFs</label>
+            </div>
+          </div>
+          <div className="row" style={{rowGap:12}}>
+            <div className="col-md-6">
+              <label className="form-label" htmlFor="repCoverOri">Orientação da capa (PDF)</label>
+              <select id="repCoverOri" className="form-select" value={reportOptions.coverOrientation} onChange={e=> setReportOptions(o=> ({...o, coverOrientation: (e.target.value === 'portrait' ? 'portrait' : 'landscape')}))}>
+                <option value="landscape">Paisagem</option>
+                <option value="portrait">Retrato</option>
+              </select>
+            </div>
+            <div className="col-md-6">
+              <label className="form-label" htmlFor="repBodyOri">Orientação do relatório (PDF)</label>
+              <select id="repBodyOri" className="form-select" value={reportOptions.reportOrientation} onChange={e=> setReportOptions(o=> ({...o, reportOrientation: (e.target.value === 'portrait' ? 'portrait' : 'landscape')}))}>
+                <option value="landscape">Paisagem</option>
+                <option value="portrait">Retrato</option>
+              </select>
             </div>
           </div>
           <div>
@@ -521,6 +543,7 @@ export function SettingsPage(){
           </div>
         </div>
       </div>
+      )}
     </section>
   )
 }

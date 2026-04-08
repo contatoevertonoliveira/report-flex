@@ -14,7 +14,7 @@ export function ReportsPage(){
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: true, xlsx: true, pdf: true })
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: false, xlsx: true, pdf: true })
   React.useEffect(() => {
     let mounted = true
     ;(async () => {

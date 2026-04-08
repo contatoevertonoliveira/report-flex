@@ -271,6 +271,28 @@ static int GetDtoInt(Dictionary<string, System.Text.Json.JsonElement> d, string 
 // helper used by several export endpoints
 static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
 
+static string NormalizeDoorStatusDisplay(string? statusAcesso, string? detalheStatusAcesso)
+{
+    var a = (statusAcesso ?? "").Trim();
+    var b = (detalheStatusAcesso ?? "").Trim();
+    var all = (a + " " + b).Trim().ToLowerInvariant();
+    if (all.Contains("denied") || all.Contains("negado") || all.Contains("não liberado") || all.Contains("nao liberado") || all.Contains("inactive card") || (all.Contains("inactive") && all.Contains("card"))) return "Negado";
+    if (all.Contains("granted") || all.Contains("liberado")) return "Liberado";
+    if (!string.IsNullOrWhiteSpace(a)) return a;
+    return b;
+}
+
+static DateTime NormalizeDisplayEnd(DateTime start, DateTime end)
+{
+    if (start.TimeOfDay == TimeSpan.Zero && end.TimeOfDay == TimeSpan.Zero && end >= start)
+    {
+        var adj = end.AddSeconds(-1);
+        if (adj >= start) return adj;
+        return end.Date.AddDays(1).AddSeconds(-1);
+    }
+    return end;
+}
+
 static string SaveReportFile(string fileName, byte[] bytes, IHostEnvironment env)
 {
     var today = DateTime.Now.ToString("yyyy-MM-dd");
@@ -688,39 +710,89 @@ app.MapGet("/api/admin/report-options", () =>
 {
     var env = LoadEnv();
     bool GetFlag(string key) => env.TryGetValue(key, out var v) && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
+    string GetOrientation(string key)
+    {
+        if (!env.TryGetValue(key, out var v) || string.IsNullOrWhiteSpace(v)) return "landscape";
+        var s = v.Trim().ToLowerInvariant();
+        if (s is "portrait" or "retrato") return "portrait";
+        if (s is "landscape" or "paisagem") return "landscape";
+        return "landscape";
+    }
     return Results.Ok(new
     {
-        txt = GetFlag("REPORT_TXT"),
+        txt = false,
         xlsx = GetFlag("REPORT_XLSX"),
         pdf = GetFlag("REPORT_PDF"),
-        word = GetFlag("REPORT_WORD"),
+        word = false,
         excel = GetFlag("REPORT_EXCEL"),
-        csv = GetFlag("REPORT_CSV")
+        csv = false,
+        cover = GetFlag("REPORT_PDF_COVER"),
+        coverOrientation = GetOrientation("REPORT_PDF_COVER_ORIENTATION"),
+        reportOrientation = GetOrientation("REPORT_PDF_ORIENTATION")
     });
 }).RequireAuthorization("NotCliente");
 
 app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
 {
-    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, bool>>();
+    Dictionary<string, System.Text.Json.JsonElement>? dto = null;
+    try { dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(); } catch { }
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    bool GetBool(string key)
+    {
+        if (!dto.TryGetValue(key, out var el)) return false;
+        try
+        {
+            if (el.ValueKind == System.Text.Json.JsonValueKind.True) return true;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.False) return false;
+            if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var s = (el.GetString() ?? "").Trim().ToLowerInvariant();
+                return s == "1" || s == "true" || s == "sim" || s == "yes";
+            }
+            if (el.ValueKind == System.Text.Json.JsonValueKind.Number && el.TryGetInt32(out var n)) return n != 0;
+        }
+        catch { }
+        return false;
+    }
+    string GetOrientation(string key, string defaultValue)
+    {
+        if (!dto.TryGetValue(key, out var el)) return defaultValue;
+        try
+        {
+            if (el.ValueKind != System.Text.Json.JsonValueKind.String) return defaultValue;
+            var s = (el.GetString() ?? "").Trim().ToLowerInvariant();
+            if (s is "portrait" or "retrato") return "portrait";
+            if (s is "landscape" or "paisagem") return "landscape";
+        }
+        catch { }
+        return defaultValue;
+    }
+    var coverOrientation = GetOrientation("coverOrientation", "landscape");
+    var reportOrientation = GetOrientation("reportOrientation", "landscape");
     var values = new Dictionary<string, string>
     {
-        ["REPORT_TXT"] = dto.TryGetValue("txt", out var txt) && txt ? "1" : "0",
-        ["REPORT_XLSX"] = dto.TryGetValue("xlsx", out var xlsx) && xlsx ? "1" : "0",
-        ["REPORT_PDF"] = dto.TryGetValue("pdf", out var pdf) && pdf ? "1" : "0",
-        ["REPORT_WORD"] = dto.TryGetValue("word", out var word) && word ? "1" : "0",
-        ["REPORT_EXCEL"] = dto.TryGetValue("excel", out var excel) && excel ? "1" : "0",
-        ["REPORT_CSV"] = dto.TryGetValue("csv", out var csv) && csv ? "1" : "0"
+        ["REPORT_TXT"] = "0",
+        ["REPORT_XLSX"] = GetBool("xlsx") ? "1" : "0",
+        ["REPORT_PDF"] = GetBool("pdf") ? "1" : "0",
+        ["REPORT_WORD"] = "0",
+        ["REPORT_EXCEL"] = GetBool("excel") ? "1" : "0",
+        ["REPORT_CSV"] = "0",
+        ["REPORT_PDF_COVER"] = GetBool("cover") ? "1" : "0",
+        ["REPORT_PDF_COVER_ORIENTATION"] = coverOrientation,
+        ["REPORT_PDF_ORIENTATION"] = reportOrientation
     };
     SaveEnv(values);
     return Results.Ok(new
     {
-        txt = values["REPORT_TXT"] == "1",
+        txt = false,
         xlsx = values["REPORT_XLSX"] == "1",
         pdf = values["REPORT_PDF"] == "1",
-        word = values["REPORT_WORD"] == "1",
+        word = false,
         excel = values["REPORT_EXCEL"] == "1",
-        csv = values["REPORT_CSV"] == "1"
+        csv = false,
+        cover = values["REPORT_PDF_COVER"] == "1",
+        coverOrientation = values["REPORT_PDF_COVER_ORIENTATION"],
+        reportOrientation = values["REPORT_PDF_ORIENTATION"]
     });
 }).RequireAuthorization("NotCliente");
 
@@ -1965,36 +2037,122 @@ ORDER BY b.BEHAVIOR_ID";
             }
         }
         catch { }
-        var bytes = Document.Create(container =>
+        var includeCover = ShouldIncludeCover(ctx);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(ctx);
+        var baseSize = QuestPDF.Helpers.PageSizes.A4;
+        var coverSize = coverPortrait ? baseSize : new QuestPDF.Helpers.PageSize(baseSize.Height, baseSize.Width);
+        var reportSize = reportPortrait ? baseSize : new QuestPDF.Helpers.PageSize(baseSize.Height, baseSize.Width);
+        byte[] bytes;
+        try
         {
-            container.Page(page =>
+            bytes = Document.Create(container =>
             {
-                page.Margin(20);
-                page.Header().Row(row =>
+                if (includeCover)
                 {
-                    row.RelativeColumn().AlignLeft().Element(e =>
+                    container.Page(page =>
                     {
-                        if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
+                        page.Margin(36);
+                        page.Size(coverSize);
+                        page.Content().AlignMiddle().AlignCenter().Column(col =>
+                        {
+                            col.Spacing(8);
+                            col.Item().AlignCenter().Row(row =>
+                            {
+                                row.Spacing(20);
+                                row.ConstantItem(240).AlignRight().Element(e =>
+                                {
+                                    if (leftLogo != null)
+                                    {
+                                        try { e.Width(240).Height(60).Image(leftLogo, ImageScaling.FitArea); }
+                                        catch { e.Text("JumperFour").FontSize(18).SemiBold().FontColor("#0b3d2e"); }
+                                    }
+                                    else e.Text("JumperFour").FontSize(18).SemiBold().FontColor("#0b3d2e");
+                                });
+                                row.ConstantItem(240).AlignLeft().Element(e =>
+                                {
+                                    if (rightLogo != null)
+                                    {
+                                        try { e.Width(240).Height(60).Image(rightLogo, ImageScaling.FitArea); }
+                                        catch { e.Text(clientNm ?? "Cliente").FontSize(16).SemiBold().FontColor("#111827"); }
+                                    }
+                                    else e.Text(clientNm ?? "Cliente").FontSize(16).SemiBold().FontColor("#111827");
+                                });
+                            });
+                            col.Item().Text("Acessos agregados por nível").FontSize(22).SemiBold().FontColor("#0b3d2e");
+                            col.Item().PaddingTop(6).Column(info =>
+                            {
+                                info.Spacing(2);
+                                info.Item().Text($"Cliente: {clientNm ?? "Cliente"}").FontSize(10);
+                                info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                            });
+                        });
+                        page.Footer().AlignCenter().Text("Documento preparado para auditoria").FontColor("#6b7280").FontSize(9);
                     });
-                    row.RelativeColumn().AlignCenter().Text("Acessos agregados por nível").SemiBold().FontSize(18);
-                    row.RelativeColumn().AlignRight().Element(e =>
+                }
+                container.Page(page =>
+                {
+                    page.Margin(20);
+                    page.Size(reportSize);
+                    page.Header().Row(row =>
                     {
-                        if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
+                        row.RelativeColumn().AlignLeft().Element(e =>
+                        {
+                            if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
+                        });
+                        row.RelativeColumn().AlignCenter().Text("Acessos agregados por nível").SemiBold().FontSize(18);
+                        row.RelativeColumn().AlignRight().Element(e =>
+                        {
+                            if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
+                        });
+                    });
+                    page.Content().Table(table =>
+                    {
+                        table.ColumnsDefinition(c => { c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); });
+                        table.Cell().Text("LevelId"); table.Cell().Text("Level"); table.Cell().Text("Total");
+                        foreach (var x in rows)
+                        {
+                            table.Cell().Text(x.id.ToString());
+                            table.Cell().Text(x.level);
+                            table.Cell().Text(x.total.ToString());
+                        }
                     });
                 });
-                page.Content().Table(table =>
+            }).GeneratePdf();
+        }
+        catch
+        {
+            bytes = Document.Create(container =>
+            {
+                container.Page(page =>
                 {
-                    table.ColumnsDefinition(c => { c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); });
-                    table.Cell().Text("LevelId"); table.Cell().Text("Level"); table.Cell().Text("Total");
-                    foreach (var x in rows)
+                    page.Margin(20);
+                    page.Size(reportSize);
+                    page.Header().Row(row =>
                     {
-                        table.Cell().Text(x.id.ToString());
-                        table.Cell().Text(x.level);
-                        table.Cell().Text(x.total.ToString());
-                    }
+                        row.RelativeColumn().AlignLeft().Element(e =>
+                        {
+                            if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
+                        });
+                        row.RelativeColumn().AlignCenter().Text("Acessos agregados por nível").SemiBold().FontSize(18);
+                        row.RelativeColumn().AlignRight().Element(e =>
+                        {
+                            if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
+                        });
+                    });
+                    page.Content().Table(table =>
+                    {
+                        table.ColumnsDefinition(c => { c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); });
+                        table.Cell().Text("LevelId"); table.Cell().Text("Level"); table.Cell().Text("Total");
+                        foreach (var x in rows)
+                        {
+                            table.Cell().Text(x.id.ToString());
+                            table.Cell().Text(x.level);
+                            table.Cell().Text(x.total.ToString());
+                        }
+                    });
                 });
-            });
-        }).GeneratePdf();
+            }).GeneratePdf();
+        }
         return Results.File(bytes, "application/pdf", "access-by-level.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
@@ -2035,7 +2193,7 @@ ORDER BY u.UF2, t.TERMINAL";
 // ----------------------------------------------------------------
 // new report: door critical events generated by jp4_sp_DoorCritical
 // returns the same columns produced by the stored procedure
-app.MapGet("/api/reports/door-critical", async (string start, string end) =>
+app.MapGet("/api/reports/door-critical", async (string start, string end, string? sourceList) =>
 {
     try
     {
@@ -2051,7 +2209,7 @@ app.MapGet("/api/reports/door-critical", async (string start, string end) =>
         try
         {
             using var r = await cmd.ExecuteReaderAsync();
-            var items = new List<object>();
+            var items = new List<dynamic>();
             while (await r.ReadAsync())
             {
                 items.Add(new
@@ -2071,6 +2229,11 @@ app.MapGet("/api/reports/door-critical", async (string start, string end) =>
                     DetalheStatusAcesso = r.IsDBNull(12) ? null : r.GetString(12)
                 });
             }
+            if (!string.IsNullOrWhiteSpace(sourceList))
+            {
+                var allow = new HashSet<string>((sourceList ?? "").Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+                items = items.Where(x => x.TAG != null && allow.Contains((string)x.TAG)).ToList();
+            }
             return Results.Ok(new { success = true, count = items.Count, data = items });
         }
         catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
@@ -2083,7 +2246,7 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
     t.TRANSIT_DATE AS TimeOrder,
     CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(c.CardNumber,'') AS TAG,
+    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
     ISNULL(v.DESCRIPTION,'') AS Acesso,
     CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
     ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
@@ -2105,7 +2268,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
             cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
             using var r2 = await cmd2.ExecuteReaderAsync();
-            var items = new List<object>();
+            var items = new List<dynamic>();
             while (await r2.ReadAsync())
             {
                 items.Add(new
@@ -2125,6 +2288,11 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
                     DetalheStatusAcesso = r2.IsDBNull(12) ? null : r2.GetString(12)
                 });
             }
+            if (!string.IsNullOrWhiteSpace(sourceList))
+            {
+                var allow = new HashSet<string>((sourceList ?? "").Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+                items = items.Where(x => x.TAG != null && allow.Contains((string)x.TAG)).ToList();
+            }
             return Results.Ok(new { success = true, count = items.Count, data = items });
         }
     }
@@ -2134,7 +2302,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     }
 });
 
-app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string start, string end, string format) =>
+app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string start, string end, string format, string? sourceList) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
@@ -2180,7 +2348,7 @@ SELECT
     ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
     t.TRANSIT_DATE AS TimeOrder,
     CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(c.CardNumber,'') AS TAG,
+    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
     ISNULL(v.DESCRIPTION,'') AS Acesso,
     CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
     ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
@@ -2222,6 +2390,14 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             ));
         }
     }
+    // optional in-memory filter by TAG (critical does not accept SourceList)
+    if (!string.IsNullOrWhiteSpace(sourceList))
+    {
+        var allow = new HashSet<string>((sourceList ?? "").Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+        rows = rows.Where(x => !string.IsNullOrWhiteSpace(x.TAG) && allow.Contains(x.TAG!)).ToList();
+    }
+    if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
+        format = "xlsx";
     // reuse export logic from existing endpoints
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -2238,24 +2414,23 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorCritical" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
-            void AddRow(params string[] cells)
-            {
-                var row = new Row();
-                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
-                sheetData.Append(row);
-            }
-            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
-            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
-        }
-        var bytesX = ms.ToArray();
+        var (clientName, _) = await GetReportClientInfoAsync(ctx);
+        var generatedBy = GetReportUser(ctx);
+        var includeCover = ShouldIncludeCover(ctx);
+        var (_, reportPortrait) = GetPdfOrientationFlags(ctx);
+        var mapped = rows.Select(x => (
+            DataHora: x.DataHora,
+            TAG: x.TAG,
+            Acesso: x.Acesso,
+            Evento: x.Evento,
+            NomeCompleto: x.NomeCompleto,
+            DocumentoMatricula: x.DocumentoMatricula,
+            Cartao: x.Cartao,
+            Tipo: x.Tipo,
+            Empresa: x.Empresa,
+            Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        )).ToList();
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Críticos", startDt, endDt, mapped, generatedBy, includeCover, "Escopo: Eventos Críticos", reportPortrait);
         var rel = SaveReportFile("door-critical.xlsx", bytesX, app.Environment);
         ctx.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
@@ -2272,11 +2447,16 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             Evento: x.Evento,
             Acesso: x.Acesso,
             DocumentoMatricula: x.DocumentoMatricula,
-            StatusDisplay: string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            StatusDisplay: NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
             Empresa: x.Empresa,
             TAG: x.TAG
         )).ToList();
-        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Críticos", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var includeCover = ShouldIncludeCover(ctx);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(ctx);
+        var criteria = "Escopo: Eventos Críticos";
+        byte[] bytes;
+        try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Críticos", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
+        catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
         var rel = SaveReportFile("door-critical.pdf", bytes, app.Environment);
         ctx.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-critical.pdf");
@@ -2338,20 +2518,25 @@ static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, 
     }
 }
 
-byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Cartao, string? NomeCompleto, string? Tipo, string? DataHora, string? Evento, string? Acesso, string? DocumentoMatricula, string? StatusDisplay, string? Empresa, string? TAG)> rows, string generatedBy)
+byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Cartao, string? NomeCompleto, string? Tipo, string? DataHora, string? Evento, string? Acesso, string? DocumentoMatricula, string? StatusDisplay, string? Empresa, string? TAG)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
 {
     QuestPDF.Settings.License = LicenseType.Community;
     var isAllDataRange =
         start != null && end != null &&
         start.Value.Date <= new DateTime(1900, 1, 1) &&
         end.Value.Date >= new DateTime(2100, 1, 1);
-    var sub = (!isAllDataRange && start != null && end != null) ? $"Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}" : "";
+    var sub = (!isAllDataRange && start != null && end != null) ? $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}" : "";
     var accent = "#0b3d2e";
     var headerBg = "#0b3d2e";
     var rowAlt = "#f4f7f5";
     var border = "#d1d5db";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
     byte[]? leftLogo = null;
     byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
     try
     {
         var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
@@ -2359,6 +2544,10 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
         var jumperLogoWww = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "img", "logoJumper.jpg");
         if (System.IO.File.Exists(jumperLogoRepo)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoRepo);
         else if (System.IO.File.Exists(jumperLogoWww)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoWww);
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
 
         var env = LoadEnv();
         if (leftLogo == null && env.TryGetValue("REPORT_LOGO_LEFT", out var lp) && !string.IsNullOrWhiteSpace(lp))
@@ -2376,51 +2565,83 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
 
     return Document.Create(container =>
     {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(sub)) info.Item().Text(sub).FontSize(12);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Row(row =>
+                {
+                    row.RelativeItem().Text("");
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().Text("");
+                });
+            });
+        }
         container.Page(page =>
         {
-            page.Size(new QuestPDF.Helpers.PageSize(1190.88f, 841.68f));
+            page.Size(reportSize);
             page.Margin(18);
             page.DefaultTextStyle(x => x.FontSize(9));
 
-            page.Header().PaddingBottom(8).Column(col =>
-            {
-                col.Item().Row(row =>
-                {
-                    row.RelativeItem().AlignLeft().Element(e =>
-                    {
-                        if (leftLogo != null) e.Height(34).Image(leftLogo, ImageScaling.FitHeight);
-                        else e.Text("JumperFour").FontSize(18).SemiBold().FontColor(accent);
-                    });
-                    row.RelativeItem().AlignRight().Element(e =>
-                    {
-                        if (rightLogo != null) e.Height(34).Image(rightLogo, ImageScaling.FitHeight);
-                        else e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827");
-                    });
-                });
-                col.Item().PaddingTop(2).Row(row =>
-                {
-                    row.RelativeItem().AlignLeft().Text(title).SemiBold().FontSize(12);
-                    row.RelativeItem().AlignRight().Text(clientName).SemiBold().FontSize(10);
-                });
-                if (!string.IsNullOrWhiteSpace(sub))
-                    col.Item().Text(sub).FontSize(9).FontColor("#374151");
-                col.Item().PaddingTop(6).LineHorizontal(1);
-            });
-
-            page.Content().PaddingTop(8).Table(table =>
+            page.Content().Table(table =>
             {
                 table.ColumnsDefinition(c =>
                 {
-                    c.RelativeColumn(1.1f); // Cartão/Crachá
-                    c.RelativeColumn(2.0f); // Nome Completo
-                    c.RelativeColumn(1.0f); // Tipo
-                    c.RelativeColumn(1.3f); // Data/hora
-                    c.RelativeColumn(1.2f); // Evento
-                    c.RelativeColumn(1.4f); // Acesso
-                    c.RelativeColumn(1.5f); // Documento/Matrícula
-                    c.RelativeColumn(1.4f); // Status/Acesso
-                    c.RelativeColumn(1.5f); // Empresa
-                    c.RelativeColumn(1.0f); // TAG
+                    c.RelativeColumn(1.4f); // Data/Hora
+                    c.RelativeColumn(1.5f); // TAG
+                    c.RelativeColumn(2.0f); // Acesso
+                    c.RelativeColumn(0.6f); // Evento
+                    c.RelativeColumn(2.3f); // Nome Completo
+                    c.RelativeColumn(0.9f); // DOC/Matrícula
+                    c.RelativeColumn(0.7f); // Cartão
+                    c.RelativeColumn(0.8f); // Tipo
+                    c.RelativeColumn(1.6f); // Empresa
+                    c.RelativeColumn(0.7f); // Status
                 });
 
                 IContainer HeaderCell(IContainer x) => x
@@ -2436,39 +2657,38 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
 
                 table.Header(h =>
                 {
-                    h.Cell().Element(HeaderCell).Text("CARTÃO/CRACHÁ");
-                    h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
-                    h.Cell().Element(HeaderCell).Text("TIPO");
                     h.Cell().Element(HeaderCell).Text("DATA/HORA");
-                    h.Cell().Element(HeaderCell).Text("EVENTO");
-                    h.Cell().Element(HeaderCell).Text("ACESSO");
-                    h.Cell().Element(HeaderCell).Text("DOCUMENTO/MATRÍCULA");
-                    h.Cell().Element(HeaderCell).Text("STATUS/ACESSO");
-                    h.Cell().Element(HeaderCell).Text("EMPRESA");
                     h.Cell().Element(HeaderCell).Text("TAG");
+                    h.Cell().Element(HeaderCell).Text("ACESSO");
+                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("EVENTO");
+                    h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
+                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("MATRÍCULA");
+                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("CARTÃO");
+                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("TIPO");
+                    h.Cell().Element(HeaderCell).Text("EMPRESA");
+                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("STATUS");
                 });
 
                 for (int i = 0; i < rows.Count; i++)
                 {
                     var r = rows[i];
                     var alt = i % 2 == 1;
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Cartao ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
                     table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Evento ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Acesso ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.DocumentoMatricula ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.StatusDisplay ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
                     table.Cell().Element(x => Cell(x, alt)).Text(r.TAG ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Acesso ?? "");
+                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Evento ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
+                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.DocumentoMatricula ?? "");
+                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Cartao ?? "");
+                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Tipo ?? "");
+                    table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.StatusDisplay ?? "");
                 }
             });
 
             page.Footer().Column(col =>
             {
-                col.Item().LineHorizontal(1);
-                col.Item().PaddingTop(4).Text($"Gerado por {generatedBy} em {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(8).FontColor("#6b7280");
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
                 col.Item().PaddingTop(6).Row(row =>
                 {
                     row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
@@ -2478,12 +2698,289 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
                         t.Span(" de ");
                         t.TotalPages();
                     });
-                    row.RelativeItem().AlignCenter().Text("Relatório - JumperFour").FontSize(9).FontColor("#374151");
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
                     row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
                 });
             });
         });
     }).GeneratePdf();
+}
+
+byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)> rows, string generatedBy, bool includeCover, string? criteria, bool reportPortrait)
+{
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+    }
+    catch { }
+
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+
+        var styles = wb.AddNewPart<WorkbookStylesPart>();
+        styles.Stylesheet = new Stylesheet(
+            new Fonts(
+                new Font(),
+                new Font(new Bold(), new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FFFFFFFF") }),
+                new Font(new Bold(), new FontSize() { Val = 16 }, new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FF0B3D2E") }),
+                new Font(new Bold(), new FontSize() { Val = 14 }, new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FFE4002B") }),
+                new Font(new Bold())
+            ),
+            new Fills(
+                new Fill(new PatternFill() { PatternType = PatternValues.None }),
+                new Fill(new PatternFill() { PatternType = PatternValues.Gray125 }),
+                new Fill(new PatternFill(new ForegroundColor { Rgb = new HexBinaryValue("FF0B3D2E") }) { PatternType = PatternValues.Solid }),
+                new Fill(new PatternFill(new ForegroundColor { Rgb = new HexBinaryValue("FFF4F7F5") }) { PatternType = PatternValues.Solid }),
+                new Fill(new PatternFill(new ForegroundColor { Rgb = new HexBinaryValue("FFE4002B") }) { PatternType = PatternValues.Solid })
+            ),
+            new Borders(
+                new Border(),
+                new Border(
+                    new LeftBorder() { Style = BorderStyleValues.Thin, Color = new DocumentFormat.OpenXml.Spreadsheet.Color() { Auto = true } },
+                    new RightBorder() { Style = BorderStyleValues.Thin, Color = new DocumentFormat.OpenXml.Spreadsheet.Color() { Auto = true } },
+                    new TopBorder() { Style = BorderStyleValues.Thin, Color = new DocumentFormat.OpenXml.Spreadsheet.Color() { Auto = true } },
+                    new BottomBorder() { Style = BorderStyleValues.Thin, Color = new DocumentFormat.OpenXml.Spreadsheet.Color() { Auto = true } },
+                    new DiagonalBorder()
+                )
+            ),
+            new CellStyleFormats(new CellFormat()),
+            new CellFormats(
+                new CellFormat(),
+                new CellFormat { FontId = 3, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Right }, ApplyAlignment = true },
+                new CellFormat { FontId = 2, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { FillId = 4, ApplyFill = true },
+                new CellFormat { FontId = 4, ApplyFont = true },
+                new CellFormat { FontId = 1, FillId = 2, BorderId = 1, ApplyFont = true, ApplyFill = true, ApplyBorder = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { BorderId = 1, ApplyBorder = true, Alignment = new Alignment { Vertical = VerticalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { FillId = 3, BorderId = 1, ApplyFill = true, ApplyBorder = true, Alignment = new Alignment { Vertical = VerticalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { BorderId = 1, ApplyBorder = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { FillId = 3, BorderId = 1, ApplyFill = true, ApplyBorder = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center }, ApplyAlignment = true }
+            )
+        );
+        styles.Stylesheet.Save();
+
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        var sheetData = new SheetData();
+        var cols = new Columns(
+            new Column { Min = 1, Max = 1, Width = 20, CustomWidth = true },
+            new Column { Min = 2, Max = 2, Width = 23, CustomWidth = true },
+            new Column { Min = 3, Max = 3, Width = 30, CustomWidth = true },
+            new Column { Min = 4, Max = 4, Width = 10, CustomWidth = true },
+            new Column { Min = 5, Max = 5, Width = 30, CustomWidth = true },
+            new Column { Min = 6, Max = 6, Width = 16, CustomWidth = true },
+            new Column { Min = 7, Max = 7, Width = 11, CustomWidth = true },
+            new Column { Min = 8, Max = 8, Width = 13, CustomWidth = true },
+            new Column { Min = 9, Max = 9, Width = 24, CustomWidth = true },
+            new Column { Min = 10, Max = 10, Width = 11, CustomWidth = true }
+        );
+        var mergeCells = new MergeCells();
+        wsPart.Worksheet = new Worksheet(cols, sheetData, mergeCells);
+
+        var sheets = wb.Workbook.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = wb.GetIdOfPart(wsPart), SheetId = 1, Name = "EventosDePorta" });
+
+        uint rowIndex = 1;
+        var coverTopRow = 1U;
+        uint? coverByRow = null;
+        uint? footerByRow = null;
+        void AddMergedRow(string text, uint styleIdx, uint fromCol, uint toCol)
+        {
+            var row = new Row { RowIndex = rowIndex };
+            var cell = new Cell { CellReference = $"{GetExcelCol(fromCol)}{rowIndex}", DataType = CellValues.String, CellValue = new CellValue(text ?? ""), StyleIndex = styleIdx };
+            row.Append(cell);
+            sheetData.Append(row);
+            mergeCells.Append(new MergeCell { Reference = new StringValue($"{GetExcelCol(fromCol)}{rowIndex}:{GetExcelCol(toCol)}{rowIndex}") });
+            rowIndex++;
+        }
+        void AddRowCells((string? text, uint styleIdx)[] cells)
+        {
+            var row = new Row { RowIndex = rowIndex };
+            for (uint c = 1; c <= (uint)cells.Length; c++)
+            {
+                var (t, s) = cells[c - 1];
+                row.Append(new Cell { CellReference = $"{GetExcelCol(c)}{rowIndex}", DataType = CellValues.String, CellValue = new CellValue(t ?? ""), StyleIndex = s });
+            }
+            sheetData.Append(row);
+            rowIndex++;
+        }
+
+        if (includeCover)
+        {
+            AddRowCells(new (string?, uint)[] { ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0) });
+            var line = new (string?, uint)[] { ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3) };
+            AddRowCells(line);
+            rowIndex++;
+            AddMergedRow(title, 2, 1, 10);
+            var sub = "";
+            if (start != null && end != null) sub = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}";
+            if (!string.IsNullOrWhiteSpace(sub)) AddMergedRow(sub, 0, 1, 10);
+            if (!string.IsNullOrWhiteSpace(criteria)) AddMergedRow(criteria, 0, 1, 10);
+            AddMergedRow($"Cliente: {clientName}", 0, 1, 10);
+            AddMergedRow($"Gerado por: {generatedBy}", 0, 1, 10);
+            AddMergedRow($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", 0, 1, 10);
+            rowIndex++;
+            coverByRow = rowIndex;
+            AddMergedRow("Relatório by", 4, 1, 10);
+            rowIndex++;
+        }
+
+        var headerRowIndex = rowIndex;
+        AddRowCells(new (string?, uint)[]
+        {
+            ("Data/Hora", 5),
+            ("TAG", 5),
+            ("Acesso", 5),
+            ("Evento", 5),
+            ("Nome Completo", 5),
+            ("MATRÍCULA", 5),
+            ("Cartão", 5),
+            ("Tipo", 5),
+            ("Empresa", 5),
+            ("Status", 5)
+        });
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var alt = i % 2 == 1;
+            var s = alt ? (uint)7 : (uint)6;
+            var sc = alt ? (uint)9 : (uint)8;
+            var r = rows[i];
+            AddRowCells(new (string?, uint)[]
+            {
+                (r.DataHora, s),
+                (r.TAG, s),
+                (r.Acesso, s),
+                (r.Evento, sc),
+                (r.NomeCompleto, s),
+                (r.DocumentoMatricula, sc),
+                (r.Cartao, sc),
+                (r.Tipo, sc),
+                (r.Empresa, s),
+                (r.Status, sc)
+            });
+        }
+
+        var footerRowIndex = rowIndex + 1;
+        AddMergedRow("", 0, 1, 10);
+        footerByRow = rowIndex;
+        AddRowCells(new (string?, uint)[] { ("Página 1 de 1", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("Relatório by", 4), ("", 0), ("", 0), ("", 0), (clientName, 0) });
+
+        if (includeCover && (honeywellLogo != null || jumperBrand != null))
+        {
+            var drawingsPart = wsPart.AddNewPart<DrawingsPart>();
+            wsPart.Worksheet.Append(new Drawing { Id = wsPart.GetIdOfPart(drawingsPart) });
+            drawingsPart.WorksheetDrawing = new DocumentFormat.OpenXml.Drawing.Spreadsheet.WorksheetDrawing();
+            uint picId = 1;
+
+            void AddPng(byte[] bytes, string name, uint fromCol0, uint fromRow0, int widthPx, int heightPx)
+            {
+                var part = drawingsPart.AddImagePart(ImagePartType.Png);
+                using (var img = new MemoryStream(bytes)) part.FeedData(img);
+                var rid = drawingsPart.GetIdOfPart(part);
+                long cx = widthPx * 9525L;
+                long cy = heightPx * 9525L;
+                var anchor = new DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor(
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.FromMarker(
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnId(fromCol0.ToString()),
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnOffset("0"),
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowId(fromRow0.ToString()),
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowOffset("0")
+                    ),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.Extent { Cx = cx, Cy = cy },
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.Picture(
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureProperties(
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualDrawingProperties { Id = picId++, Name = name },
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureDrawingProperties(
+                                new DocumentFormat.OpenXml.Drawing.PictureLocks { NoChangeAspect = true }
+                            )
+                        ),
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.BlipFill(
+                            new DocumentFormat.OpenXml.Drawing.Blip { Embed = rid, CompressionState = DocumentFormat.OpenXml.Drawing.BlipCompressionValues.Print },
+                            new DocumentFormat.OpenXml.Drawing.Stretch(new DocumentFormat.OpenXml.Drawing.FillRectangle())
+                        ),
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ShapeProperties(
+                            new DocumentFormat.OpenXml.Drawing.Transform2D(
+                                new DocumentFormat.OpenXml.Drawing.Offset { X = 0, Y = 0 },
+                                new DocumentFormat.OpenXml.Drawing.Extents { Cx = cx, Cy = cy }
+                            ),
+                            new DocumentFormat.OpenXml.Drawing.PresetGeometry(new DocumentFormat.OpenXml.Drawing.AdjustValueList()) { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle }
+                        )
+                    ),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.ClientData()
+                );
+                drawingsPart.WorksheetDrawing.Append(anchor);
+            }
+
+            if (honeywellLogo != null)
+            {
+                AddPng(honeywellLogo, "Honeywell", 8U, coverTopRow - 1U, 200, 40);
+            }
+            if (jumperBrand != null && coverByRow != null)
+            {
+                AddPng(jumperBrand, "JumperFour", 5U, coverByRow.Value - 1U, 120, 22);
+            }
+            if (jumperBrand != null && footerByRow != null)
+            {
+                AddPng(jumperBrand, "JumperFourFooter", 6U, footerByRow.Value - 1U, 110, 20);
+            }
+
+            drawingsPart.WorksheetDrawing.Save();
+        }
+
+        var sheetViews = new SheetViews();
+        var sv = new SheetView { WorkbookViewId = 0U };
+        sv.Pane = new Pane
+        {
+            VerticalSplit = headerRowIndex,
+            TopLeftCell = $"A{headerRowIndex + 1}",
+            ActivePane = PaneValues.BottomLeft,
+            State = PaneStateValues.Frozen
+        };
+        sheetViews.Append(sv);
+        wsPart.Worksheet.InsertAt(sheetViews, 0);
+
+        var pageSetup = new PageSetup { Orientation = reportPortrait ? OrientationValues.Portrait : OrientationValues.Landscape, FitToWidth = 1, FitToHeight = 0 };
+        wsPart.Worksheet.Append(new PageSetupProperties { FitToPage = true });
+        wsPart.Worksheet.Append(pageSetup);
+
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
+    }
+    return ms.ToArray();
+}
+
+static string GetExcelCol(uint col)
+{
+    var dividend = col;
+    var colName = "";
+    while (dividend > 0)
+    {
+        var modulo = (dividend - 1) % 26;
+        colName = Convert.ToChar(65 + modulo) + colName;
+        dividend = (dividend - modulo) / 26;
+    }
+    return colName;
 }
 
 static async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(string conn, int daysBack)
@@ -2587,6 +3084,82 @@ app.MapGet("/api/reports/door-sources", async (int? daysBack) =>
     }
 }).RequireAuthorization();
 
+app.MapGet("/api/reports/door-critical/sources", async (int? daysBack, string? start, string? end) =>
+{
+    try
+    {
+        DateTime startDt;
+        DateTime endDt;
+        if (!string.IsNullOrWhiteSpace(start) && !string.IsNullOrWhiteSpace(end))
+        {
+            startDt = ParseDate(start!);
+            endDt = ParseDate(end!);
+        }
+        else
+        {
+            var days = daysBack ?? 3650;
+            endDt = DateTime.Now;
+            startDt = endDt.AddDays(-days);
+        }
+        using var cn = new SqlConnection(GetConn("EMS"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
+        cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+        cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+            {
+                var tag = r.IsDBNull(3) ? null : r.GetString(3);
+                var acesso = r.IsDBNull(4) ? null : r.GetString(4);
+                if (string.IsNullOrWhiteSpace(tag)) continue;
+                if (!map.ContainsKey(tag)) map[tag] = acesso ?? "";
+            }
+        }
+        catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+        {
+            using var cn2 = new SqlConnection(GetConn("CMS"));
+            await cn2.OpenAsync();
+            using var cmd2 = cn2.CreateCommand();
+            cmd2.CommandText = @"
+SELECT DISTINCT
+    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
+    ISNULL(v.DESCRIPTION,'') AS Acesso
+FROM HA_TRANSIT t
+LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+            using var r2 = await cmd2.ExecuteReaderAsync();
+            while (await r2.ReadAsync())
+            {
+                var tag = r2.IsDBNull(0) ? null : r2.GetString(0);
+                var acesso = r2.IsDBNull(1) ? null : r2.GetString(1);
+                if (string.IsNullOrWhiteSpace(tag)) continue;
+                if (!map.ContainsKey(tag)) map[tag] = acesso ?? "";
+            }
+        }
+        var items = map.Select(kv => new
+        {
+            key = kv.Key,
+            description = kv.Value,
+            group = kv.Key.Contains('_') ? kv.Key.Split('_')[0] : kv.Key,
+            subGroup = kv.Key.Contains('_') ? (kv.Key.Split('_').Length > 1 ? kv.Key.Split('_')[1] : "") : ""
+        }).OrderBy(x => x.key, StringComparer.OrdinalIgnoreCase).ToList();
+        return Results.Ok(new { success = true, items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { success = false, error = ex.Message });
+    }
+}).RequireAuthorization();
+
 app.MapGet("/api/reports/door-sources/debug", async (int? daysBack) =>
 {
     var days = daysBack ?? 3650;
@@ -2663,6 +3236,34 @@ app.MapDelete("/api/reports/export-jobs/{id}", (string id) =>
     job.Status = "canceled";
     job.FinishedAt = DateTime.UtcNow;
     return Results.Ok(new { success = true });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/download", (HttpContext http, string path) =>
+{
+    if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest(new { success = false, error = "Path inválido" });
+    var rel = path.Trim().TrimStart('/').Replace('\\', '/');
+    if (!rel.StartsWith("reports/", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { success = false, error = "Somente arquivos em /reports são permitidos" });
+    if (rel.Contains("..", StringComparison.Ordinal) || rel.Contains(":", StringComparison.Ordinal))
+        return Results.BadRequest(new { success = false, error = "Path inválido" });
+
+    var wwwroot = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+    var abs = Path.GetFullPath(Path.Combine(wwwroot, rel.Replace('/', Path.DirectorySeparatorChar)));
+    var wwwrootAbs = Path.GetFullPath(wwwroot);
+    if (!abs.StartsWith(wwwrootAbs, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { success = false, error = "Path inválido" });
+    if (!System.IO.File.Exists(abs))
+        return Results.NotFound(new { success = false, error = "Arquivo não encontrado" });
+
+    var ext = Path.GetExtension(abs).ToLowerInvariant();
+    var ct = ext switch
+    {
+        ".pdf" => "application/pdf",
+        ".csv" => "text/csv",
+        ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream"
+    };
+    return Results.File(abs, ct, Path.GetFileName(abs));
 }).RequireAuthorization();
 
 app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, DoorGeneralExportJobRequest req) =>
@@ -2821,6 +3422,8 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
+    if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
+        format = "xlsx";
     if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
         return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
@@ -2854,19 +3457,24 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorGeneral" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
-            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
-            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
-            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
-        }
-        var bytesX = ms.ToArray();
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var includeCover = ShouldIncludeCover(http);
+        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var mapped = rows.Select(x => (
+            DataHora: x.DataHora,
+            TAG: x.TAG,
+            Acesso: x.Acesso,
+            Evento: x.Evento,
+            NomeCompleto: x.NomeCompleto,
+            DocumentoMatricula: x.DocumentoMatricula,
+            Cartao: x.Cartao,
+            Tipo: x.Tipo,
+            Empresa: x.Empresa,
+            Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        )).ToList();
+        var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
         var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
@@ -2883,11 +3491,16 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
             Evento: x.Evento,
             Acesso: x.Acesso,
             DocumentoMatricula: x.DocumentoMatricula,
-            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            StatusDisplay: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
             Empresa: x.Empresa,
             TAG: x.TAG
         )).ToList();
-        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var includeCover = ShouldIncludeCover(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+        var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
+        byte[] bytes;
+        try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
+        catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
         var rel = SaveReportFile("door-general.pdf", bytes, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general.pdf");
@@ -2940,6 +3553,8 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
+    if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
+        format = "xlsx";
     if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
         return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
@@ -2970,19 +3585,23 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorByName" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
-            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
-            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
-            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
-        }
-        var bytesX = ms.ToArray();
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var includeCover = ShouldIncludeCover(http);
+        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var mapped = rows.Select(x => (
+            DataHora: x.DataHora,
+            TAG: x.TAG,
+            Acesso: x.Acesso,
+            Evento: x.Evento,
+            NomeCompleto: x.NomeCompleto,
+            DocumentoMatricula: x.DocumentoMatricula,
+            Cartao: x.Cartao,
+            Tipo: x.Tipo,
+            Empresa: x.Empresa,
+            Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        )).ToList();
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, $"Filtro: Nome = {name}", reportPortrait);
         var rel = SaveReportFile("door-general-by-name.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
@@ -2999,11 +3618,16 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
             Evento: x.Evento,
             Acesso: x.Acesso,
             DocumentoMatricula: x.DocumentoMatricula,
-            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            StatusDisplay: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
             Empresa: x.Empresa,
             TAG: x.TAG
         )).ToList();
-        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var includeCover = ShouldIncludeCover(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+        var criteria = $"Filtro: Nome = {name}";
+        byte[] bytes;
+        try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
+        catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
         var rel = SaveReportFile("door-general-by-name.pdf", bytes, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general-by-name.pdf");
@@ -3043,6 +3667,8 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
+    if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
+        format = "xlsx";
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
@@ -3062,19 +3688,23 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "DoorBySite" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
-            void AddRow(params string[] cells){ var row = new Row(); foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) }); sheetData.Append(row); }
-            AddRow("EventID","TimeOrder","DataHora","TAG","Acesso","Evento","NomeCompleto","DocumentoMatricula","Cartao","Tipo","Empresa","StatusAcesso","DetalheStatusAcesso");
-            foreach (var x in rows) AddRow(x.EventID.ToString(), x.TimeOrder?.ToString() ?? "", x.DataHora ?? "", x.TAG ?? "", x.Acesso ?? "", x.Evento ?? "", x.NomeCompleto ?? "", x.DocumentoMatricula ?? "", x.Cartao ?? "", x.Tipo ?? "", x.Empresa ?? "", x.StatusAcesso ?? "", x.DetalheStatusAcesso ?? "");
-        }
-        var bytesX = ms.ToArray();
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var includeCover = ShouldIncludeCover(http);
+        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var mapped = rows.Select(x => (
+            DataHora: x.DataHora,
+            TAG: x.TAG,
+            Acesso: x.Acesso,
+            Evento: x.Evento,
+            NomeCompleto: x.NomeCompleto,
+            DocumentoMatricula: x.DocumentoMatricula,
+            Cartao: x.Cartao,
+            Tipo: x.Tipo,
+            Empresa: x.Empresa,
+            Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        )).ToList();
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, $"Filtro: Site = {site}", reportPortrait);
         var rel = SaveReportFile("door-general-by-site.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
@@ -3091,11 +3721,16 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
             Evento: x.Evento,
             Acesso: x.Acesso,
             DocumentoMatricula: x.DocumentoMatricula,
-            StatusDisplay: (string?)string.Join(" - ", new[]{x.StatusAcesso, x.DetalheStatusAcesso}.Where(s => !string.IsNullOrWhiteSpace(s))),
+            StatusDisplay: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
             Empresa: x.Empresa,
             TAG: x.TAG
         )).ToList();
-        var bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Site", ParseDate(start), ParseDate(end), mapped, generatedBy);
+        var includeCover = ShouldIncludeCover(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+        var criteria = $"Filtro: Site = {site}";
+        byte[] bytes;
+        try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Site", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
+        catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
         var rel = SaveReportFile("door-general-by-site.pdf", bytes, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytes, "application/pdf", "door-general-by-site.pdf");
@@ -4572,16 +5207,74 @@ static string GetReportUser(HttpContext http)
     return "Sistema";
 }
 
-byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, string modo, DateTime? start, DateTime? end, IReadOnlyList<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)> rows, string generatedBy)
+bool ShouldIncludeCover(HttpContext ctx)
+{
+    try
+    {
+        var q = ctx.Request?.Query?["includeCover"].ToString();
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            q = q.Trim().ToLowerInvariant();
+            if (q == "1" || q == "true") return true;
+            if (q == "0" || q == "false") return false;
+        }
+    }
+    catch { }
+    try
+    {
+        var env = LoadEnv();
+        if (env.TryGetValue("REPORT_PDF_COVER", out var v))
+            return v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+    }
+    catch { }
+    return false;
+}
+
+(bool coverPortrait, bool reportPortrait) GetPdfOrientationFlags(HttpContext ctx)
+{
+    string Normalize(string? v, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return fallback;
+        var s = v.Trim().ToLowerInvariant();
+        if (s is "portrait" or "retrato") return "portrait";
+        if (s is "landscape" or "paisagem") return "landscape";
+        return fallback;
+    }
+    string? coverQ = null;
+    string? reportQ = null;
+    try
+    {
+        coverQ = ctx.Request?.Query?["coverOrientation"].ToString();
+        reportQ = ctx.Request?.Query?["reportOrientation"].ToString();
+    }
+    catch { }
+    var cover = Normalize(coverQ, "landscape");
+    var report = Normalize(reportQ, "landscape");
+    try
+    {
+        var env = LoadEnv();
+        if (string.IsNullOrWhiteSpace(coverQ) && env.TryGetValue("REPORT_PDF_COVER_ORIENTATION", out var v1))
+            cover = Normalize(v1, cover);
+        if (string.IsNullOrWhiteSpace(reportQ) && env.TryGetValue("REPORT_PDF_ORIENTATION", out var v2))
+            report = Normalize(v2, report);
+    }
+    catch { }
+    return (cover == "portrait", report == "portrait");
+}
+
+byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, string modo, DateTime? start, DateTime? end, IReadOnlyList<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)> rows, string generatedBy, bool includeCover = true, bool coverPortrait = false, bool reportPortrait = false)
 {
     QuestPDF.Settings.License = LicenseType.Community;
     var title = "Relatório de Acessos";
     var sub = $"Documento: {documento} • Tipo: {modo}";
-    if (start != null && end != null) sub += $" • Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}";
+    if (start != null && end != null) sub += $" • Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}";
     var accent = "#0b3d2e";
     var headerBg = "#0b3d2e";
     var rowAlt = "#f4f7f5";
     var border = "#d1d5db";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
     byte[]? leftLogo = null;
     byte[]? rightLogo = clientLogo;
     try
@@ -4602,9 +5295,53 @@ byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, s
 
     return Document.Create(container =>
     {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(8);
+                    col.Item().AlignCenter().Row(row =>
+                    {
+                        row.Spacing(20);
+                        row.ConstantItem(240).AlignRight().Element(e =>
+                        {
+                            if (leftLogo != null)
+                            {
+                                try { e.Width(240).Height(60).Image(leftLogo, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(18).SemiBold().FontColor(accent); }
+                            }
+                            else e.Text("JumperFour").FontSize(18).SemiBold().FontColor(accent);
+                        });
+                        row.ConstantItem(240).AlignLeft().Element(e =>
+                        {
+                            if (rightLogo != null)
+                            {
+                                try { e.Width(240).Height(60).Image(rightLogo, ImageScaling.FitArea); }
+                                catch { e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827"); }
+                            }
+                            else e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827");
+                        });
+                    });
+                    col.Item().Text(title).FontSize(22).SemiBold().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(2);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text(sub).FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().AlignCenter().Text("Documento preparado para auditoria").FontColor("#6b7280").FontSize(9);
+            });
+        }
         container.Page(page =>
         {
-            page.Size(new QuestPDF.Helpers.PageSize(1190.88f, 841.68f));
+            page.Size(reportSize);
             page.Margin(18);
             page.DefaultTextStyle(x => x.FontSize(9));
 
@@ -5578,7 +6315,8 @@ ORDER BY TimeTicks DESC;
     }
 
     var clientInfo = await GetReportClientInfoAsync(http);
-    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http));
+    var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), coverPortrait, reportPortrait);
     return Results.File(bytes, "application/pdf", fileName);
 }).RequireAuthorization();
 
@@ -5950,7 +6688,8 @@ WHERE
             return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
         }
         var reportClientInfo = await GetReportClientInfoAsync(http);
-        var bytesEmpty = BuildAccessPdf(reportClientInfo.Name, reportClientInfo.Logo, docRaw, modeNorm, null, null, Array.Empty<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)>(), GetReportUser(http));
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesEmpty = BuildAccessPdf(reportClientInfo.Name, reportClientInfo.Logo, docRaw, modeNorm, null, null, Array.Empty<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)>(), GetReportUser(http), ShouldIncludeCover(http), cp, rp);
         return Results.File(bytesEmpty, "application/pdf", fileName);
     }
 
@@ -6100,7 +6839,8 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
     var clientInfo = await GetReportClientInfoAsync(http);
     var startDt = minDt!.Value;
     var endDt = maxDt!.Value;
-    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http));
+    var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+    var bytes = BuildAccessPdf(clientInfo.Name, clientInfo.Logo, docRaw, modeNorm, startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), coverPortrait, reportPortrait);
     return Results.File(bytes, "application/pdf", fileName);
 }).RequireAuthorization();
 

@@ -133,8 +133,8 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit/aggregated?' + qs, { headers: headers() }))
   },
-  reportsDoorCritical: async (p: { start: string, end: string }) => {
-    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+  reportsDoorCritical: async (p: { start: string, end: string, sourceList?: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
   },
   reportsDoorGeneral: async (p: { start: string, end: string, sourceList?: string }) => {
@@ -152,6 +152,10 @@ export const api = {
   reportsDoorSources: async (p?: { daysBack?: number }) => {
     const qs = p && p.daysBack != null ? `?daysBack=${encodeURIComponent(String(p.daysBack))}` : ''
     return await withAuth(apiFetch('/api/reports/door-sources' + qs, { headers: headers() }))
+  },
+  reportsDoorCriticalSources: async (p?: { daysBack?: number, start?: string, end?: string }) => {
+    const qs = p ? ('?' + new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()) : ''
+    return await withAuth(apiFetch('/api/reports/door-critical/sources' + qs, { headers: headers() }))
   },
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
@@ -173,7 +177,7 @@ export const api = {
   },
   seedCompanies: async () => withAuth(apiFetch('/api/dev/seed-companies', { method:'POST', headers: headers() })),
   getReportOptions: async () => withAuth(apiFetch('/api/admin/report-options', { headers: headers() })),
-  setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }) =>
+  setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean, cover?: boolean, coverOrientation?: 'portrait'|'landscape', reportOrientation?: 'portrait'|'landscape' }) =>
     withAuth(apiFetch('/api/admin/report-options', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getReportDefaultClient: async () => withAuth(apiFetch('/api/admin/report-default-client', { headers: headers() })),
   setReportDefaultClient: async (clientId: number) =>
@@ -225,6 +229,21 @@ export const api = {
         throw new Error(data?.detail || data?.title || data?.error || data?.message || 'Falha ao obter PDF')
       }catch{
         throw new Error(raw || 'Falha ao obter PDF')
+      }
+    }
+    const b = await r.blob()
+    return URL.createObjectURL(b)
+  },
+  fetchSavedReport: async (relPath: string) => {
+    const qs = 'path=' + encodeURIComponent(relPath || '')
+    const r = await apiFetch('/api/reports/download?' + qs, { headers: headers() })
+    if(!r.ok){
+      const raw = await r.text()
+      try{
+        const data: any = raw ? JSON.parse(raw) : null
+        throw new Error(data?.detail || data?.title || data?.error || data?.message || 'Falha ao obter arquivo')
+      }catch{
+        throw new Error(raw || 'Falha ao obter arquivo')
       }
     }
     const b = await r.blob()

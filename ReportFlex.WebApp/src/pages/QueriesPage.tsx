@@ -133,6 +133,23 @@ function formatBrDateTime(v: any): string {
   return String(v)
 }
 
+function normalizeDoorStatusDisplay(statusAcesso: any, detalheStatusAcesso: any): string {
+  const s1 = statusAcesso == null ? '' : String(statusAcesso).trim()
+  const s2 = detalheStatusAcesso == null ? '' : String(detalheStatusAcesso).trim()
+  const all = `${s1} ${s2}`.toLowerCase()
+  if (
+    all.includes('denied') ||
+    all.includes('negado') ||
+    all.includes('não liberado') ||
+    all.includes('nao liberado') ||
+    all.includes('inactive card') ||
+    (all.includes('inactive') && all.includes('card'))
+  ) return 'Negado'
+  if (all.includes('granted') || all.includes('liberado')) return 'Liberado'
+  const parts = [s1, s2].filter(Boolean)
+  return parts.length ? parts.join(' - ') : ''
+}
+
 function getRowValue(row: any, key: string): any {
   if (!row || !key) return undefined
   if (row[key] !== undefined) return row[key]
@@ -295,16 +312,16 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Saida', label: 'Saída' }
   ],
   'door-critical': [
-    { key: 'Cartao', label: 'Cartão/Crachá' },
-    { key: 'NomeCompleto', label: 'Nome Completo' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'DataHora', label: 'Data/hora' },
-    { key: 'Evento', label: 'Evento' },
+    { key: 'DataHora', label: 'Data/Hora' },
+    { key: 'TAG', label: 'TAG' },
     { key: 'Acesso', label: 'Acesso' },
-    { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
-    { key: 'StatusAcessoDisplay', label: 'Status/Acesso' },
+    { key: 'Evento', label: 'Evento' },
+    { key: 'NomeCompleto', label: 'Nome Completo' },
+    { key: 'DocumentoMatricula', label: 'Matrícula' },
+    { key: 'Cartao', label: 'Cartão' },
+    { key: 'Tipo', label: 'Tipo' },
     { key: 'Empresa', label: 'Empresa' },
-    { key: 'TAG', label: 'TAG' }
+    { key: 'StatusAcessoDisplay', label: 'Status' }
   ],
   'db-table': []
 }
@@ -334,7 +351,13 @@ export function QueriesPage(){
   const exportFloatDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
   const exportFloatDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
   const [reportsModal, setReportsModal] = useState(false)
-  const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }[]>([])
+  const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string, savedPath?: string }[]>([])
+  const [lastPdfRequestUrl, setLastPdfRequestUrl] = useState<string | null>(null)
+  const [lastPdfSavedPath, setLastPdfSavedPath] = useState<string | null>(null)
+  const [lastPdfFileName, setLastPdfFileName] = useState<string>('')
+  const restoredPdfOnceRef = React.useRef(false)
+  const [hasCachedPdf, setHasCachedPdf] = React.useState(false)
+  const [restoredCache, setRestoredCache] = React.useState(false)
   const [sqlModal, setSqlModal] = useState(false)
   const [sqlUser, setSqlUser] = useState('')
   const [sqlPwd, setSqlPwd] = useState('')
@@ -348,7 +371,7 @@ export function QueriesPage(){
   const [progress, setProgress] = useState(0)
   const progressTimerRef = React.useRef<any>(null)
   const [resultTotal, setResultTotal] = useState<number | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean }>({ csv: true, xlsx: true, excel: true, pdf: true, txt: false, word: false })
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean }>({ csv: false, xlsx: true, excel: true, pdf: true, txt: false, word: false })
 
   // Personalizadas
   const [dataset, setDataset] = useState<Dataset>('transit')
@@ -452,20 +475,32 @@ export function QueriesPage(){
     }catch{}
     setDoorSourcesLoading(true)
     setDoorSourcesErr(null)
-    api.reportsDoorSources({ daysBack: 3650 })
-      .then((r: any) => {
-        const items = Array.isArray(r?.items) ? r.items : []
-        setDoorSources(items)
-        try{
-          localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items }))
-        }catch{}
-      })
-      .catch((e:any) => {
+    const fetchCritical = async () => {
+      const r: any = await api.reportsDoorCriticalSources({ daysBack: 3650 })
+      const items = Array.isArray(r?.items) ? r.items : []
+      setDoorSources(items)
+    }
+    const fetchGeneral = async () => {
+      const r: any = await api.reportsDoorSources({ daysBack: 3650 })
+      const items = Array.isArray(r?.items) ? r.items : []
+      setDoorSources(items)
+      try{ localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items })) }catch{}
+    }
+    ;(async () => {
+      try{
+        if (quickKind === 'door-critical' && doorMode === 'critical'){
+          await fetchCritical()
+        } else {
+          await fetchGeneral()
+        }
+      }catch(e:any){
         setDoorSources([])
         setDoorSourcesErr(e?.message || 'Falha ao carregar portas')
-      })
-      .finally(() => setDoorSourcesLoading(false))
-  }, [])
+      }finally{
+        setDoorSourcesLoading(false)
+      }
+    })()
+  }, [quickKind, doorMode])
 
   React.useEffect(() => {
     try{
@@ -477,6 +512,7 @@ export function QueriesPage(){
       if (!raw) return
       const st = JSON.parse(raw)
       if (!st || st.v !== 1) return
+      if (typeof st.lastPdfSavedPath === 'string' || typeof st.lastPdfRequestUrl === 'string') setHasCachedPdf(true)
       if (st.mode === 'prontas' || st.mode === 'personalizadas') setMode(st.mode)
       if (typeof st.quickKind === 'string') setQuickKind(st.quickKind)
       if (typeof st.dataset === 'string') setDataset(st.dataset)
@@ -486,6 +522,24 @@ export function QueriesPage(){
       if (typeof st.currentPage === 'number' && st.currentPage > 0) setCurrentPage(st.currentPage)
       if (st.filters && typeof st.filters === 'object') setFilters(st.filters)
       if (Array.isArray(st.data)) setData(st.data)
+      if (typeof st.resultTotal === 'number') setResultTotal(st.resultTotal)
+      if (typeof st.lastSuccessfulRun === 'number' && st.lastSuccessfulRun > 0) setLastSuccessfulRun(st.lastSuccessfulRun)
+      if (typeof st.doorMode === 'string') setDoorMode(st.doorMode)
+      if (typeof st.doorAllData === 'boolean') setDoorAllData(st.doorAllData)
+      if (typeof st.doorAllSources === 'boolean') setDoorAllSources(st.doorAllSources)
+      if (Array.isArray(st.doorSelectedSources)) setDoorSelectedSources(st.doorSelectedSources)
+      if (typeof st.doorPickSource === 'string') setDoorPickSource(st.doorPickSource)
+      if (typeof st.doorSourceFilter === 'string') setDoorSourceFilter(st.doorSourceFilter)
+      if (typeof st.doorName === 'string') setDoorName(st.doorName)
+      if (typeof st.doorSite === 'string') setDoorSite(st.doorSite)
+      if (typeof st.lastPdfRequestUrl === 'string') setLastPdfRequestUrl(st.lastPdfRequestUrl)
+      if (typeof st.lastPdfSavedPath === 'string') setLastPdfSavedPath(st.lastPdfSavedPath)
+      if (typeof st.lastPdfFileName === 'string') setLastPdfFileName(st.lastPdfFileName)
+      if (st.exportModal === true) setExportModal(true)
+      if (typeof st.exportStage === 'string') setExportStage(st.exportStage)
+      if (typeof st.exportProgress === 'number') setExportProgress(st.exportProgress)
+      if (typeof st.exportFileName === 'string') setExportFileName(st.exportFileName)
+      if (typeof st.exportFmt === 'string') setExportFmt(st.exportFmt)
       if (typeof st.cpfObter === 'string') setCpfObter(st.cpfObter)
       if (typeof st.matriculaObter === 'string') setMatriculaObter(st.matriculaObter)
       if (typeof st.empresaObter === 'string') setEmpresaObter(st.empresaObter)
@@ -493,7 +547,15 @@ export function QueriesPage(){
       if (typeof st.nivelObter === 'string') setNivelObter(st.nivelObter)
       if (typeof st.visitantesObter === 'string') setVisitantesObter(st.visitantesObter)
     }catch{}
+    setTimeout(() => { setRestoredCache(true) }, 0)
   }, [])
+
+  React.useEffect(() => {
+    if (restoredPdfOnceRef.current) return
+    if (!restoredCache) return
+    if (!hasCachedPdf) return
+    restoredPdfOnceRef.current = true
+  }, [restoredCache, hasCachedPdf])
 
   React.useEffect(() => {
     try{
@@ -502,6 +564,8 @@ export function QueriesPage(){
         return
       }
       if (!lastSuccessfulRun) return
+      const dataPreview = Array.isArray(data) ? data.slice(0, maxPreview) : []
+      const total = typeof resultTotal === 'number' ? resultTotal : (Array.isArray(data) ? data.length : 0)
       const snapshot = {
         v: 1,
         ts: Date.now(),
@@ -513,7 +577,25 @@ export function QueriesPage(){
         searchColumn,
         currentPage,
         filters,
-        data,
+        data: dataPreview,
+        resultTotal: total,
+        lastSuccessfulRun,
+        doorMode,
+        doorAllData,
+        doorAllSources,
+        doorSelectedSources,
+        doorPickSource,
+        doorSourceFilter,
+        doorName,
+        doorSite,
+        lastPdfRequestUrl,
+        lastPdfSavedPath,
+        lastPdfFileName,
+        exportModal,
+        exportStage,
+        exportFmt,
+        exportFileName,
+        exportProgress,
         cpfObter,
         matriculaObter,
         empresaObter,
@@ -523,7 +605,7 @@ export function QueriesPage(){
       }
       sessionStorage.setItem(cacheKey, JSON.stringify(snapshot))
     }catch{}
-  }, [lastSuccessfulRun])
+  }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal])
 
   const exportEnabledCsv = reportOptions.csv
   const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
@@ -578,13 +660,14 @@ export function QueriesPage(){
   }, [queriesCfg])
 
   React.useEffect(() => {
+    if (!restoredCache) return
     if (mode !== 'prontas') return
     if (readyQueryEnabled) return
     if (enabledReadyKeys.length === 0) return
     setQuickKind(enabledReadyKeys[0])
     setData([])
     setError(null)
-  }, [mode, readyQueryEnabled, enabledReadyKeys])
+  }, [restoredCache, mode, readyQueryEnabled, enabledReadyKeys])
 
   const exportsToday = useMemo(() => {
     const k = todayKey()
@@ -620,6 +703,28 @@ export function QueriesPage(){
     }
     return m
   }, [doorSources])
+
+  React.useEffect(() => {
+    if (doorSelectedSources.length > 0 && doorAllSources) {
+      setDoorAllSources(false)
+    }
+  }, [doorSelectedSources, doorAllSources])
+
+  const autoRunTimerRef = React.useRef<any>(null)
+  React.useEffect(() => {
+    if (!restoredCache) return
+    if (mode !== 'prontas') return
+    if (quickKind !== 'door-critical') return
+    if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
+    autoRunTimerRef.current = setTimeout(() => {
+      runQuick()
+    }, 400)
+    return () => {
+      if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
+      autoRunTimerRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoredCache, mode, quickKind, doorMode, doorAllSources, doorSelectedSources.join('|')])
 
   const doorShortKey = (key: string) => {
     const parts = (key || '').split('_').filter(Boolean)
@@ -958,29 +1063,37 @@ export function QueriesPage(){
             })()
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
         const src = doorAllSources ? undefined : doorSelectedSources.join(';')
-        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
-          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
+          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general'){
           const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
           const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); setLoading(false); return }
           const res = await api.reportsDoorGeneralBySite({ start: r0.startIso, end: r0.endIso, site: doorSite })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }
       }
       ok = true
@@ -1150,8 +1263,9 @@ export function QueriesPage(){
       }
       const showErr = async (res: Response) => {
         try{
-          const j: any = await res.json()
-          const msg = j?.detail || j?.title || 'Falha ao exportar'
+          const raw = await res.text()
+          const j: any = raw ? JSON.parse(raw) : null
+          const msg = j?.detail || j?.title || j?.error || j?.message || raw || 'Falha ao exportar'
           setError(msg)
           setExportErr(msg)
           setExportStage('error')
@@ -1177,22 +1291,22 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
-        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
-        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src) return
+        const src = doorAllSources ? undefined : (doorSelectedSources.length ? doorSelectedSources.join(';') : undefined)
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src) return
         const daysRange = Math.abs((new Date(r0.endIso).getTime() - new Date(r0.startIso).getTime()) / 86400000)
         if (doorMode === 'critical'){
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-critical/export?${qs}`
           name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
-          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
           if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src }, `portas-gerais.${format}`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
           name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
           if (!doorName) return
-          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
           if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: doorName }, `portas-gerais-por-nome.${format}`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
@@ -1220,6 +1334,45 @@ export function QueriesPage(){
       }
 
       if (!url || !name) return
+
+      const readBlobUrlWithProgress = async (res: Response, basePct: number) => {
+        const ct = res.headers.get('Content-Type') || 'application/octet-stream'
+        const lenRaw = res.headers.get('Content-Length')
+        const total = lenRaw ? Number(lenRaw) : NaN
+        const body = res.body
+        if (!body || !('getReader' in body)) {
+          const blob = await res.blob()
+          return URL.createObjectURL(blob)
+        }
+        const reader = body.getReader()
+        const chunks: BlobPart[] = []
+        let received = 0
+        const maxPct = 95
+        const span = Math.max(1, maxPct - basePct)
+        let lastPct = -1
+        while (true){
+          const { done, value } = await reader.read()
+          if (done) break
+          if (value){
+            const copy = new Uint8Array(value.byteLength)
+            copy.set(value)
+            chunks.push(copy)
+            received += value.byteLength
+            let pct = basePct
+            if (Number.isFinite(total) && total > 0){
+              pct = basePct + Math.floor(Math.min(1, received / total) * span)
+            }else{
+              pct = Math.min(maxPct, basePct + Math.floor(received / 80000))
+            }
+            if (pct !== lastPct){
+              lastPct = pct
+              setExportProgress(p => Math.max(p, pct))
+            }
+          }
+        }
+        const blob = new Blob(chunks, { type: ct })
+        return URL.createObjectURL(blob)
+      }
       setExportFmt(format)
       setExportFileName(name)
       setExportErr(null)
@@ -1232,32 +1385,34 @@ export function QueriesPage(){
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
       if (format !== 'pdf' && pdfUrl){ URL.revokeObjectURL(pdfUrl); setPdfUrl(null) }
-      setExportProgress(0)
+      setExportProgress(1)
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
       exportTimerRef.current = setInterval(() => {
         setExportProgress(p => {
-          if (p >= 92) return p
-          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
-          return Math.min(92, p + inc)
+          if (p >= 30) return 30
+          return p + 1
         })
-      }, 500)
+      }, 600)
 
       const res = await fetch(url, { headers: h })
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = null
       if(!res.ok){ await showErr(res); return }
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      const savedPath = res.headers.get('X-Report-Path')
+      const blobUrl = await readBlobUrlWithProgress(res, 30)
       setExportUrl(blobUrl)
       if (format === 'pdf'){
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
         setPdfUrl(blobUrl)
         setPdfExportedRun(lastSuccessfulRun)
+        setLastPdfSavedPath(savedPath || null)
+        setLastPdfRequestUrl(url.length > 1600 ? null : url)
+        setLastPdfFileName(name)
       }
       const a = document.createElement('a')
       a.href = blobUrl
       a.download = name
       a.click()
-      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-      exportTimerRef.current = null
       setExportProgress(100)
       setExportStage('ready')
       const label = (() => {
@@ -1276,7 +1431,7 @@ export function QueriesPage(){
       const ts = Date.now()
       const id = `${ts}-${Math.random().toString(16).slice(2)}`
       setExportHistory(prev => {
-        const next = [{ id, ts, label, fileName: name, format, requestUrl: url }, ...prev].slice(0, 100)
+        const next = [{ id, ts, label, fileName: name, format, requestUrl: url, savedPath: savedPath || undefined }, ...prev].slice(0, 100)
         saveExportHistory(next)
         return next
       })
@@ -1420,6 +1575,8 @@ export function QueriesPage(){
       const u = await api.fetchReportPdf(url)
       if (pdfUrl) URL.revokeObjectURL(pdfUrl)
       setPdfUrl(u)
+      setLastPdfRequestUrl(url)
+      setLastPdfFileName(exportFileName && exportFileName.toLowerCase().endsWith('.pdf') ? exportFileName : 'relatorio.pdf')
     }catch(e:any){
       const msg = e?.message || 'Falha ao gerar PDF'
       setError(msg)
@@ -1427,7 +1584,50 @@ export function QueriesPage(){
     }
   }
 
-  async function openHistoryItem(it: { fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }){
+  async function openLastPdf(){
+    try{
+      setError(null)
+      if (!localStorage.getItem('rf_token')) return
+      if (pdfUrl && exportFmt === 'pdf' && exportStage === 'ready'){
+        setExportUrl(pdfUrl)
+        setExportFmt('pdf')
+        setExportFileName(lastPdfFileName || exportFileName || 'relatorio.pdf')
+        setExportErr(null)
+        setExportStage('ready')
+        setExportProgress(100)
+        setExportModal(true)
+        setExportMinimized(false)
+        setExportMaximized(false)
+        return
+      }
+      if (!lastPdfSavedPath && !lastPdfRequestUrl){
+        setError('Nenhum PDF em cache para visualizar')
+        return
+      }
+      const u = lastPdfSavedPath
+        ? await api.fetchSavedReport(lastPdfSavedPath)
+        : await api.fetchReportPdf(lastPdfRequestUrl!)
+      if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
+      if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
+      setPdfUrl(u)
+      setExportUrl(u)
+      setExportFmt('pdf')
+      setExportFileName(lastPdfFileName || 'relatorio.pdf')
+      setExportErr(null)
+      setExportStage('ready')
+      setExportProgress(100)
+      setExportModal(true)
+      setExportMinimized(false)
+      setExportMaximized(false)
+      setExportPos({x:0, y:0})
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao abrir PDF'
+      setError(msg)
+      if (/Login failed for user/i.test(msg)) setSqlModal(true)
+    }
+  }
+
+  async function openHistoryItem(it: { fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string, savedPath?: string }){
     try{
       setError(null)
       const h: Record<string,string> = {}
@@ -1457,25 +1657,24 @@ export function QueriesPage(){
         })
       }, 500)
 
-      const res = await fetch(it.requestUrl, { headers: h })
-      if(!res.ok){
-        let msg = `HTTP ${res.status}`
-        try{
-          const j: any = await res.json()
-          msg = j?.detail || j?.title || j?.error || j?.message || msg
-        }catch{}
-        setError(msg)
-        setExportErr(msg)
-        setExportStage('error')
-        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-        exportTimerRef.current = null
-        return
-      }
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      const blobUrl = it.savedPath
+        ? await api.fetchSavedReport(it.savedPath)
+        : await (async () => {
+            const res = await fetch(it.requestUrl, { headers: h })
+            if(!res.ok){
+              let msg = `HTTP ${res.status}`
+              try{
+                const j: any = await res.json()
+                msg = j?.detail || j?.title || j?.error || j?.message || msg
+              }catch{}
+              throw new Error(msg)
+            }
+            const blob = await res.blob()
+            return URL.createObjectURL(blob)
+          })()
       setExportUrl(blobUrl)
       if (it.format === 'pdf'){
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
         setPdfUrl(blobUrl)
       }else{
         const a = document.createElement('a')
@@ -1495,6 +1694,14 @@ export function QueriesPage(){
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
       exportTimerRef.current = null
     }
+  }
+
+  function deleteHistoryItem(id: string){
+    setExportHistory(prev => {
+      const next = prev.filter(x => x.id !== id)
+      saveExportHistory(next)
+      return next
+    })
   }
 
   async function applySqlAuth(){
@@ -1841,6 +2048,9 @@ export function QueriesPage(){
                               <button className="btn btn-sm btn-primary" onClick={()=> openHistoryItem(it)}>
                                 {it.format === 'pdf' ? 'Abrir' : 'Baixar'}
                               </button>
+                              <button className="btn btn-sm btn-outline-danger ms-2" onClick={(e)=> { e.stopPropagation(); deleteHistoryItem(it.id) }} title="Excluir da lista">
+                                <i className="bi bi-trash" />
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -2067,12 +2277,7 @@ export function QueriesPage(){
                     </div>
                   </>
                 )}
-                {doorMode === 'critical' && (
-                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
-                    Nesta opção não há filtro por portas selecionadas. Para filtrar por portas, use "Portas Gerais".
-                  </div>
-                )}
-                {doorMode !== 'general-by-site' && doorMode !== 'critical' && !doorAllSources && (
+                {(doorMode !== 'general-by-site') && !doorAllSources && (
                   <div className="d-flex align-items-start" style={{gap:12, minWidth:520}}>
                     <div style={{flex:1, minWidth:320}}>
                       {doorSelectedSources.length === 0 && (
@@ -2111,6 +2316,7 @@ export function QueriesPage(){
                             const v = e.target.value
                             setDoorPickSource(v)
                             if (!v) return
+                            setDoorAllSources(false)
                             setDoorSelectedSources(prev => prev.includes(v) ? prev : [...prev, v])
                           }}
                         >
@@ -2477,8 +2683,8 @@ export function QueriesPage(){
                         <i className="bi bi-journal-text me-1" /> Relatórios
                       </button>
                     )}
-                    {pdfExportedRun === lastSuccessfulRun && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
                       </button>
                     )}
@@ -2609,8 +2815,8 @@ export function QueriesPage(){
                         <i className="bi bi-journal-text me-1" /> Relatórios
                       </button>
                     )}
-                    {pdfExportedRun === lastSuccessfulRun && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
                       </button>
                     )}
