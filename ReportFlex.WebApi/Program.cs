@@ -2602,23 +2602,27 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
                         info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
                     });
                 });
-                page.Footer().Row(row =>
+                page.Footer().Column(col =>
                 {
-                    row.RelativeItem().Text("");
-                    row.RelativeItem().AlignCenter().Row(r =>
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
                     {
-                        r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
-                        r.AutoItem().Element(e =>
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
                         {
-                            if (jumperBrand != null)
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
                             {
-                                try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
-                                catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
-                            }
-                            else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
                         });
+                        row.RelativeItem().Text("");
                     });
-                    row.RelativeItem().Text("");
                 });
             });
         }
@@ -2840,6 +2844,7 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             AddMergedRow($"Gerado por: {generatedBy}", 0, 1, 10);
             AddMergedRow($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", 0, 1, 10);
             rowIndex++;
+            AddRowCells(line);
             coverByRow = rowIndex;
             AddMergedRow("Relatório by", 4, 1, 10);
             rowIndex++;
