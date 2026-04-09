@@ -202,7 +202,20 @@ app.Use(async (ctx, next) =>
                 qs = ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value ?? "" : "";
                 if (qs.Length > 800) qs = qs.Substring(0, 800);
             }
-            var shouldLog = isAuth || path.StartsWith("/api/login", StringComparison.OrdinalIgnoreCase);
+            var m = (method ?? "").Trim().ToUpperInvariant();
+            var isWrite = m is "POST" or "PUT" or "PATCH" or "DELETE";
+            var isLoginEvent =
+                path.Equals("/api/login/signin-token", StringComparison.OrdinalIgnoreCase) ||
+                path.Equals("/api/login/change-password", StringComparison.OrdinalIgnoreCase);
+            var isReportGeneration =
+                path.StartsWith("/api/reports/", StringComparison.OrdinalIgnoreCase) &&
+                (path.Contains("/export", StringComparison.OrdinalIgnoreCase) ||
+                 path.Contains("/export-jobs", StringComparison.OrdinalIgnoreCase) ||
+                 path.Equals("/api/reports/download", StringComparison.OrdinalIgnoreCase));
+            var isAdminMutation = path.StartsWith("/api/admin/", StringComparison.OrdinalIgnoreCase) && isWrite;
+            var shouldLog =
+                (isAuth && (isAdminMutation || isReportGeneration || isWrite)) ||
+                isLoginEvent;
             if (shouldLog)
             {
             using var cn = new SqlConnection(GetConn("Logins"));
@@ -728,7 +741,8 @@ app.MapGet("/api/admin/report-options", () =>
         csv = false,
         cover = GetFlag("REPORT_PDF_COVER"),
         coverOrientation = GetOrientation("REPORT_PDF_COVER_ORIENTATION"),
-        reportOrientation = GetOrientation("REPORT_PDF_ORIENTATION")
+        reportOrientation = GetOrientation("REPORT_PDF_ORIENTATION"),
+        customQueries = GetFlag("REPORT_CUSTOM_QUERIES")
     });
 }).RequireAuthorization("NotCliente");
 
@@ -779,7 +793,8 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
         ["REPORT_CSV"] = "0",
         ["REPORT_PDF_COVER"] = GetBool("cover") ? "1" : "0",
         ["REPORT_PDF_COVER_ORIENTATION"] = coverOrientation,
-        ["REPORT_PDF_ORIENTATION"] = reportOrientation
+        ["REPORT_PDF_ORIENTATION"] = reportOrientation,
+        ["REPORT_CUSTOM_QUERIES"] = GetBool("customQueries") ? "1" : "0"
     };
     SaveEnv(values);
     return Results.Ok(new
@@ -792,7 +807,8 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
         csv = false,
         cover = values["REPORT_PDF_COVER"] == "1",
         coverOrientation = values["REPORT_PDF_COVER_ORIENTATION"],
-        reportOrientation = values["REPORT_PDF_ORIENTATION"]
+        reportOrientation = values["REPORT_PDF_ORIENTATION"],
+        customQueries = values["REPORT_CUSTOM_QUERIES"] == "1"
     });
 }).RequireAuthorization("NotCliente");
 
@@ -1053,12 +1069,16 @@ app.MapGet("/api/admin/db-info", async () =>
             result["EMS"] = null;
         }
 
+#pragma warning disable CA1416
         var identity = System.Security.Principal.WindowsIdentity.GetCurrent()?.Name ?? "";
+#pragma warning restore CA1416
         return Results.Ok(new { mode = dbMode, identity, databases = result });
     }
     catch (Exception ex)
     {
+#pragma warning disable CA1416
         var identity = System.Security.Principal.WindowsIdentity.GetCurrent()?.Name ?? "";
+#pragma warning restore CA1416
         return Results.Ok(new { mode = dbMode, identity, databases = (object?)null, error = ex.Message });
     }
 }).RequireAuthorization("NotCliente");
@@ -1980,9 +2000,9 @@ ORDER BY b.BEHAVIOR_ID";
         {
             var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
             var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Access By Level" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
+            var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+            sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Access By Level" });
+            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
             void AddRow(params string[] cells)
             {
                 var row = new Row();
@@ -2447,13 +2467,16 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             Evento: x.Evento,
             Acesso: x.Acesso,
             DocumentoMatricula: x.DocumentoMatricula,
-            StatusDisplay: NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
+            StatusDisplay: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
             Empresa: x.Empresa,
             TAG: x.TAG
         )).ToList();
         var includeCover = ShouldIncludeCover(ctx);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(ctx);
-        var criteria = "Escopo: Eventos Críticos";
+        var portasCsvC = !string.IsNullOrWhiteSpace(sourceList)
+            ? sourceList
+            : BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)));
+        var criteria = "Escopo: Eventos Críticos\n" + BuildPortasCriteria(portasCsvC);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Críticos", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -2479,7 +2502,7 @@ static int GetDoorProcTimeoutSeconds()
         if (int.TryParse(v, out var n) && n > 0) return n;
     }
     catch { }
-    return 180;
+    return 900;
 }
 
 static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
@@ -2988,12 +3011,40 @@ static string GetExcelCol(uint col)
     return colName;
 }
 
-static async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(string conn, int daysBack)
+async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(string conn, int daysBack)
 {
-    using var cn = new SqlConnection(conn);
-    await cn.OpenAsync();
-    using var cmd = cn.CreateCommand();
-    cmd.CommandText = @"
+    var list = new List<(string, string)>();
+    // Tenta carregar do CMS primeiro (lista completa), usando 3-part name para não depender de DB_CMS_CONN
+    try
+    {
+        using var cnCms = new SqlConnection(conn);
+        await cnCms.OpenAsync();
+        using var cmdCms = cnCms.CreateCommand();
+        cmdCms.CommandText = @"
+SELECT DISTINCT
+    CAST(VTERMINAL_KEY AS varchar(200)) AS [Key],
+    ISNULL(CAST(DESCRIPTION AS varchar(400)), '') AS [Description]
+FROM cms..AC_VTERMINAL
+WHERE VTERMINAL_KEY IS NOT NULL AND LTRIM(RTRIM(CAST(VTERMINAL_KEY AS varchar(200)))) <> ''
+ORDER BY [Description], [Key];
+";
+        using var rCms = await cmdCms.ExecuteReaderAsync();
+        while (await rCms.ReadAsync())
+        {
+            var k = rCms.IsDBNull(0) ? "" : rCms.GetString(0);
+            var d = rCms.IsDBNull(1) ? "" : rCms.GetString(1);
+            if (!string.IsNullOrWhiteSpace(k)) list.Add((k, d));
+        }
+    }
+    catch { }
+
+    // Fallback to events if CMS definitions are empty or failed
+    if (list.Count == 0)
+    {
+        using var cn = new SqlConnection(conn);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = @"
 SELECT DISTINCT
     CAST(vmE.Source AS varchar(200)) AS [Key],
     CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
@@ -3006,19 +3057,20 @@ WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) 
 ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
          CAST(vmE.Source AS varchar(200));
 ";
-    cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = daysBack });
-    using var r = await cmd.ExecuteReaderAsync();
-    var list = new List<(string, string)>();
-    while (await r.ReadAsync())
-    {
-        var k = r.IsDBNull(0) ? "" : r.GetString(0);
-        var d = r.IsDBNull(1) ? "" : r.GetString(1);
-        if (!string.IsNullOrWhiteSpace(k)) list.Add((k, d));
+        cmd.Parameters.Clear();
+        cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = daysBack });
+        using var r2 = await cmd.ExecuteReaderAsync();
+        while (await r2.ReadAsync())
+        {
+            var k = r2.IsDBNull(0) ? "" : r2.GetString(0);
+            var d = r2.IsDBNull(1) ? "" : r2.GetString(1);
+            if (!string.IsNullOrWhiteSpace(k)) list.Add((k, d));
+        }
     }
     return list;
 }
 
-static async Task<List<(string Key, string Description)>> GetDoorTagSourcesByRangeAsync(string conn, DateTime start, DateTime end)
+async Task<List<(string Key, string Description)>> GetDoorTagSourcesByRangeAsync(string conn, DateTime start, DateTime end)
 {
     using var cn = new SqlConnection(conn);
     await cn.OpenAsync();
@@ -3032,7 +3084,7 @@ LEFT JOIN cms..JP4_Merc_TAGs JMT ON JMT.MercTag = vmE.Source
 WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) <> ''
   AND vmE.ConditionName IN ('Granted','Denied')
   AND (vmE.Category = 16 OR vmE.Category = 5)
-  AND emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) BETWEEN @start AND @end
+  AND (emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) BETWEEN @start AND @end)
 ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
          CAST(vmE.Source AS varchar(200));
 ";
@@ -3052,19 +3104,17 @@ ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,
 static string BuildSourceListCsv(IEnumerable<string> keys) =>
     string.Join(";", keys.Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).Distinct(StringComparer.OrdinalIgnoreCase));
 
-static HashSet<string> ParseSourceList(string? sourceList)
+static string BuildPortasCriteria(string? sourceList)
 {
-    var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    if (string.IsNullOrWhiteSpace(sourceList)) return set;
-    var parts = sourceList
-        .Split(new[] { ';', ',', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    foreach (var p in parts)
-    {
-        if (!string.IsNullOrWhiteSpace(p)) set.Add(p);
-    }
-    return set;
+    if (string.IsNullOrWhiteSpace(sourceList)) return "Portas: todas no período";
+    var tags = sourceList!
+        .Split(new[] { ';', ',', '\n', '\r', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    if (tags.Length == 0) return "Portas: todas no período";
+    var joined = string.Join("; ", tags);
+    return $"Portas ({tags.Length}): {joined}";
 }
-
 app.MapGet("/api/reports/door-sources", async (int? daysBack) =>
 {
     try
@@ -3281,8 +3331,6 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
 
     var startDt = ParseDate(req.Start);
     var endDt = ParseDate(req.End);
-    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(req.SourceList))
-        return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
 
     var jobId = Guid.NewGuid().ToString("N");
     var fileName = string.IsNullOrWhiteSpace(req.Name) ? $"door-general-{jobId}.csv" : $"door-general-by-name-{jobId}.csv";
@@ -3310,7 +3358,9 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
             var src = req.SourceList;
             if (string.IsNullOrWhiteSpace(src))
             {
-                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+                var tags = IsAllDataRange(startDt, endDt)
+                    ? await GetDoorTagSourcesByDaysAsync(GetConn("EMS"), 0)
+                    : await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
                 src = BuildSourceListCsv(tags.Select(x => x.Key));
             }
 
@@ -3389,8 +3439,6 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
-            return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
         if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
             return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
         using var cn = new SqlConnection(GetConn("EMS"));
@@ -3429,8 +3477,6 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
-        return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
@@ -3479,7 +3525,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
         var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(src), reportPortrait);
         var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
@@ -3502,7 +3548,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
+        var criteria = BuildPortasCriteria(src);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -3519,8 +3565,6 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
-            return Results.BadRequest(new { success = false, error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
         if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
             return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
         using var cn = new SqlConnection(GetConn("EMS"));
@@ -3560,8 +3604,6 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    if (IsAllDataRange(startDt, endDt) && string.IsNullOrWhiteSpace(sourceList))
-        return Results.BadRequest(new { error = "Para evitar timeout em grandes volumes, selecione uma ou mais portas (TAG) ou informe um período menor." });
     using var cn = new SqlConnection(GetConn("EMS"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
@@ -3606,7 +3648,8 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, $"Filtro: Nome = {name}", reportPortrait);
+        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(src);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
         var rel = SaveReportFile("door-general-by-name.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
@@ -3629,7 +3672,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = $"Filtro: Nome = {name}";
+        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(src);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -3709,7 +3752,9 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, $"Filtro: Site = {site}", reportPortrait);
+        var portasCsvX = BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)));
+        var criteria = $"Filtro: Site = {site}\n" + BuildPortasCriteria(portasCsvX);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
         var rel = SaveReportFile("door-general-by-site.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
@@ -3732,7 +3777,8 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = $"Filtro: Site = {site}";
+        var portasCsv = BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)));
+        var criteria = $"Filtro: Site = {site}\n" + BuildPortasCriteria(portasCsv);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Site", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }

@@ -1,6 +1,6 @@
 import React from 'react'
 import { api } from '../api'
-import { useLocation } from 'react-router-dom'
+import { useLocation, Link } from 'react-router-dom'
 
 export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: ()=>void }) {
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
@@ -193,21 +193,25 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     <aside className={compact ? 'sidebar' : 'sidebar expanded'}>
       <div className="sidebar-top">
         <div className="sidebar-logo">
-          <img src="/img/Jumperfour_logo_branco_adap.png" alt="JumperFour" />
+          <img 
+            src={compact ? "/img/logo_seta_transparente.png" : "/img/Jumperfour_logo_branco_adap.png"} 
+            alt="JumperFour" 
+            style={compact ? { height: '32px', width: 'auto' } : undefined}
+          />
         </div>
         <nav>
           {links.map(l=> {
             const isActive = location.pathname === l.href
             return (
-              <a
+              <Link
                 key={l.href}
-                href={l.href}
+                to={l.href}
                 className={`d-flex align-items-center gap-2${isActive ? ' active' : ''}`}
                 title={compact ? l.label : undefined}
               >
                 <i className={`bi ${l.icon}`} />
                 {!compact && <span>{l.label}</span>}
-              </a>
+              </Link>
             )
           })}
           {isNarrow && (

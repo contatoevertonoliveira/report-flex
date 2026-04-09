@@ -341,15 +341,13 @@ export function QueriesPage(){
   const [exportUrl, setExportUrl] = useState<string | null>(null)
   const [exportErr, setExportErr] = useState<string | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const exportTimerRef = React.useRef<any>(null)
   const [exportJobId, setExportJobId] = useState<string | null>(null)
   const exportJobPollRef = React.useRef<any>(null)
   const [exportPos, setExportPos] = useState<{x:number, y:number}>({x:0, y:0})
   const exportDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
   const exportDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
-  const [exportFloatPos, setExportFloatPos] = useState<{x:number, y:number}>({x:0, y:0})
-  const exportFloatDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
-  const exportFloatDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
   const [reportsModal, setReportsModal] = useState(false)
   const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string, savedPath?: string }[]>([])
   const [lastPdfRequestUrl, setLastPdfRequestUrl] = useState<string | null>(null)
@@ -371,7 +369,7 @@ export function QueriesPage(){
   const [progress, setProgress] = useState(0)
   const progressTimerRef = React.useRef<any>(null)
   const [resultTotal, setResultTotal] = useState<number | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean }>({ csv: false, xlsx: true, excel: true, pdf: true, txt: false, word: false })
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean, customQueries: boolean }>({ csv: false, xlsx: true, excel: true, pdf: true, txt: false, word: false, customQueries: true })
 
   // Personalizadas
   const [dataset, setDataset] = useState<Dataset>('transit')
@@ -396,6 +394,7 @@ export function QueriesPage(){
   const [doorAllData, setDoorAllData] = useState(false)
   const [doorAllSources, setDoorAllSources] = useState(true)
   const [doorSources, setDoorSources] = useState<{ key: string, description?: string, group?: string, subGroup?: string }[]>([])
+  const [doorCriticalSources, setDoorCriticalSources] = useState<{ key: string, description?: string, group?: string, subGroup?: string }[]>([])
   const [doorSourcesLoading, setDoorSourcesLoading] = useState(false)
   const [doorSourcesErr, setDoorSourcesErr] = useState<string | null>(null)
   const [doorSelectedSources, setDoorSelectedSources] = useState<string[]>([])
@@ -451,8 +450,12 @@ export function QueriesPage(){
           excel: !!opts.excel,
           pdf: !!opts.pdf,
           txt: !!opts.txt,
-          word: !!opts.word
+          word: !!opts.word,
+          customQueries: !!opts.customQueries
         })
+        if (opts.customQueries === false) {
+          setMode('prontas')
+        }
       }catch{}
     })()
     return () => { mounted = false }
@@ -468,35 +471,58 @@ export function QueriesPage(){
   }, [])
 
   React.useEffect(() => {
-    try{
-      const raw = localStorage.getItem(doorSourcesCacheKey)
-      const st = raw ? JSON.parse(raw) : null
-      if (st && Array.isArray(st.items)) setDoorSources(st.items)
-    }catch{}
     setDoorSourcesLoading(true)
     setDoorSourcesErr(null)
     const fetchCritical = async () => {
       const r: any = await api.reportsDoorCriticalSources({ daysBack: 3650 })
       const items = Array.isArray(r?.items) ? r.items : []
-      setDoorSources(items)
+      setDoorCriticalSources(items)
     }
     const fetchGeneral = async () => {
+      // Tenta carregar do cache primeiro para Portas Gerais
+      try {
+        const raw = localStorage.getItem(doorSourcesCacheKey)
+        const st = raw ? JSON.parse(raw) : null
+        if (st && Array.isArray(st.items) && st.items.length > 0) {
+          setDoorSources(st.items)
+          setDoorSourcesLoading(false)
+          // Atualiza em background
+          api.reportsDoorSources({ daysBack: 3650 }).then(r => {
+            const items = Array.isArray(r?.items) ? r.items : []
+            if (items.length > 0) {
+              // Só atualiza se o que veio da API for maior ou a lista atual estiver vazia/pequena
+              setDoorSources(prev => {
+                if (items.length >= prev.length || prev.length <= 100) {
+                  localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items }))
+                  return items
+                }
+                return prev
+              })
+            }
+          }).catch(() => { })
+          return
+        }
+      } catch { }
+
       const r: any = await api.reportsDoorSources({ daysBack: 3650 })
       const items = Array.isArray(r?.items) ? r.items : []
       setDoorSources(items)
-      try{ localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items })) }catch{}
+      if (items.length > 0) {
+        try { localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items })) } catch { }
+      }
     }
-    ;(async () => {
-      try{
-        if (quickKind === 'door-critical' && doorMode === 'critical'){
+    ; (async () => {
+      try {
+        if (quickKind === 'door-critical' && doorMode === 'critical') {
           await fetchCritical()
         } else {
           await fetchGeneral()
         }
-      }catch(e:any){
-        setDoorSources([])
+      } catch (e: any) {
+        if (quickKind === 'door-critical' && doorMode === 'critical') setDoorCriticalSources([])
+        else setDoorSources([])
         setDoorSourcesErr(e?.message || 'Falha ao carregar portas')
-      }finally{
+      } finally {
         setDoorSourcesLoading(false)
       }
     })()
@@ -525,6 +551,7 @@ export function QueriesPage(){
       if (typeof st.resultTotal === 'number') setResultTotal(st.resultTotal)
       if (typeof st.lastSuccessfulRun === 'number' && st.lastSuccessfulRun > 0) setLastSuccessfulRun(st.lastSuccessfulRun)
       if (typeof st.doorMode === 'string') setDoorMode(st.doorMode)
+      if (Array.isArray(st.doorSources)) setDoorSources(st.doorSources)
       if (typeof st.doorAllData === 'boolean') setDoorAllData(st.doorAllData)
       if (typeof st.doorAllSources === 'boolean') setDoorAllSources(st.doorAllSources)
       if (Array.isArray(st.doorSelectedSources)) setDoorSelectedSources(st.doorSelectedSources)
@@ -536,10 +563,15 @@ export function QueriesPage(){
       if (typeof st.lastPdfSavedPath === 'string') setLastPdfSavedPath(st.lastPdfSavedPath)
       if (typeof st.lastPdfFileName === 'string') setLastPdfFileName(st.lastPdfFileName)
       if (st.exportModal === true) setExportModal(true)
+      if (typeof st.exportMinimized === 'boolean') setExportMinimized(st.exportMinimized)
+      if (typeof st.exportMaximized === 'boolean') setExportMaximized(st.exportMaximized)
       if (typeof st.exportStage === 'string') setExportStage(st.exportStage)
       if (typeof st.exportProgress === 'number') setExportProgress(st.exportProgress)
       if (typeof st.exportFileName === 'string') setExportFileName(st.exportFileName)
       if (typeof st.exportFmt === 'string') setExportFmt(st.exportFmt)
+      if (typeof st.exportUrl === 'string') setExportUrl(st.exportUrl)
+      if (typeof st.exportErr === 'string') setExportErr(st.exportErr)
+      if (typeof st.exportJobId === 'string') setExportJobId(st.exportJobId)
       if (typeof st.cpfObter === 'string') setCpfObter(st.cpfObter)
       if (typeof st.matriculaObter === 'string') setMatriculaObter(st.matriculaObter)
       if (typeof st.empresaObter === 'string') setEmpresaObter(st.empresaObter)
@@ -581,6 +613,7 @@ export function QueriesPage(){
         resultTotal: total,
         lastSuccessfulRun,
         doorMode,
+        doorSources,
         doorAllData,
         doorAllSources,
         doorSelectedSources,
@@ -592,10 +625,15 @@ export function QueriesPage(){
         lastPdfSavedPath,
         lastPdfFileName,
         exportModal,
+        exportMinimized,
+        exportMaximized,
         exportStage,
         exportFmt,
         exportFileName,
         exportProgress,
+        exportUrl,
+        exportErr,
+        exportJobId,
         cpfObter,
         matriculaObter,
         empresaObter,
@@ -605,7 +643,57 @@ export function QueriesPage(){
       }
       sessionStorage.setItem(cacheKey, JSON.stringify(snapshot))
     }catch{}
-  }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal])
+  }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal, exportMinimized, exportMaximized, exportUrl, exportProgress, exportJobId])
+
+  React.useEffect(() => {
+    if (!restoredCache) return
+    if (exportJobId && exportStage === 'generating') {
+      if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+      const h: Record<string, string> = {}
+      const t = localStorage.getItem('rf_token')
+      if (t) h['Authorization'] = `Bearer ${t}`
+      const cid = localStorage.getItem('rf_client_id')
+      if (cid) h['X-Client-Id'] = cid
+
+      exportJobPollRef.current = setInterval(async () => {
+        try {
+          const st = await fetch(`/api/reports/export-jobs/${exportJobId}`, { headers: h })
+          if (!st.ok) return
+          const s: any = await st.json()
+          const status = s?.status
+          const prog = Number(s?.progress ?? 0)
+          if (!Number.isNaN(prog)) {
+            let mapped = 65
+            if (prog >= 100) mapped = 100
+            else if (prog >= 90) mapped = 90
+            else if (prog >= 50) mapped = 75
+            else mapped = 65
+            setExportProgress(mapped)
+          }
+          if (status === 'done' && s?.downloadUrl) {
+            if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+            exportJobPollRef.current = null
+            setExportUrl(s.downloadUrl)
+            setExportStage('ready')
+            setExportProgress(100)
+          } else if (status === 'error') {
+            if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+            exportJobPollRef.current = null
+            const msg = s?.error || 'Falha ao exportar'
+            setError(msg)
+            setExportErr(msg)
+            setExportStage('error')
+          }
+        } catch { }
+      }, 1200)
+    }
+    return () => {
+      if (exportJobPollRef.current) {
+        clearInterval(exportJobPollRef.current)
+        exportJobPollRef.current = null
+      }
+    }
+  }, [restoredCache, exportJobId, exportStage])
 
   const exportEnabledCsv = reportOptions.csv
   const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
@@ -674,9 +762,13 @@ export function QueriesPage(){
     return exportHistory.filter(x => todayKey(x.ts) === k).sort((a,b)=> b.ts - a.ts)
   }, [exportHistory])
 
+  const activeDoorSources = useMemo(() => {
+    return doorMode === 'critical' ? doorCriticalSources : doorSources
+  }, [doorMode, doorCriticalSources, doorSources])
+
   const doorSourcesGrouped = useMemo(() => {
     const map = new Map<string, { label: string, items: { key: string, label: string }[] }>()
-    for (const s of doorSources) {
+    for (const s of activeDoorSources) {
       const g = (s.group || '').trim() || 'Outros'
       const sg = (s.subGroup || '').trim()
       const groupKey = `${g}__${sg}`
@@ -692,17 +784,17 @@ export function QueriesPage(){
       g.items.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
     }
     return groups
-  }, [doorSources])
+  }, [activeDoorSources])
 
   const doorSourceLabelByKey = useMemo(() => {
     const m = new Map<string, string>()
-    for (const s of doorSources) {
+    for (const s of activeDoorSources) {
       const desc = DOOR_LOCATIONS[s.key] || s.description
       const label = desc ? `${desc} (${s.key})` : s.key
       m.set(s.key, label)
     }
     return m
-  }, [doorSources])
+  }, [activeDoorSources])
 
   React.useEffect(() => {
     if (doorSelectedSources.length > 0 && doorAllSources) {
@@ -781,7 +873,6 @@ export function QueriesPage(){
     setExportProgress(0)
     setExportJobId(null)
     setExportPos({x:0, y:0})
-    setExportFloatPos({x:0, y:0})
     if (exportTimerRef.current) clearInterval(exportTimerRef.current)
     exportTimerRef.current = null
     if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
@@ -1213,25 +1304,34 @@ export function QueriesPage(){
         setExportModal(true)
         setExportMinimized(false)
         setExportMaximized(false)
-        setExportProgress(0)
-        setExportJobId(null)
-        if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-        setExportUrl(null)
+        setExportProgress(25) // Checkpoint inicial: 25%
+
         if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-        exportTimerRef.current = null
-        if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-        exportJobPollRef.current = null
+        let waitSeconds = 0
+        exportTimerRef.current = setInterval(() => {
+          waitSeconds++
+          setExportProgress(p => {
+            if (waitSeconds === 1) return 35 // Checkpoint: 35% após 1s
+            if (waitSeconds === 2) return 50 // Checkpoint: 50% após 2s
+            return p
+          })
+        }, 1000)
+
         const res = await fetch('/api/reports/door-general/export-jobs', {
           method: 'POST',
           headers: { ...h, 'Content-Type': 'application/json' },
           body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, format: 'csv' })
         })
+        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+        exportTimerRef.current = null
+
         if (!res.ok){ await showErr(res); return }
         const j: any = await res.json()
         const id = j?.id
         if (!id){ setExportErr('Falha ao iniciar exportação'); setExportStage('error'); return }
         setExportJobId(id)
-        setExportProgress(5)
+        setExportProgress(65) // Já iniciou o job -> 65%
+
         exportJobPollRef.current = setInterval(async () => {
           try{
             const st = await fetch(`/api/reports/export-jobs/${id}`, { headers: h })
@@ -1239,7 +1339,15 @@ export function QueriesPage(){
             const s: any = await st.json()
             const status = s?.status
             const prog = Number(s?.progress ?? 0)
-            if (!Number.isNaN(prog)) setExportProgress(Math.max(0, Math.min(100, prog)))
+            if (!Number.isNaN(prog)) {
+              // Mapeia o progresso do servidor (0-100) para os checkpoints 65, 75, 90
+              let mapped = 65
+              if (prog >= 100) mapped = 100
+              else if (prog >= 90) mapped = 90
+              else if (prog >= 50) mapped = 75
+              else mapped = 65
+              setExportProgress(mapped)
+            }
             if (status === 'done' && s?.downloadUrl){
               if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
               exportJobPollRef.current = null
@@ -1335,7 +1443,7 @@ export function QueriesPage(){
 
       if (!url || !name) return
 
-      const readBlobUrlWithProgress = async (res: Response, basePct: number) => {
+      const readBlobUrlWithProgress = async (res: Response, initialPct: number) => {
         const ct = res.headers.get('Content-Type') || 'application/octet-stream'
         const lenRaw = res.headers.get('Content-Length')
         const total = lenRaw ? Number(lenRaw) : NaN
@@ -1347,9 +1455,10 @@ export function QueriesPage(){
         const reader = body.getReader()
         const chunks: BlobPart[] = []
         let received = 0
-        const maxPct = 95
-        const span = Math.max(1, maxPct - basePct)
-        let lastPct = -1
+
+        // Checkpoints após início do download: 65, 75, 90
+        setExportProgress(65)
+
         while (true){
           const { done, value } = await reader.read()
           if (done) break
@@ -1358,14 +1467,22 @@ export function QueriesPage(){
             copy.set(value)
             chunks.push(copy)
             received += value.byteLength
-            let pct = basePct
+
             if (Number.isFinite(total) && total > 0){
-              pct = basePct + Math.floor(Math.min(1, received / total) * span)
-            }else{
-              pct = Math.min(maxPct, basePct + Math.floor(received / 80000))
-            }
-            if (pct !== lastPct){
-              lastPct = pct
+              const ratio = received / total
+              // Mapeia ratio (0 a 1) para checkpoints (65 a 90)
+              let pct = 65
+              if (ratio >= 0.9) pct = 90
+              else if (ratio >= 0.5) pct = 75
+              else pct = 65
+              setExportProgress(p => Math.max(p, pct))
+            } else {
+              // Sem Content-Length, progride baseado em bytes lidos (estimativa)
+              const estimatedPct = 65 + Math.floor(received / 100000)
+              let pct = 65
+              if (estimatedPct >= 90) pct = 90
+              else if (estimatedPct >= 75) pct = 75
+              else pct = 65
               setExportProgress(p => Math.max(p, pct))
             }
           }
@@ -1381,25 +1498,30 @@ export function QueriesPage(){
       setExportMinimized(false)
       setExportMaximized(false)
       setExportPos({x:0, y:0})
-      setExportFloatPos({x:0, y:0})
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
       if (format !== 'pdf' && pdfUrl){ URL.revokeObjectURL(pdfUrl); setPdfUrl(null) }
-      setExportProgress(1)
+
+      // Checkpoint inicial: 25%
+      setExportProgress(25)
+
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      let waitSeconds = 0
       exportTimerRef.current = setInterval(() => {
+        waitSeconds++
         setExportProgress(p => {
-          if (p >= 30) return 30
-          return p + 1
+          if (waitSeconds === 1) return 35 // Checkpoint: 35% após 1s
+          if (waitSeconds === 2) return 50 // Checkpoint: 50% após 2s
+          return p
         })
-      }, 600)
+      }, 1000)
 
       const res = await fetch(url, { headers: h })
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
       exportTimerRef.current = null
       if(!res.ok){ await showErr(res); return }
       const savedPath = res.headers.get('X-Report-Path')
-      const blobUrl = await readBlobUrlWithProgress(res, 30)
+      const blobUrl = await readBlobUrlWithProgress(res, 50)
       setExportUrl(blobUrl)
       if (format === 'pdf'){
         if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
@@ -1463,34 +1585,6 @@ export function QueriesPage(){
       exportDragRef.current = null
     }
     exportDragHandlersRef.current = { move, up }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-  }
-
-  const beginExportFloatDrag = (e: React.MouseEvent) => {
-    const t = e.target as HTMLElement
-    if (t && t.closest('button, a')) return
-    e.preventDefault()
-    if (exportFloatDragHandlersRef.current){
-      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-      exportFloatDragHandlersRef.current = null
-    }
-    exportFloatDragRef.current = { startX: e.clientX, startY: e.clientY, origX: exportFloatPos.x, origY: exportFloatPos.y }
-    const move = (ev: MouseEvent) => {
-      const st = exportFloatDragRef.current
-      if (!st) return
-      setExportFloatPos({ x: st.origX + (ev.clientX - st.startX), y: st.origY + (ev.clientY - st.startY) })
-    }
-    const up = () => {
-      if (exportFloatDragHandlersRef.current){
-        window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-        window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-        exportFloatDragHandlersRef.current = null
-      }
-      exportFloatDragRef.current = null
-    }
-    exportFloatDragHandlersRef.current = { move, up }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
@@ -1647,15 +1741,18 @@ export function QueriesPage(){
       setExportPos({x:0, y:0})
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
-      setExportProgress(0)
+      setExportProgress(25) // Checkpoint inicial
+
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      let waitSeconds = 0
       exportTimerRef.current = setInterval(() => {
+        waitSeconds++
         setExportProgress(p => {
-          if (p >= 92) return p
-          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
-          return Math.min(92, p + inc)
+          if (waitSeconds === 1) return 35 // Checkpoint 35%
+          if (waitSeconds === 2) return 50 // Checkpoint 50%
+          return p
         })
-      }, 500)
+      }, 1000)
 
       const blobUrl = it.savedPath
         ? await api.fetchSavedReport(it.savedPath)
@@ -1669,7 +1766,49 @@ export function QueriesPage(){
               }catch{}
               throw new Error(msg)
             }
-            const blob = await res.blob()
+            // Inicia download real -> 65%
+            if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+            exportTimerRef.current = null
+            setExportProgress(65)
+
+            const ct = res.headers.get('Content-Type') || 'application/octet-stream'
+            const lenRaw = res.headers.get('Content-Length')
+            const total = lenRaw ? Number(lenRaw) : NaN
+            const body = res.body
+            if (!body || !('getReader' in body)) {
+              const blob = await res.blob()
+              return URL.createObjectURL(blob)
+            }
+            const reader = body.getReader()
+            const chunks: BlobPart[] = []
+            let received = 0
+            while (true){
+              const { done, value } = await reader.read()
+              if (done) break
+              if (value){
+                const copy = new Uint8Array(value.byteLength)
+                copy.set(value)
+                chunks.push(copy)
+                received += value.byteLength
+
+                if (Number.isFinite(total) && total > 0){
+                  const ratio = received / total
+                  let pct = 65
+                  if (ratio >= 0.9) pct = 90
+                  else if (ratio >= 0.5) pct = 75
+                  else pct = 65
+                  setExportProgress(p => Math.max(p, pct))
+                } else {
+                  const estimatedPct = 65 + Math.floor(received / 100000)
+                  let pct = 65
+                  if (estimatedPct >= 90) pct = 90
+                  else if (estimatedPct >= 75) pct = 75
+                  else pct = 65
+                  setExportProgress(p => Math.max(p, pct))
+                }
+              }
+            }
+            const blob = new Blob(chunks, { type: ct })
             return URL.createObjectURL(blob)
           })()
       setExportUrl(blobUrl)
@@ -1838,6 +1977,22 @@ export function QueriesPage(){
     return previewData.slice(start, start + pageSize)
   }, [previewData, currentPage, pageSize])
 
+  function confirmCloseExport() {
+    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+    exportTimerRef.current = null
+    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+    exportJobPollRef.current = null
+    setExportJobId(null)
+    if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
+    setExportUrl(null)
+    setExportModal(false)
+    setExportMinimized(false)
+    setExportMaximized(false)
+    setExportProgress(0)
+    setExportPos({x:0, y:0})
+    setShowCloseConfirm(false)
+  }
+
   return (
     <section className="queries">
       <h2>Consultas</h2>
@@ -1854,39 +2009,13 @@ export function QueriesPage(){
               <div className="modal-header" onMouseDown={beginExportDrag} style={exportMaximized ? {cursor:'default'} : {cursor:'move'}}>
                 <h5 className="modal-title">Exportação</h5>
                 <div className="d-flex align-items-center" style={{gap:8}}>
-                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setExportFloatPos({x:0, y:0}); setExportMinimized(true) }} title="Minimizar">
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setExportMinimized(true)} title="Minimizar">
                     <i className="bi bi-dash-lg" />
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setExportMaximized(v => !v)} title={exportMaximized ? 'Restaurar' : 'Maximizar'}>
                     <i className={exportMaximized ? "bi bi-fullscreen-exit" : "bi bi-fullscreen"} />
                   </button>
-                  <button type="button" className="btn-close" onClick={()=>{
-                    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                    exportTimerRef.current = null
-                    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                    exportJobPollRef.current = null
-                    setExportJobId(null)
-                    if (exportDragHandlersRef.current){
-                      window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
-                      window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
-                      exportDragHandlersRef.current = null
-                    }
-                    exportDragRef.current = null
-                    if (exportFloatDragHandlersRef.current){
-                      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                      exportFloatDragHandlersRef.current = null
-                    }
-                    exportFloatDragRef.current = null
-                    if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                    setExportUrl(null)
-                    setExportModal(false)
-                    setExportMinimized(false)
-                    setExportMaximized(false)
-                    setExportProgress(0)
-                    setExportPos({x:0, y:0})
-                    setExportFloatPos({x:0, y:0})
-                  }}></button>
+                  <button type="button" className="btn-close" onClick={() => setShowCloseConfirm(true)}></button>
                 </div>
               </div>
               <div className="modal-body">
@@ -1930,33 +2059,7 @@ export function QueriesPage(){
                 )}
               </div>
               <div className="modal-footer">
-                <button className="btn btn-outline-secondary" onClick={()=>{
-                  if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                  exportTimerRef.current = null
-                  if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                  exportJobPollRef.current = null
-                  setExportJobId(null)
-                  if (exportDragHandlersRef.current){
-                    window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
-                    window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
-                    exportDragHandlersRef.current = null
-                  }
-                  exportDragRef.current = null
-                  if (exportFloatDragHandlersRef.current){
-                    window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                    window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                    exportFloatDragHandlersRef.current = null
-                  }
-                  exportFloatDragRef.current = null
-                  if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                  setExportUrl(null)
-                  setExportModal(false)
-                  setExportMinimized(false)
-                  setExportMaximized(false)
-                  setExportProgress(0)
-                  setExportPos({x:0, y:0})
-                  setExportFloatPos({x:0, y:0})
-                }} disabled={exportStage === 'generating'}>
+                <button className="btn btn-outline-secondary" onClick={() => setShowCloseConfirm(true)} disabled={exportStage === 'generating'}>
                   Fechar
                 </button>
               </div>
@@ -1965,51 +2068,91 @@ export function QueriesPage(){
         </div> : null
       )}
       {exportModal && exportMinimized && (
-        <div className="export-float" style={{transform:`translate(${exportFloatPos.x}px, ${exportFloatPos.y}px)`}}>
-          <div className="d-flex justify-content-between align-items-center" onMouseDown={beginExportFloatDrag} style={{cursor:'move'}}>
-            <strong style={{fontSize:12}}>Exportação</strong>
-            <div className="d-flex align-items-center" style={{gap:6}}>
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => setExportMinimized(false)} title="Abrir">
-                <i className="bi bi-box-arrow-up-right" />
-              </button>
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => {
-                if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                exportTimerRef.current = null
-                if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                exportJobPollRef.current = null
-                setExportJobId(null)
-                if (exportFloatDragHandlersRef.current){
-                  window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                  window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                  exportFloatDragHandlersRef.current = null
-                }
-                exportFloatDragRef.current = null
-                if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                setExportUrl(null)
-                setExportModal(false)
-                setExportMinimized(false)
-                setExportMaximized(false)
-                setExportProgress(0)
-                setExportFloatPos({x:0, y:0})
-              }} title="Fechar">
-                <i className="bi bi-x-lg" />
-              </button>
+        <div className="export-float">
+          <div className="d-flex align-items-center flex-grow-1" style={{gap:12}}>
+            <strong style={{fontSize:13, whiteSpace:'nowrap'}}>
+              <i className={exportFmt === 'pdf' ? "bi bi-file-earmark-pdf me-2" : "bi bi-file-earmark-excel me-2"} />
+              Exportação: {exportFmt.toUpperCase()}
+            </strong>
+            <div className="flex-grow-1" style={{maxWidth:400}}>
+              {exportStage === 'generating' ? (
+                <div className="d-flex align-items-center gap-3">
+                  <div className="progress flex-grow-1" style={{height:8}}>
+                    <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                  </div>
+                  <span style={{fontSize:12, color:'#374151', minWidth:36}}>{exportProgress}%</span>
+                </div>
+              ) : (
+                <div className="d-flex align-items-center gap-2">
+                  <span style={{fontSize:12, color: exportStage === 'error' ? '#dc2626' : '#059669', fontWeight:500}}>
+                    {exportStage === 'ready' ? '✓ Arquivo pronto' : `⚠ ${exportErr || 'Falha ao exportar'}`}
+                  </span>
+                  {exportStage === 'ready' && exportUrl && (
+                    <a className="btn btn-sm btn-link p-0 text-primary" style={{fontSize:12, textDecoration:'none'}} href={exportUrl} download={exportFileName}>
+                      Baixar agora
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-          <div style={{fontSize:12, marginTop:4, color:'#111827'}}>
-            {exportStage === 'generating' ? `Gerando ${exportFmt.toUpperCase()}...` : exportStage === 'ready' ? 'Arquivo pronto' : 'Falha ao exportar'}
+
+          <div className="d-flex align-items-center ms-3" style={{gap:8}}>
+            <button className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={() => setExportMinimized(false)} title="Abrir visualização">
+              <i className="bi bi-box-arrow-up-right" />
+              <span className="d-none d-sm-inline">Maximizar</span>
+            </button>
+            <button className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" onClick={() => setShowCloseConfirm(true)} title="Fechar">
+              <i className="bi bi-x-lg" />
+              <span className="d-none d-sm-inline">Fechar</span>
+            </button>
           </div>
-          {exportStage === 'generating' && (
-            <div className="progress mt-2" style={{height:8}}>
-              <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
-            </div>
-          )}
-          {exportStage === 'ready' && exportUrl && (
-            <a className="btn btn-sm btn-primary mt-2" href={exportUrl} download={exportFileName}>
-              Baixar
-            </a>
-          )}
         </div>
+      )}
+      {showCloseConfirm && (
+        <>
+          <div className="modal-backdrop show" style={{ zIndex: 1070 }}></div>
+          <div className="modal show" style={{ display: 'block', zIndex: 1080 }}>
+            <div className="modal-dialog modal-dialog-centered">
+              <div className="modal-content shadow-lg border-0" style={{ borderRadius: '15px' }}>
+                <div className="modal-header border-0 pb-0">
+                  <h5 className="modal-title w-100 text-center mt-3">
+                    <i className="bi bi-exclamation-triangle text-warning mb-2 d-block" style={{ fontSize: '2.5rem' }}></i>
+                    Confirmar Fechamento
+                  </h5>
+                </div>
+                <div className="modal-body text-center py-4">
+                  <p className="mb-0 px-3" style={{ fontSize: '1.1rem', color: '#4b5563' }}>
+                    Deseja mesmo fechar a prévia do <strong>{exportFmt.toUpperCase()}</strong>?
+                  </p>
+                  <small className="text-muted d-block mt-2">
+                    {exportStage === 'generating' 
+                      ? 'A geração em andamento será interrompida.' 
+                      : 'Você poderá abrir este relatório novamente através do histórico.'}
+                  </small>
+                </div>
+                <div className="modal-footer border-0 justify-content-center pb-4 pt-0" style={{ gap: '15px' }}>
+                  <button 
+                    type="button" 
+                    className="btn btn-light px-4" 
+                    style={{ borderRadius: '8px', fontWeight: 500, minWidth: '120px' }}
+                    onClick={() => setShowCloseConfirm(false)}
+                  >
+                    Não, manter
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-danger px-4" 
+                    style={{ borderRadius: '8px', fontWeight: 500, minWidth: '120px' }}
+                    onClick={confirmCloseExport}
+                  >
+                    Sim, fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
       {reportsModal && (
         <div className="modal-backdrop show" style={{display:'block'}}></div>
@@ -2112,14 +2255,16 @@ export function QueriesPage(){
               />
               <label className="form-check-label" htmlFor="switchProntas">Consultas Prontas</label>
             </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" role="switch"
-                id="switchPersonalizadas"
-                checked={mode==='personalizadas'}
-                onChange={()=>{ setMode('personalizadas'); resetData() }}
-              />
-              <label className="form-check-label" htmlFor="switchPersonalizadas">Consultas Personalizadas</label>
-            </div>
+            {reportOptions.customQueries && (
+              <div className="form-check form-switch">
+                <input className="form-check-input" type="checkbox" role="switch"
+                  id="switchPersonalizadas"
+                  checked={mode==='personalizadas'}
+                  onChange={()=>{ setMode('personalizadas'); resetData() }}
+                />
+                <label className="form-check-label" htmlFor="switchPersonalizadas">Consultas Personalizadas</label>
+              </div>
+            )}
           </div>
         </div>
         <div className="card-body">
@@ -2240,12 +2385,12 @@ export function QueriesPage(){
                   <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
                   <label className="form-check-label">Todas as portas</label>
                   <span className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"} style={{fontSize:11}}>
-                    {doorSourcesLoading ? "Carregando..." : `Portas: ${doorSources.length}`}
+                    {doorSourcesLoading ? "Carregando..." : doorSourceFilter.trim() ? `Portas: ${filteredDoorKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
                   </span>
                 </div>
                 {doorAllData && doorAllSources && (doorMode === 'general' || doorMode === 'general-by-name') && (
-                  <div className="text-danger" style={{fontSize:12, marginLeft:8}}>
-                    Para evitar timeout, desmarque "Todas as portas" e selecione uma ou mais portas.
+                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
+                    Consulta em grande volume habilitada. Para obter todos os registros com segurança, use Exportação (CSV Job).
                   </div>
                 )}
                 {doorSourcesErr && (
@@ -2311,7 +2456,7 @@ export function QueriesPage(){
                         <select
                           className="form-select"
                           value={doorPickSource}
-                          disabled={doorSourcesLoading || doorSources.length === 0}
+                          disabled={doorSourcesLoading || activeDoorSources.length === 0}
                           onChange={e => {
                             const v = e.target.value
                             setDoorPickSource(v)
@@ -2321,9 +2466,9 @@ export function QueriesPage(){
                           }}
                         >
                           <option value="">
-                            {doorSourcesLoading ? 'Carregando portas...' : doorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
+                            {doorSourcesLoading ? 'Carregando portas...' : activeDoorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
                           </option>
-                          {!doorSourcesLoading && doorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
+                          {!doorSourcesLoading && activeDoorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
                               <optgroup key={g.label} label={g.label}>
                                 {g.items.map(it => (
                                   <option key={it.key} value={it.key}>{it.label}</option>

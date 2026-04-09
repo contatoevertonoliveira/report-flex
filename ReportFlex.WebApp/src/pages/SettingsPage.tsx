@@ -12,8 +12,8 @@ export function SettingsPage(){
   const [emsPath, setEmsPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape' }>({
-    xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape'
+  const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape', customQueries: boolean }>({
+    xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape', customQueries: true
   })
   const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
   const [useSqlAuth, setUseSqlAuth] = useState(false)
@@ -84,7 +84,8 @@ export function SettingsPage(){
             excel: !!opts.excel,
             cover: !!opts.cover,
             coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
-            reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape')
+            reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
+            customQueries: !!opts.customQueries
           })
         }catch{}
       }catch{}
@@ -249,7 +250,8 @@ export function SettingsPage(){
         excel: !!r.excel,
         cover: !!r.cover,
         coverOrientation: (r.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
-        reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape')
+        reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
+        customQueries: !!r.customQueries
       })
       setMsg('Opções de formatos de relatórios salvas')
     }catch(e:any){
@@ -518,6 +520,10 @@ export function SettingsPage(){
             <div className="form-check form-switch">
               <input className="form-check-input" type="checkbox" id="repPdfCover" checked={reportOptions.cover} onChange={e=> setReportOptions(o=> ({...o, cover: e.target.checked}))} />
               <label className="form-check-label" htmlFor="repPdfCover">Incluir capa nos PDFs</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repCustomQueries" checked={reportOptions.customQueries} onChange={e=> setReportOptions(o=> ({...o, customQueries: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repCustomQueries">Consultas Personalizadas</label>
             </div>
           </div>
           <div className="row" style={{rowGap:12}}>

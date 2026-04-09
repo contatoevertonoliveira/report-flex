@@ -163,7 +163,7 @@ export function ClientesPage(){
         <h2>Clientes</h2>
         <div className="mb-2">Total: {rows.length}</div>
         {rows.length === 0 && <div className="text-muted mb-2">Nenhum cliente cadastrado ainda.</div>}
-        <table className="table table-striped">
+        <table className="table table-hover table-striped align-middle rf-table-light">
           <thead>
             <tr>
               <th>ID</th>
@@ -175,7 +175,7 @@ export function ClientesPage(){
           </thead>
           <tbody>
             {rows.map((r,i)=> (
-              <tr key={i} onClick={()=>pick(r)} style={{cursor:'pointer', backgroundColor: selectedId===r.SBID ? '#f0f6ff' : undefined}}>
+              <tr key={i} onClick={()=>pick(r)} className={selectedId===r.SBID ? 'rf-row-selected' : undefined} style={{cursor:'pointer'}}>
                 <td>{r.SBID}</td>
                 <td>{r.NOME}</td>
                 <td>{r.TOKEN}</td>

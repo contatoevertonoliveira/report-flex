@@ -19,7 +19,19 @@ import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { LogsPage } from './pages/LogsPage'
 
 export default function App() {
-  const [expanded, setExpanded] = React.useState(true)
+  const [expanded, setExpanded] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('rf_sidebar_expanded')
+      return saved !== null ? JSON.parse(saved) : true
+    } catch {
+      return true
+    }
+  })
+
+  React.useEffect(() => {
+    localStorage.setItem('rf_sidebar_expanded', JSON.stringify(expanded))
+  }, [expanded])
+
   const location = useLocation()
   const showSidebar = location.pathname !== '/login'
   const [toasts, setToasts] = React.useState<Array<{ id: number, type: 'success'|'error'|'info'|'warning', message: string }>>([])
@@ -52,7 +64,7 @@ export default function App() {
   }, [])
 
   return (
-    <div className="layout">
+    <div className="layout" style={{ '--sidebar-width': showSidebar ? (expanded ? '250px' : '80px') : '0px' } as React.CSSProperties}>
       {showSidebar && <Sidebar expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
       <main style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
         {location.pathname !== '/login' && (
