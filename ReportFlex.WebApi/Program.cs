@@ -2078,7 +2078,7 @@ ORDER BY b.BEHAVIOR_ID";
                                     else e.Text(clientNm ?? "Cliente").FontSize(16).SemiBold().FontColor("#111827");
                                 });
                             });
-                            col.Item().Text("Acessos agregados por nível").FontSize(22).SemiBold().FontColor("#0b3d2e");
+                            col.Item().Text("Acessos agregados por nível").FontSize(22).SemiBold().Underline().FontColor("#0b3d2e");
                             col.Item().PaddingTop(6).Column(info =>
                             {
                                 info.Spacing(2);
@@ -2591,7 +2591,7 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
                 page.Content().AlignMiddle().AlignCenter().Column(col =>
                 {
                     col.Spacing(10);
-                    col.Item().Text(title).FontSize(26).SemiBold().FontColor(accent);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
                     col.Item().PaddingTop(6).Column(info =>
                     {
                         info.Spacing(4);
@@ -2747,7 +2747,7 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             new Fonts(
                 new Font(),
                 new Font(new Bold(), new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FFFFFFFF") }),
-                new Font(new Bold(), new FontSize() { Val = 16 }, new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FF0B3D2E") }),
+                new Font(new Bold(), new FontSize() { Val = 16 }, new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FF0B3D2E") }, new Underline()),
                 new Font(new Bold(), new FontSize() { Val = 14 }, new DocumentFormat.OpenXml.Spreadsheet.Color() { Rgb = new HexBinaryValue("FFE4002B") }),
                 new Font(new Bold())
             ),
@@ -5331,7 +5331,7 @@ byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, s
                             else e.Text(clientName).FontSize(16).SemiBold().FontColor("#111827");
                         });
                     });
-                    col.Item().Text(title).FontSize(22).SemiBold().FontColor(accent);
+                    col.Item().Text(title).FontSize(22).SemiBold().Underline().FontColor(accent);
                     col.Item().PaddingTop(6).Column(info =>
                     {
                         info.Spacing(2);
