@@ -193,7 +193,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     <aside className={compact ? 'sidebar' : 'sidebar expanded'}>
       <div className="sidebar-top">
         <div className="sidebar-logo">
-          <img src={compact ? "/img/logo-report2.png" : "/img/logo-report.png"} alt="Report Flex" />
+          <img src="/img/Jumperfour_logo_branco_adap.png" alt="JumperFour" />
         </div>
         <nav>
           {links.map(l=> {

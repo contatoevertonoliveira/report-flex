@@ -57,7 +57,7 @@ export default function App() {
       <main style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
         {location.pathname !== '/login' && (
           <div className="page-logo-mark">
-            <img src="http://localhost:5000/images-legacy/Logo_Principal_Fundo2.png" alt="Report Flex" />
+            <img src="/img/reportFlex.png" alt="Report Flex" />
           </div>
         )}
         <Routes>
