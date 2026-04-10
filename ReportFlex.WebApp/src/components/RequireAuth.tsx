@@ -95,3 +95,43 @@ export function RequireAdminOrSuper({ children }: { children: React.ReactNode })
   }
   return <>{children}</>
 }
+
+function getScreensCfg(): Record<string, boolean> {
+  try{
+    const raw = localStorage.getItem('rf_screens_config')
+    const obj = raw ? JSON.parse(raw) : null
+    if (!obj || typeof obj !== 'object') return {}
+    return obj
+  }catch{
+    return {}
+  }
+}
+
+function pickFallbackPath(): string {
+  const cfg = getScreensCfg()
+  const candidates = [
+    { key: 'consultas', path: '/consultas' },
+    { key: 'mensagens', path: '/mensagens' }
+  ]
+  for (const c of candidates){
+    const v = cfg[c.key]
+    if (v === undefined || v === true) return c.path
+  }
+  return '/login'
+}
+
+export function RequireScreenEnabled({ screenKey, children }: { screenKey: string, children: React.ReactNode }){
+  const location = useLocation()
+  if(!isTokenValid()){
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
+  if (isPwdChangeRequired() && location.pathname !== '/alterar-senha'){
+    return <Navigate to="/alterar-senha" state={{ from: location }} replace />
+  }
+  const cfg = getScreensCfg()
+  const enabled = cfg[screenKey]
+  if (enabled === false){
+    return <Navigate to={pickFallbackPath()} state={{ from: location }} replace />
+  }
+  return <>{children}</>
+}

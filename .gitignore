@@ -3,6 +3,7 @@ ReportFlex.WebApp/dist/
 ReportFlex.WebApi/bin/
 ReportFlex.WebApi/obj/
 ReportFlex.WebApi/wwwroot/reports/
+ReportFlex.WebApi/wwwroot/clients/
 .vscode/
 Report_Flex_C/bin/
 Report_Flex_C/obj/

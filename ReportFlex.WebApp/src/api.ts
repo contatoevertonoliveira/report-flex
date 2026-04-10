@@ -185,6 +185,10 @@ export const api = {
   getQueriesConfig: async () => withAuth(apiFetch('/api/admin/queries-config', { headers: headers() })),
   setQueriesConfig: async (p: Record<string, boolean>) =>
     withAuth(apiFetch('/api/admin/queries-config', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  getScreensConfig: async () => withAuth(apiFetch('/api/screens-config', { headers: headers() })),
+  adminGetScreensConfig: async () => withAuth(apiFetch('/api/admin/screens-config', { headers: headers() })),
+  adminSetScreensConfig: async (p: Record<string, boolean>) =>
+    withAuth(apiFetch('/api/admin/screens-config', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),
@@ -213,6 +217,19 @@ export const api = {
     if(!r.ok) throw new Error('Upload failed')
     return await r.json()
   },
+  adminUsers: async (p: { page?: number, pageSize?: number, clientId?: number } = {}) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    const url = qs ? '/api/admin/users?' + qs : '/api/admin/users'
+    return await withAuth(apiFetch(url, { headers: headers() }))
+  },
+  adminUsersCreate: async (p: { email: string, nome: string, nivel: 'SuperAdmin'|'Administrador'|'Básico'|'Basico', clientId?: number|null }) =>
+    withAuth(apiFetch('/api/admin/users', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  adminUsersUpdate: async (id: number, p: { email?: string, nome?: string, nivel?: 'SuperAdmin'|'Administrador'|'Básico'|'Basico', clientId?: number|null, isActive?: boolean }) =>
+    withAuth(apiFetch(`/api/admin/users/${id}`, { method:'PUT', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  adminUsersResetPassword: async (id: number) =>
+    withAuth(apiFetch(`/api/admin/users/${id}/reset-password`, { method:'POST', headers: headers() })),
+  adminUsersDelete: async (id: number) =>
+    withAuth(apiFetch(`/api/admin/users/${id}`, { method:'DELETE', headers: headers() })),
   sendMessage: async (p: { assunto: string, texto: string }) =>
     withAuth(apiFetch('/api/messages', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   adminMessages: async (p: { page?: number, pageSize?: number } = {}) => {

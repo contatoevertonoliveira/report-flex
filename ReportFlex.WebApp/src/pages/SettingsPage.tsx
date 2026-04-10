@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 
 export function SettingsPage(){
-  const [tab, setTab] = useState<'Relatorios'|'Banco'>('Relatorios')
+  const [tab, setTab] = useState<'Relatorios'|'Banco'|'Telas'>('Relatorios')
   const [mode, setMode] = useState<'Real'|'Demo'>('Demo')
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
@@ -23,6 +23,12 @@ export function SettingsPage(){
   const [authStatus, setAuthStatus] = useState<any | null>(null)
   const [authMode, setAuthMode] = useState<any | null>(null)
   const [loginOnlyStatus, setLoginOnlyStatus] = useState<any | null>(null)
+  const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
+  const [screensCfgLoading, setScreensCfgLoading] = useState(false)
+  const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
+  const nivel = (typeof window !== 'undefined' ? (localStorage.getItem('rf_level') || '') : '')
+  const isSuperAdmin = nivel === 'SuperAdmin'
+  const isAdmin = nivel === 'Administrador'
 
   useEffect(() => {
     (async () => {
@@ -88,6 +94,22 @@ export function SettingsPage(){
             customQueries: !!opts.customQueries
           })
         }catch{}
+        try{
+          setScreensCfgErr(null)
+          setScreensCfgLoading(true)
+          const sc: any = await api.adminGetScreensConfig()
+          const obj: any = sc && typeof sc === 'object' ? sc : {}
+          const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+          for (const k of Object.keys(obj)){
+            const it = obj[k]
+            out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+          }
+          setScreensCfg(out)
+        }catch(e:any){
+          setScreensCfgErr(e?.message || 'Falha ao carregar configuração de telas')
+        }finally{
+          setScreensCfgLoading(false)
+        }
       }catch{}
     })()
   }, [])
@@ -261,12 +283,81 @@ export function SettingsPage(){
     }
   }
 
+  const screensCatalog = React.useMemo(() => ([
+    { key: 'consultas', label: 'Consultas', desc: 'Tela principal de consultas e geração de relatórios' },
+    { key: 'mensagens', label: 'Mensagens', desc: 'Mensagens do sistema' },
+    { key: 'prestadores', label: 'Prestadores', desc: 'Consulta de prestadores' },
+    { key: 'transit', label: 'Trânsitos', desc: 'Consulta de trânsitos' },
+    { key: 'employees', label: 'Funcionários', desc: 'Consulta de funcionários' },
+    { key: 'external', label: 'Externos', desc: 'Consulta de externos' },
+    { key: 'access', label: 'Acessos', desc: 'Consulta de acessos' },
+    { key: 'logs', label: 'Logs', desc: 'Auditoria de eventos relevantes' },
+    { key: 'consultas-config', label: 'Config Consultas', desc: 'Ativar/desativar consultas' },
+    { key: 'configuracoes', label: 'Configurações', desc: 'Banco, relatórios e telas' },
+    { key: 'clientes', label: 'Clientes', desc: 'Cadastro de clientes e usuários' },
+    { key: 'inbox', label: 'Inbox', desc: 'Inbox administrativo' }
+  ]), [])
+
+  async function reloadScreensConfig(){
+    setScreensCfgErr(null); setErr(null); setMsg(null)
+    setScreensCfgLoading(true)
+    try{
+      const sc: any = await api.adminGetScreensConfig()
+      const obj: any = sc && typeof sc === 'object' ? sc : {}
+      const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+      for (const k of Object.keys(obj)){
+        const it = obj[k]
+        out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+      }
+      setScreensCfg(out)
+    }catch(e:any){
+      setScreensCfgErr(e?.message || 'Falha ao recarregar configuração de telas')
+    }finally{
+      setScreensCfgLoading(false)
+    }
+  }
+
+  async function saveScreensConfig(){
+    setMsg(null); setErr(null); setScreensCfgErr(null)
+    setScreensCfgLoading(true)
+    try{
+      const payload: Record<string, boolean> = {}
+      for (const it of screensCatalog){
+        payload[it.key] = !!screensCfg?.[it.key]?.enabled
+      }
+      const r: any = await api.adminSetScreensConfig(payload)
+      const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+      for (const k of Object.keys(r || {})){
+        const it = (r as any)[k]
+        out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+      }
+      setScreensCfg(out)
+      try{
+        const simple: Record<string, boolean> = {}
+        for (const k of Object.keys(out)) simple[k] = !!out[k].enabled
+        localStorage.setItem('rf_screens_config', JSON.stringify(simple))
+        localStorage.setItem('rf_screens_config_ts', String(Date.now()))
+        window.dispatchEvent(new Event('rf:screens-config'))
+      }catch{}
+      setMsg('Configuração de telas salva')
+    }catch(e:any){
+      const m = String(e?.message || '')
+      if (m.includes('403')) setErr('Você não tem permissão para alterar uma tela travada por um nível superior.')
+      else setErr(e?.message || 'Falha ao salvar configuração de telas')
+    }finally{
+      setScreensCfgLoading(false)
+    }
+  }
+
   return (
     <section>
       <h2>Configurações</h2>
       <ul className="nav nav-tabs" style={{marginBottom:12}}>
         <li className="nav-item">
           <button className={'nav-link' + (tab === 'Relatorios' ? ' active' : '')} type="button" onClick={()=> setTab('Relatorios')}>Relatórios</button>
+        </li>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Telas' ? ' active' : '')} type="button" onClick={()=> setTab('Telas')}>Telas</button>
         </li>
         <li className="nav-item">
           <button className={'nav-link' + (tab === 'Banco' ? ' active' : '')} type="button" onClick={()=> setTab('Banco')}>Banco</button>
@@ -494,6 +585,68 @@ export function SettingsPage(){
         </div>
       </div>
       </>
+      )}
+      {tab === 'Telas' && (
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header d-flex align-items-center" style={{gap:8}}>
+          <i className="bi bi-layout-text-sidebar-reverse" /> Telas do Sistema
+        </div>
+        <div className="card-body">
+          <div className="text-muted" style={{fontSize:12, marginBottom:12}}>
+            Se uma tela foi habilitada/desabilitada por um nível superior, somente um nível igual ou superior consegue alterar novamente.
+          </div>
+          {screensCfgErr && <div className="alert alert-danger py-2">{screensCfgErr}</div>}
+          <div className="table-responsive">
+            <table className="table table-hover table-striped align-middle rf-table-light">
+              <thead>
+                <tr>
+                  <th style={{width:220}}>Tela</th>
+                  <th>Descrição</th>
+                  <th style={{width:160}}>Status</th>
+                  <th style={{width:170}}>Travado por</th>
+                </tr>
+              </thead>
+              <tbody>
+                {screensCatalog.map(it => {
+                  const current = screensCfg?.[it.key]
+                  const enabled = current ? !!current.enabled : true
+                  const lockedBy = (current?.lockedBy || 'SuperAdmin')
+                  const lockRank = lockedBy === 'SuperAdmin' ? 2 : lockedBy === 'Administrador' ? 1 : 0
+                  const actorRank = isSuperAdmin ? 2 : isAdmin ? 1 : 0
+                  const canEdit = actorRank >= lockRank
+                  return (
+                    <tr key={it.key}>
+                      <td><strong>{it.label}</strong><div className="text-muted" style={{fontSize:12}}>{it.key}</div></td>
+                      <td>{it.desc}</td>
+                      <td>
+                        <div className="form-check form-switch d-flex align-items-center gap-2">
+                          <input className="form-check-input" type="checkbox" checked={enabled} disabled={!canEdit || screensCfgLoading} onChange={e => {
+                            const v = e.target.checked
+                            setScreensCfg(prev => ({ ...prev, [it.key]: { enabled: v, lockedBy: prev?.[it.key]?.lockedBy } }))
+                          }} />
+                          <span>{enabled ? 'Ativa' : 'Desativada'}</span>
+                        </div>
+                        {!canEdit && (
+                          <div className="text-muted" style={{fontSize:12}}>Requer {lockedBy}</div>
+                        )}
+                      </td>
+                      <td>{lockedBy}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="d-flex gap-2">
+            <button className="btn btn-outline-primary d-flex align-items-center" onClick={saveScreensConfig} disabled={screensCfgLoading}>
+              {screensCfgLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Salvando...</> : <><i className="bi bi-save me-1" /> Salvar telas</>}
+            </button>
+            <button className="btn btn-outline-secondary d-flex align-items-center" onClick={reloadScreensConfig} disabled={screensCfgLoading}>
+              <i className="bi bi-arrow-clockwise me-1" /> Recarregar
+            </button>
+          </div>
+        </div>
+      </div>
       )}
       {tab === 'Relatorios' && (
       <div className="card" style={{marginTop:16}}>

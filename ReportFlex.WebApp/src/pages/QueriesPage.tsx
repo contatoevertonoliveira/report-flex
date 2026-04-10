@@ -252,76 +252,78 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'UserType', label: 'Tipo' }
   ],
   'cpf-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Placa', label: 'PLACA' },
+    { key: 'Modelo', label: 'MODELO' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'document-access': [
-    { key: 'Name', label: 'Nome' },
-    { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Cartao', label: 'Crachá' },
-    { key: 'Direcao', label: 'Direção' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'Terminal', label: 'Terminal' },
-    { key: 'TerminalDescription', label: 'Descrição' },
-    { key: 'Transito', label: 'Trânsito' }
+    { key: 'DataHora', label: 'DATA/HORA' },
+    { key: 'TAG', label: 'TAG' },
+    { key: 'Acesso', label: 'ACESSO' },
+    { key: 'Evento', label: 'EVENTO' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'DocumentoMatricula', label: 'MATRÍCULA' },
+    { key: 'Cartao', label: 'CRACHÁ' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Status', label: 'STATUS' }
   ],
   'matricula-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'empresa-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' }
   ],
   'cracha-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'visitors': [
-    { key: 'Nome', label: 'Nome' },
-    { key: 'Documento', label: 'Documento' },
-    { key: 'Contato', label: 'Contato' },
-    { key: 'Visitou', label: 'Visitou' },
-    { key: 'Telefone', label: 'Telefone' },
-    { key: 'Email', label: 'Email' },
-    { key: 'Entrada', label: 'Entrada' },
-    { key: 'Saida', label: 'Saída' }
+    { key: 'Nome', label: 'NOME' },
+    { key: 'Documento', label: 'DOCUMENTO' },
+    { key: 'Contato', label: 'CONTATO' },
+    { key: 'Visitou', label: 'VISITOU' },
+    { key: 'Telefone', label: 'TELEFONE' },
+    { key: 'Email', label: 'EMAIL' },
+    { key: 'Entrada', label: 'ENTRADA' },
+    { key: 'Saida', label: 'SAÍDA' }
   ],
   'door-critical': [
-    { key: 'DataHora', label: 'Data/Hora' },
+    { key: 'DataHora', label: 'DATA/HORA' },
     { key: 'TAG', label: 'TAG' },
-    { key: 'Acesso', label: 'Acesso' },
-    { key: 'Evento', label: 'Evento' },
-    { key: 'NomeCompleto', label: 'Nome Completo' },
-    { key: 'DocumentoMatricula', label: 'Matrícula' },
-    { key: 'Cartao', label: 'Cartão' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'StatusAcessoDisplay', label: 'Status' }
+    { key: 'Acesso', label: 'ACESSO' },
+    { key: 'Evento', label: 'EVENTO' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'DocumentoMatricula', label: 'MATRÍCULA' },
+    { key: 'Cartao', label: 'CRACHÁ' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'StatusAcessoDisplay', label: 'STATUS' }
   ],
   'db-table': []
 }
@@ -379,7 +381,7 @@ export function QueriesPage(){
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
   const maxPreview = 1000
-  const [cpfObter, setCpfObter] = useState<'info'|'todos'|'catracas'|'faciais'>('info')
+  const [cpfObter, setCpfObter] = useState<'info'|'todos'|'catracas-faciais'>('info')
   const [matriculaObter, setMatriculaObter] = useState<'info'|'todos'|'catracas'>('info')
   const [empresaObter, setEmpresaObter] = useState<'info'|'todos'>('info')
   const [crachaObter, setCrachaObter] = useState<'info'|'todos'|'catracas'>('info')
@@ -435,7 +437,13 @@ export function QueriesPage(){
   const saveExportHistory = (items: any[]) => {
     try{
       localStorage.setItem(exportHistoryKey, JSON.stringify(items))
-    }catch{}
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao exportar'
+      setError(msg)
+      setExportErr(msg)
+      setExportStage('error')
+      setExportModal(true)
+    }
   }
 
   React.useEffect(() => {
@@ -891,6 +899,13 @@ export function QueriesPage(){
     exportFloatDragRef.current = null
   }
 
+  function resetOnFilterChange(){
+    resetData()
+    setSearchTerm('')
+    setSearchColumn('*')
+    setCurrentPage(1)
+  }
+
   function mapQuickToDataset(k: QuickKind): Dataset{
     if (k === 'transit-period') return 'transit'
     if (k === 'door-critical') return 'door-critical'
@@ -1041,12 +1056,35 @@ export function QueriesPage(){
           setData(list)
         }else{
           const mode = cpfObter === 'todos' ? 'all' : cpfObter
+          const toDoorLike = (x: any) => {
+            const nome = x?.Name ?? x?.name ?? null
+            const cpfV = x?.CPF ?? x?.cpf ?? null
+            const mat = x?.Matricula ?? x?.matricula ?? null
+            const empresa = x?.Empresa ?? x?.empresa ?? null
+            const cartao = x?.Cartao ?? x?.cartao ?? null
+            const direcao = x?.Direcao ?? x?.direcao ?? null
+            const terminal = x?.Terminal ?? x?.terminal ?? null
+            const desc = x?.TerminalDescription ?? x?.terminalDescription ?? x?.Descricao ?? x?.descricao ?? null
+            const transito = x?.Transito ?? x?.transito ?? null
+            return {
+              DataHora: formatBrDateTime(transito),
+              TAG: terminal,
+              Acesso: direcao,
+              Evento: desc,
+              NomeCompleto: nome,
+              DocumentoMatricula: mat || cpfV,
+              Cartao: cartao,
+              Tipo: x?.Tipo ?? x?.tipo ?? null,
+              Empresa: empresa,
+              Status: 'GRANTED'
+            }
+          }
           if (cpfSemPeriodo){
             const collected = await collectUpTo(maxPreview, async (page, ps) => {
               const r = await api.accessByDocumentAll({ documento: cpf, mode, page, pageSize: ps })
               return r
             })
-            setData(collected)
+            setData(collected.map(toDoorLike))
           }else{
             const r0 = rangeIso(filters)
             if(!r0){ setError('Informe início e fim'); setLoading(false); return }
@@ -1054,7 +1092,7 @@ export function QueriesPage(){
               const r = await api.accessByDocument({ documento: cpf, start: r0.startIso, end: r0.endIso, mode, page, pageSize: ps })
               return r
             })
-            setData(collected)
+            setData(collected.map(toDoorLike))
           }
         }
       }else if (quickKind === 'matricula'){
@@ -1936,7 +1974,7 @@ export function QueriesPage(){
 
   const tableColumns = useMemo(() => {
     if (mode === 'personalizadas') return visibleColumns
-    if (quickKind === 'door-critical') return quickColumns
+    if (mode === 'prontas') return quickColumns.length ? quickColumns : (Array.isArray(data) && data[0] ? Object.keys(data[0]).map(k => ({ key: k, label: k })) : [])
     if (Array.isArray(data) && data[0]) return Object.keys(data[0]).map(k => ({ key: k, label: k }))
     return []
   }, [mode, visibleColumns, quickKind, quickColumns, data])
@@ -1962,6 +2000,8 @@ export function QueriesPage(){
       return false
     })
   }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
+
+  const hideSearchBar = mode === 'prontas' && quickKind === 'cpf' && cpfObter === 'info'
 
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
@@ -2361,7 +2401,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group" style={{maxWidth:280}}>
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={doorMode} onChange={e=> setDoorMode(e.target.value as any)}>
+                  <select className="form-select" value={doorMode} onChange={e=> { setDoorMode(e.target.value as any); resetOnFilterChange() }}>
                     <option value="critical">Portas Críticas</option>
                     <option value="general">Portas Gerais</option>
                     <option value="general-by-name">Portas Gerais por Nome</option>
@@ -2535,11 +2575,14 @@ export function QueriesPage(){
                   <div style={{minWidth:0}}>
                     <div className="input-group" style={{width:'100%'}}>
                       <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                      <select className="form-select" value={cpfObter} onChange={e=> setCpfObter(e.target.value as any)}>
+                      <select className="form-select" value={cpfObter} onChange={e=> {
+                        const v = e.target.value as any
+                        setCpfObter(v)
+                        resetOnFilterChange()
+                      }}>
                         <option value="info">Informação de Cadastro</option>
                         <option value="todos">Todos os Acessos</option>
-                        <option value="catracas">Somente Catracas</option>
-                        <option value="faciais">Somente Faciais</option>
+                        <option value="catracas-faciais">Somente Catracas e Faciais</option>
                       </select>
                     </div>
                   </div>
@@ -2594,7 +2637,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={matriculaObter} onChange={e=> setMatriculaObter(e.target.value as any)}>
+                  <select className="form-select" value={matriculaObter} onChange={e=> { setMatriculaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -2630,7 +2673,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={empresaObter} onChange={e=> setEmpresaObter(e.target.value as any)}>
+                  <select className="form-select" value={empresaObter} onChange={e=> { setEmpresaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                   </select>
@@ -2665,7 +2708,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={crachaObter} onChange={e=> setCrachaObter(e.target.value as any)}>
+                  <select className="form-select" value={crachaObter} onChange={e=> { setCrachaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -2701,7 +2744,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={nivelObter} onChange={e=> setNivelObter(e.target.value as any)}>
+                  <select className="form-select" value={nivelObter} onChange={e=> { setNivelObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="todos">Todos os Níveis (Agregado)</option>
                     <option value="acessos">Acessos por Nível</option>
                   </select>
@@ -2740,7 +2783,7 @@ export function QueriesPage(){
               <div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={visitantesObter} onChange={e=> setVisitantesObter(e.target.value as any)}>
+                  <select className="form-select" value={visitantesObter} onChange={e=> { setVisitantesObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="documento">Acessos por Documento</option>
                     <option value="empresa">Acessos por Empresa</option>
                   </select>
@@ -2778,7 +2821,7 @@ export function QueriesPage(){
           </div>
           )}
 
-          {(data.length > 0 || searchTerm) && (
+          {!hideSearchBar && (data.length > 0 || searchTerm) && (
             <div className="queries-row" style={{marginBottom:8}}>
               <select className="form-select" style={{width:220}} value={searchColumn} onChange={e=> { setSearchColumn(e.target.value); setCurrentPage(1) }}>
                 <option value="*">Todas as colunas</option>
@@ -3037,8 +3080,8 @@ export function QueriesPage(){
         </div>
       )}
 
-      <div className={`table-responsive${mode === 'prontas' && quickKind === 'door-critical' ? ' pro-table' : ''}`}>
-        <table className="table table-hover table-striped align-middle">
+      <div className={`table-responsive${mode === 'prontas' && (quickKind === 'door-critical' || quickKind === 'cpf') ? ' pro-table' : ''}`}>
+        <table className="table table-hover table-striped align-middle rf-table-light">
           <thead>
             <tr>
               {tableColumns.map(c=> <th key={c.key}>{c.label}</th>)}
