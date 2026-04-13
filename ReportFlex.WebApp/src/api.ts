@@ -129,6 +129,14 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit?' + qs, { headers: headers() }))
   },
+  reportsPopulation: async (p: { start: string, end: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/population?' + qs, { headers: headers() }))
+  },
+  reportsEventosClaviculario: async (p: { start: string, end: string, nome?: string, matricula?: string, chave?: string, dc?: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/eventos-claviculario?' + qs, { headers: headers() }))
+  },
   reportsTransitAggregated: async (p: { empresa?: string, start: string, end: string }) => {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit/aggregated?' + qs, { headers: headers() }))

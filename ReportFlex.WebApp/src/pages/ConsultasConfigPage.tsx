@@ -2,7 +2,7 @@ import React from 'react'
 import { api } from '../api'
 
 type QuickKey =
-  | 'access-agg' | 'transit-period' | 'door-critical'
+  | 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'door-critical'
   | 'employees' | 'external' | 'card-by-cpf'
   | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes'
 
@@ -37,6 +37,8 @@ export function ConsultasConfigPage() {
   const options: Array<{ key: QuickKey, label: string }> = [
     { key:'access-agg', label:'Acessos Agregados' },
     { key:'transit-period', label:'Trânsito por Período' },
+    { key:'population', label:'População' },
+    { key:'eventos-claviculario', label:'Eventos_Claviculario' },
     { key:'door-critical', label:'Eventos de Porta' },
     { key:'employees', label:'Funcionários' },
     { key:'external', label:'Externos' },
@@ -90,4 +92,3 @@ export function ConsultasConfigPage() {
     </div>
   )
 }
-

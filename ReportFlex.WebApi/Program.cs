@@ -152,6 +152,14 @@ if (initialEnv.TryGetValue("DB_LOGINS_CONN", out var envLogins) && !string.IsNul
 {
     realOverrides["Logins"] = envLogins;
 }
+if (initialEnv.TryGetValue("DB_HWR_CONN", out var envHwr) && !string.IsNullOrWhiteSpace(envHwr))
+{
+    realOverrides["HWR"] = envHwr;
+}
+if (initialEnv.TryGetValue("DB_CLAV_CONN", out var envClav) && !string.IsNullOrWhiteSpace(envClav))
+{
+    realOverrides["CLAV"] = envClav;
+}
 if (initialEnv.TryGetValue("DB_SQL_USER", out var su) && !string.IsNullOrWhiteSpace(su))
 {
     sqlAuthUser = su;
@@ -465,6 +473,8 @@ string GetConn(string name)
     else if (name == "Logins") envKey = "DB_LOGINS_CONN";
     else if (name == "EMS") envKey = "DB_EMS_CONN";
     else if (name == "EMSEVENTS") envKey = "DB_EMSEVENTS_CONN";
+    else if (name == "HWR") envKey = "DB_HWR_CONN";
+    else if (name == "CLAV") envKey = "DB_CLAV_CONN";
     else envKey = null;
     if (!string.IsNullOrEmpty(envKey) && envData.TryGetValue(envKey, out var envVal) && !string.IsNullOrWhiteSpace(envVal))
     {
@@ -2100,6 +2110,442 @@ ORDER BY b.BEHAVIOR_ID";
     return Results.Ok(items);
 }).RequireAuthorization();
 
+app.MapGet("/api/reports/population", async (string start, string end) =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    var startTicks = startDt.ToFileTimeUtc();
+    var endTicks = endDt.ToFileTimeUtc();
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
+    cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
+    cmd.CommandText = @"
+WITH EmpFunc AS (
+    SELECT DISTINCT e.SbiID
+    FROM Employee e
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 = 20001
+),
+EmpPrest AS (
+    SELECT DISTINCT e.SbiID
+    FROM Employee e
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 <> 20001
+),
+Visitors AS (
+    SELECT DISTINCT x.SbiID
+    FROM ExternalRegular x
+    WHERE x.SbiID > 0 AND x.StateID <> 1
+),
+EvPeople AS (
+    SELECT DISTINCT c.SbiID
+    FROM Card c
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = c.CardNumber
+    WHERE
+        ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND ev.Category IN (16, 5)
+)
+SELECT 'Total de Funcionários' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpFunc f ON f.SbiID = e.SbiID) x
+UNION ALL
+SELECT 'Total de Prestadores' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpPrest p ON p.SbiID = e.SbiID) x
+UNION ALL
+SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
+";
+    using var r = await cmd.ExecuteReaderAsync();
+    var items = new List<object>();
+    while (await r.ReadAsync())
+    {
+        items.Add(new { Label = r.GetString(0), Total = r.GetInt32(1) });
+    }
+    return Results.Ok(items);
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/population/export", async (HttpContext http, string start, string end, string format = "csv") =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    var startTicks = startDt.ToFileTimeUtc();
+    var endTicks = endDt.ToFileTimeUtc();
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
+    cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
+    cmd.CommandText = @"
+WITH EmpFunc AS (
+    SELECT DISTINCT e.SbiID
+    FROM Employee e
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 = 20001
+),
+EmpPrest AS (
+    SELECT DISTINCT e.SbiID
+    FROM Employee e
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 <> 20001
+),
+Visitors AS (
+    SELECT DISTINCT x.SbiID
+    FROM ExternalRegular x
+    WHERE x.SbiID > 0 AND x.StateID <> 1
+),
+EvPeople AS (
+    SELECT DISTINCT c.SbiID
+    FROM Card c
+    INNER JOIN [EMSEVENTS].dbo.Events ev
+        ON ev.CardNumber = c.CardNumber
+    WHERE
+        ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
+        AND ev.Category IN (16, 5)
+)
+SELECT 'Total de Funcionários' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpFunc f ON f.SbiID = e.SbiID) x
+UNION ALL
+SELECT 'Total de Prestadores' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpPrest p ON p.SbiID = e.SbiID) x
+UNION ALL
+SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
+FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
+";
+    using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    var rows = new List<(string Label, int Total)>();
+    while (await r.ReadAsync(http.RequestAborted))
+    {
+        rows.Add((r.GetString(0), r.GetInt32(1)));
+    }
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    var fileName = $"populacao.{fmt}";
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("LABEL,TOTAL");
+        foreach (var x in rows) sb.AppendLine($"{Csv(x.Label)},{x.Total}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var criteria = $"Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildPopulationXlsx(clientInfo.Name, "População", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildPopulationPdf(clientInfo.Name, clientInfo.Logo, "População", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/eventos-claviculario", async (HttpContext http, string start, string end, string? nome, string? matricula, string? chave, string? dc, int page, int pageSize) =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    page = ToPage(page); pageSize = ToPageSize(pageSize);
+    var offset = (page - 1) * pageSize;
+
+    var dcValue = dc ?? "";
+    nome = string.IsNullOrWhiteSpace(nome) ? null : nome;
+    matricula = string.IsNullOrWhiteSpace(matricula) ? null : matricula;
+    chave = string.IsNullOrWhiteSpace(chave) ? null : chave;
+
+    var connStr = GetConn("CLAV");
+    if (string.IsNullOrWhiteSpace(connStr))
+    {
+        connStr = GetConn("HWR");
+    }
+    if (string.IsNullOrWhiteSpace(connStr))
+    {
+        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV ou ConnectionStrings:HWR não configurada para executar Eventos_Claviculario.", statusCode: 500);
+    }
+
+    using var cn = new SqlConnection(connStr);
+    try
+    {
+        await cn.OpenAsync(http.RequestAborted);
+    }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no banco", detail: "Não foi possível autenticar no banco para executar Eventos_Claviculario.", statusCode: 500);
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Timeout", detail: "A consulta excedeu o tempo limite. Use um período menor.", statusCode: 504);
+    }
+    catch (Exception)
+    {
+        return Results.Problem(title: "Erro de conexão", detail: "Não foi possível conectar no banco para executar Eventos_Claviculario.", statusCode: 500);
+    }
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+    cmd.Parameters.Add(new SqlParameter("@nome", SqlDbType.VarChar) { Value = (object?)nome ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = (object?)matricula ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@chave", SqlDbType.VarChar) { Value = (object?)chave ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
+    cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+    cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
+    cmd.CommandText = @"
+SELECT
+    DataHora,
+    responsavelNome,
+    responsavelCartao AS Matricula,
+    codigoChave,
+    chaveDescricao,
+    descricao
+FROM [dbo].[eventos]
+WHERE
+    DataHora BETWEEN @start AND @end
+    AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
+    AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
+    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
+    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%')
+ORDER BY DataHora
+OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
+
+SELECT COUNT(1)
+FROM [dbo].[eventos]
+WHERE
+    DataHora BETWEEN @start AND @end
+    AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
+    AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
+    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
+    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%');
+";
+    SqlDataReader r;
+    try
+    {
+        r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Timeout", detail: "A consulta excedeu o tempo limite. Use um período menor.", statusCode: 504);
+    }
+    catch (SqlException ex) when (ex.Number == 2812)
+    {
+        return Results.Problem(title: "Procedure não encontrada", detail: "Não foi possível localizar dbo.jp4_sp_Eventos_Claviculario no banco configurado em HWR.", statusCode: 500);
+    }
+    catch (SqlException ex) when (ex.Number == 229)
+    {
+        return Results.Problem(title: "Sem permissão", detail: "Sem permissão para executar dbo.jp4_sp_Eventos_Claviculario no banco configurado em HWR.", statusCode: 500);
+    }
+    catch (SqlException ex) when (ex.Number == 208)
+    {
+        return Results.Problem(title: "Objeto não encontrado", detail: $"Objeto não encontrado (SQL 208): {ex.Message}", statusCode: 500);
+    }
+    catch (SqlException ex)
+    {
+        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}). Verifique permissões para executar dbo.jp4_sp_Eventos_Claviculario e a conexão HWR.", statusCode: 500);
+    }
+    using var _r = r;
+    var items = new List<object>();
+    while (await _r.ReadAsync(http.RequestAborted))
+    {
+        items.Add(new
+        {
+            DataHora = _r.IsDBNull(0) ? (DateTime?)null : _r.GetDateTime(0),
+            ResponsavelNome = _r.IsDBNull(1) ? null : _r.GetString(1),
+            Matricula = _r.IsDBNull(2) ? null : _r.GetString(2),
+            CodigoChave = _r.IsDBNull(3) ? null : _r.GetString(3),
+            ChaveDescricao = _r.IsDBNull(4) ? null : _r.GetString(4),
+            Descricao = _r.IsDBNull(5) ? null : _r.GetString(5)
+        });
+    }
+    int total = 0;
+    if (await _r.NextResultAsync(http.RequestAborted) && await _r.ReadAsync(http.RequestAborted)) total = _r.GetInt32(0);
+    return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/eventos-claviculario/export", async (HttpContext http, string start, string end, string? nome, string? matricula, string? chave, string? dc, string format = "csv") =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    var dcValue = dc ?? "";
+    nome = string.IsNullOrWhiteSpace(nome) ? null : nome;
+    matricula = string.IsNullOrWhiteSpace(matricula) ? null : matricula;
+    chave = string.IsNullOrWhiteSpace(chave) ? null : chave;
+
+    var connStr = GetConn("CLAV");
+    if (string.IsNullOrWhiteSpace(connStr))
+    {
+        connStr = GetConn("HWR");
+    }
+    if (string.IsNullOrWhiteSpace(connStr))
+    {
+        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV ou ConnectionStrings:HWR não configurada para executar Eventos_Claviculario.", statusCode: 500);
+    }
+
+    using var cn = new SqlConnection(connStr);
+    try
+    {
+        await cn.OpenAsync(http.RequestAborted);
+    }
+    catch (SqlException ex) when (ex.Number == 18456)
+    {
+        return Results.Problem(title: "Falha de autenticação no banco", detail: "Não foi possível autenticar no banco para executar Eventos_Claviculario.", statusCode: 500);
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Timeout", detail: "A consulta excedeu o tempo limite. Use um período menor.", statusCode: 504);
+    }
+    catch (Exception)
+    {
+        return Results.Problem(title: "Erro de conexão", detail: "Não foi possível conectar no banco para executar Eventos_Claviculario.", statusCode: 500);
+    }
+
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 180;
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+    cmd.Parameters.Add(new SqlParameter("@nome", SqlDbType.VarChar) { Value = (object?)nome ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = (object?)matricula ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@chave", SqlDbType.VarChar) { Value = (object?)chave ?? DBNull.Value });
+    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
+    cmd.CommandText = @"
+SELECT TOP 20000
+    DataHora,
+    responsavelNome,
+    responsavelCartao AS Matricula,
+    codigoChave,
+    chaveDescricao,
+    descricao
+FROM [dbo].[eventos]
+WHERE
+    DataHora BETWEEN @start AND @end
+    AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
+    AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
+    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
+    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%')
+ORDER BY DataHora;";
+
+    SqlDataReader r;
+    try
+    {
+        r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    }
+    catch (SqlException ex) when (ex.Number == -2)
+    {
+        return Results.Problem(title: "Timeout", detail: "A consulta excedeu o tempo limite. Use um período menor.", statusCode: 504);
+    }
+    catch (SqlException ex) when (ex.Number == 208)
+    {
+        return Results.Problem(title: "Objeto não encontrado", detail: $"Objeto não encontrado (SQL 208): {ex.Message}", statusCode: 500);
+    }
+    catch (SqlException ex)
+    {
+        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}).", statusCode: 500);
+    }
+
+    using var _rAll = r;
+    var rows = new List<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)>();
+    while (await _rAll.ReadAsync(http.RequestAborted))
+    {
+        rows.Add((
+            _rAll.IsDBNull(0) ? (DateTime?)null : _rAll.GetDateTime(0),
+            _rAll.IsDBNull(1) ? null : _rAll.GetString(1),
+            _rAll.IsDBNull(2) ? null : _rAll.GetString(2),
+            _rAll.IsDBNull(3) ? null : _rAll.GetString(3),
+            _rAll.IsDBNull(4) ? null : _rAll.GetString(4),
+            _rAll.IsDBNull(5) ? null : _rAll.GetString(5)
+        ));
+    }
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    var fileName = $"eventos-claviculario.{fmt}";
+
+    var criteriaParts = new List<string>();
+    if (!string.IsNullOrWhiteSpace(nome)) criteriaParts.Add($"Nome: {nome}");
+    if (!string.IsNullOrWhiteSpace(matricula)) criteriaParts.Add($"Matrícula: {matricula}");
+    if (!string.IsNullOrWhiteSpace(chave)) criteriaParts.Add($"Chave: {chave}");
+    if (!string.IsNullOrWhiteSpace(dcValue)) criteriaParts.Add($"DC: {dcValue}");
+    criteriaParts.Add($"Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}");
+    var criteria = string.Join(" • ", criteriaParts);
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("DATA_HORA,RESPONSAVEL,MATRICULA,COD_CHAVE,CHAVE,DESCRICAO");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",", new[]
+            {
+                Csv(x.DataHora?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.ResponsavelNome),
+                Csv(x.Matricula),
+                Csv(x.CodigoChave),
+                Csv(x.ChaveDescricao),
+                Csv(x.Descricao)
+            }));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildClavicularioXlsx(clientInfo.Name, "Eventos_Claviculario", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildClavicularioPdf(clientInfo.Name, clientInfo.Logo, "Eventos_Claviculario", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
 app.MapGet("/api/reports/access/aggregated/export", async (HttpContext ctx, string format) =>
 {
     using var cn = new SqlConnection(GetConn("CMS"));
@@ -2120,191 +2566,22 @@ ORDER BY b.BEHAVIOR_ID";
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
-        sb.AppendLine("LevelId,Level,Total");
+        sb.AppendLine("LEVEL_ID,LEVEL,TOTAL");
         foreach (var x in rows) sb.AppendLine($"{x.id},{Escape(x.level)},{x.total}");
         return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "access-by-level.csv");
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Access By Level" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
-            void AddRow(params string[] cells)
-            {
-                var row = new Row();
-                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
-                sheetData.Append(row);
-            }
-            AddRow("LevelId","Level","Total");
-            foreach (var x in rows) AddRow(x.id.ToString(), x.level, x.total.ToString());
-        }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "access-by-level.xlsx");
+        var clientInfo = await GetReportClientInfoAsync(ctx);
+        var bytesX = BuildAccessAggXlsx(clientInfo.Name, "Acessos Agregados", rows.Select(x => (x.id, x.level, x.total)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), null);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "access-by-level.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        QuestPDF.Settings.License = LicenseType.Community;
-        byte[]? leftLogo = null;
-        byte[]? rightLogo = null;
-        string? clientNm = null;
-        try
-        {
-            var clientIdHeader = ctx.Request.Headers.TryGetValue("X-Client-Id", out var vals) ? vals.ToString() : null;
-            if (int.TryParse(clientIdHeader, out var cid))
-            {
-                using var cnL = new SqlConnection(GetConn("Logins"));
-                await cnL.OpenAsync();
-                using var cmdL = cnL.CreateCommand();
-                cmdL.CommandText = "SELECT NOME,CAMINHOIMG FROM dbo.ClientesPortal WHERE Id=@id";
-                cmdL.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
-                using var rL = await cmdL.ExecuteReaderAsync();
-                if (rL.HasRows)
-                {
-                    await rL.ReadAsync();
-                    clientNm = rL.IsDBNull(0) ? null : rL.GetString(0);
-                    var p = rL.IsDBNull(1) ? null : rL.GetString(1);
-                    if (!string.IsNullOrWhiteSpace(p))
-                    {
-                        var full = p.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", p.TrimStart('/')) : p;
-                        if (System.IO.File.Exists(full))
-                        {
-                            leftLogo = await System.IO.File.ReadAllBytesAsync(full);
-                        }
-                    }
-                }
-            }
-        }
-        catch { }
-        try
-        {
-            var rightPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "images-legacy", "Logo_Principal_Fundo2.png");
-            if (System.IO.File.Exists(rightPath))
-            {
-                rightLogo = await System.IO.File.ReadAllBytesAsync(rightPath);
-            }
-        }
-        catch { }
-        var includeCover = ShouldIncludeCover(ctx);
-        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(ctx);
-        var baseSize = QuestPDF.Helpers.PageSizes.A4;
-        var coverSize = coverPortrait ? baseSize : new QuestPDF.Helpers.PageSize(baseSize.Height, baseSize.Width);
-        var reportSize = reportPortrait ? baseSize : new QuestPDF.Helpers.PageSize(baseSize.Height, baseSize.Width);
-        byte[] bytes;
-        try
-        {
-            bytes = Document.Create(container =>
-            {
-                if (includeCover)
-                {
-                    container.Page(page =>
-                    {
-                        page.Margin(36);
-                        page.Size(coverSize);
-                        page.Content().AlignMiddle().AlignCenter().Column(col =>
-                        {
-                            col.Spacing(8);
-                            col.Item().AlignCenter().Row(row =>
-                            {
-                                row.Spacing(20);
-                                row.ConstantItem(240).AlignRight().Element(e =>
-                                {
-                                    if (leftLogo != null)
-                                    {
-                                        try { e.Width(240).Height(60).Image(leftLogo, ImageScaling.FitArea); }
-                                        catch { e.Text("JumperFour").FontSize(18).SemiBold().FontColor("#0b3d2e"); }
-                                    }
-                                    else e.Text("JumperFour").FontSize(18).SemiBold().FontColor("#0b3d2e");
-                                });
-                                row.ConstantItem(240).AlignLeft().Element(e =>
-                                {
-                                    if (rightLogo != null)
-                                    {
-                                        try { e.Width(240).Height(60).Image(rightLogo, ImageScaling.FitArea); }
-                                        catch { e.Text(clientNm ?? "Cliente").FontSize(16).SemiBold().FontColor("#111827"); }
-                                    }
-                                    else e.Text(clientNm ?? "Cliente").FontSize(16).SemiBold().FontColor("#111827");
-                                });
-                            });
-                            col.Item().Text("Acessos agregados por nível").FontSize(22).SemiBold().Underline().FontColor("#0b3d2e");
-                            col.Item().PaddingTop(6).Column(info =>
-                            {
-                                info.Spacing(2);
-                                info.Item().Text($"Cliente: {clientNm ?? "Cliente"}").FontSize(10);
-                                info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
-                            });
-                        });
-                        page.Footer().AlignCenter().Text("Documento preparado para auditoria").FontColor("#6b7280").FontSize(9);
-                    });
-                }
-                container.Page(page =>
-                {
-                    page.Margin(20);
-                    page.Size(reportSize);
-                    page.Header().Row(row =>
-                    {
-                        row.RelativeColumn().AlignLeft().Element(e =>
-                        {
-                            if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
-                        });
-                        row.RelativeColumn().AlignCenter().Text("Acessos agregados por nível").SemiBold().FontSize(18);
-                        row.RelativeColumn().AlignRight().Element(e =>
-                        {
-                            if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
-                        });
-                    });
-                    page.Content().Table(table =>
-                    {
-                        table.ColumnsDefinition(c => { c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); });
-                        table.Cell().Text("LevelId"); table.Cell().Text("Level"); table.Cell().Text("Total");
-                        foreach (var x in rows)
-                        {
-                            table.Cell().Text(x.id.ToString());
-                            table.Cell().Text(x.level);
-                            table.Cell().Text(x.total.ToString());
-                        }
-                    });
-                });
-            }).GeneratePdf();
-        }
-        catch
-        {
-            bytes = Document.Create(container =>
-            {
-                container.Page(page =>
-                {
-                    page.Margin(20);
-                    page.Size(reportSize);
-                    page.Header().Row(row =>
-                    {
-                        row.RelativeColumn().AlignLeft().Element(e =>
-                        {
-                            if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
-                        });
-                        row.RelativeColumn().AlignCenter().Text("Acessos agregados por nível").SemiBold().FontSize(18);
-                        row.RelativeColumn().AlignRight().Element(e =>
-                        {
-                            if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
-                        });
-                    });
-                    page.Content().Table(table =>
-                    {
-                        table.ColumnsDefinition(c => { c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); });
-                        table.Cell().Text("LevelId"); table.Cell().Text("Level"); table.Cell().Text("Total");
-                        foreach (var x in rows)
-                        {
-                            table.Cell().Text(x.id.ToString());
-                            table.Cell().Text(x.level);
-                            table.Cell().Text(x.total.ToString());
-                        }
-                    });
-                });
-            }).GeneratePdf();
-        }
-        return Results.File(bytes, "application/pdf", "access-by-level.pdf");
+        var clientInfo = await GetReportClientInfoAsync(ctx);
+        var (cp, rp) = GetPdfOrientationFlags(ctx);
+        var bytesP = BuildAccessAggPdf(clientInfo.Name, clientInfo.Logo, "Acessos Agregados", rows.Select(x => (x.id, x.level, x.total)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), null, cp, rp);
+        return Results.File(bytesP, "application/pdf", "access-by-level.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
     static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
@@ -5222,6 +5499,180 @@ LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
+app.MapGet("/api/cms/external/search/export", async (HttpContext http, string? matricula, string? empresa, string format = "csv") =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var where = new List<string>();
+    var criteriaList = new List<string>();
+    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("x.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); criteriaList.Add($"Matrícula: {matricula}"); }
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name = @empresa OR ux.UF2 = @empresa)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); criteriaList.Add($"Empresa: {empresa}"); }
+    var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    var criteria = criteriaList.Count > 0 ? string.Join(" | ", criteriaList) : "Todos os Externos";
+
+    cmd.CommandText = $@"
+SELECT
+    x.Name,
+    x.Identifier,
+    COALESCE(ec.Name, ux.UF2) as Empresa,
+    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira,
+    CASE
+        WHEN x.CommencementDateTime IS NOT NULL AND x.CommencementDateTime > GETDATE() THEN 'INATIVO'
+        WHEN x.ExpiryDateTime IS NOT NULL AND x.ExpiryDateTime < GETDATE() THEN 'INATIVO'
+        ELSE 'ATIVO'
+    END AS StatusCadastro,
+    la.LastAccess AS UltimoAcesso
+FROM ExternalRegular x
+INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = x.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+{whereSql}
+ORDER BY x.Name ASC";
+    
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)>();
+    while (await r.ReadAsync())
+    {
+        rows.Add((
+            Cracha: r.IsDBNull(3) ? null : r.GetString(3),
+            Nome: r.IsDBNull(0) ? null : r.GetString(0),
+            Matricula: r.IsDBNull(1) ? null : r.GetString(1),
+            Status: r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro: r.IsDBNull(4) ? (DateTime?)null : r.GetDateTime(4),
+            Expira: r.IsDBNull(5) ? (DateTime?)null : r.GetDateTime(5),
+            UltimoAcesso: r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Empresa: r.IsDBNull(2) ? null : r.GetString(2)
+        ));
+    }
+
+    if (format == "csv")
+    {
+        var sb = new StringBuilder("CRACHÁ;NOME;MATRÍCULA;STATUS;CADASTRO;EXPIRAÇÃO;ÚLTIMO ACESSO;EMPRESA\n");
+        foreach (var i in rows) sb.AppendLine($"{i.Cracha};{i.Nome};{i.Matricula};{i.Status};{i.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss")};{i.Expira?.ToString("dd/MM/yyyy HH:mm:ss")};{i.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss")};{i.Empresa}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "externos.csv");
+    }
+    
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var (cp, rp) = GetPdfOrientationFlags(http);
+
+    if (format == "xlsx")
+    {
+        var bytesX = BuildEmployeesXlsx(clientInfo.Name, "Externos", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "externos.xlsx");
+    }
+    
+    if (format == "pdf")
+    {
+        var bytesP = BuildEmployeesPdf(clientInfo.Name, clientInfo.Logo, "Externos", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", "externos.pdf");
+    }
+    
+    return Results.BadRequest("Formato inválido");
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/employees/search/export", async (HttpContext http, string? matricula, string? empresa, string format = "csv") =>
+{
+    var defaultEmpresa = await GetDefaultClientNameAsync();
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 300;
+    var where = new List<string>();
+    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("e.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); }
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    cmd.CommandText = $@"
+SELECT TOP 20000
+    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
+    e.Name,
+    e.Identifier,
+    CASE
+        WHEN e.CommencementDateTime IS NOT NULL AND e.CommencementDateTime > GETDATE() THEN 'INATIVO'
+        WHEN e.ExpiryDateTime IS NOT NULL AND e.ExpiryDateTime < GETDATE() THEN 'INATIVO'
+        ELSE 'ATIVO'
+    END AS StatusCadastro,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira,
+    la.LastAccess AS UltimoAcesso,
+    uf.UF2 AS Empresa
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = e.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+{whereSql}
+ORDER BY c.CardNumber ASC;";
+    using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)>();
+    while (await r.ReadAsync(http.RequestAborted))
+    {
+        var emp = r.IsDBNull(7) ? null : r.GetString(7);
+        if (string.IsNullOrWhiteSpace(emp)) emp = defaultEmpresa;
+        rows.Add((
+            r.IsDBNull(0) ? null : r.GetString(0),
+            r.IsDBNull(1) ? null : r.GetString(1),
+            r.IsDBNull(2) ? null : r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.IsDBNull(4) ? (DateTime?)null : r.GetDateTime(4),
+            r.IsDBNull(5) ? (DateTime?)null : r.GetDateTime(5),
+            r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
+            emp
+        ));
+    }
+
+    var fileName = $"funcionarios.{fmt}";
+    var criteriaParts = new List<string>();
+    if (!string.IsNullOrWhiteSpace(matricula)) criteriaParts.Add($"Matrícula: {matricula}");
+    if (!string.IsNullOrWhiteSpace(empresa)) criteriaParts.Add($"Empresa: {empresa}");
+    var criteria = criteriaParts.Count > 0 ? string.Join(" • ", criteriaParts) : null;
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHA,NOME,MATRICULA,STATUS,CADASTRO,EXPIRACAO,ULTIMO_ACESSO,EMPRESA");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",", new[]
+            {
+                Csv(x.Cracha),
+                Csv(x.Nome),
+                Csv(x.Matricula),
+                Csv(x.Status),
+                Csv(x.Cadastro?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.Expira?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.UltimoAcesso?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.Empresa)
+            }));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildEmployeesXlsx(clientInfo.Name, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildEmployeesPdf(clientInfo.Name, clientInfo.Logo, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
+}).RequireAuthorization();
+
 app.MapGet("/api/reports/transit", async (string start, string end, string? empresa, string? terminal, int page, int pageSize) =>
 {
     var startDt = ParseDate(start);
@@ -5318,110 +5769,32 @@ ORDER BY c.CardNumber ASC, t.TRANSIT_DATE DESC";
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Cracha,Name,Empresa,Terminal,TerminalDescription,TransitDate");
+        sb.AppendLine("CRACHA,NOME,EMPRESA,TERMINAL,TERMINAL_DESC,DATA_HORA");
         foreach (var x in rows)
             sb.AppendLine($"{Escape(x.card)},{Escape(x.name)},{Escape(x.empresa)},{Escape(x.terminal)},{Escape(x.termDesc)},{x.date:yyyy-MM-dd HH:mm:ss}");
         return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", "transit.csv");
     }
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
-        using var ms = new MemoryStream();
-        using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
-        {
-            var wb = doc.AddWorkbookPart(); wb.Workbook = new Workbook();
-            var wsPart = wb.AddNewPart<WorksheetPart>(); wsPart.Worksheet = new Worksheet(new SheetData());
-            var sheets = doc.WorkbookPart.Workbook.AppendChild(new Sheets());
-            sheets.Append(new Sheet() { Id = doc.WorkbookPart.GetIdOfPart(wsPart), SheetId = 1, Name = "Transit" });
-            var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>();
-            void AddRow(params string[] cells)
-            {
-                var row = new Row();
-                foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c) });
-                sheetData.Append(row);
-            }
-            AddRow("Cracha","Name","Empresa","Terminal","TerminalDescription","TransitDate");
-            foreach (var x in rows) AddRow(x.card ?? "", x.name ?? "", x.empresa ?? "", x.terminal ?? "", x.termDesc ?? "", x.date.ToString("yyyy-MM-dd HH:mm:ss"));
-        }
-        return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "transit.xlsx");
+        var clientInfo = await GetReportClientInfoAsync(ctx);
+        var criteriaParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(empresa)) criteriaParts.Add($"Empresa: {empresa}");
+        if (!string.IsNullOrWhiteSpace(terminal)) criteriaParts.Add($"Terminal: {terminal}");
+        var criteria = criteriaParts.Count > 0 ? string.Join(" • ", criteriaParts) : null;
+        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Período", startDt, endDt, rows.Select(x => (x.card, x.name, x.empresa, x.terminal, x.termDesc, x.date)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "transit.xlsx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
-        QuestPDF.Settings.License = LicenseType.Community;
-        byte[]? leftLogo = null;
-        byte[]? rightLogo = null;
-        try
-        {
-            var clientIdHeader = ctx.Request.Headers.TryGetValue("X-Client-Id", out var vals) ? vals.ToString() : null;
-            if (int.TryParse(clientIdHeader, out var cid))
-            {
-                using var cnL = new SqlConnection(GetConn("Logins"));
-                await cnL.OpenAsync();
-                using var cmdL = cnL.CreateCommand();
-                cmdL.CommandText = "SELECT CAMINHOIMG FROM dbo.ClientesPortal WHERE Id=@id";
-                cmdL.Parameters.Add(new SqlParameter("@id", SqlDbType.Int) { Value = cid });
-                using var rL = await cmdL.ExecuteReaderAsync();
-                if (rL.HasRows)
-                {
-                    await rL.ReadAsync();
-                    var p = rL.IsDBNull(0) ? null : rL.GetString(0);
-                    if (!string.IsNullOrWhiteSpace(p))
-                    {
-                        var full = p.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", p.TrimStart('/')) : p;
-                        if (System.IO.File.Exists(full))
-                        {
-                            leftLogo = await System.IO.File.ReadAllBytesAsync(full);
-                        }
-                    }
-                }
-            }
-        }
-        catch { }
-        try
-        {
-            var rightPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "images-legacy", "Logo_Principal_Fundo2.png");
-            if (System.IO.File.Exists(rightPath))
-            {
-                rightLogo = await System.IO.File.ReadAllBytesAsync(rightPath);
-            }
-        }
-        catch { }
-        var bytes = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Margin(20);
-                page.Header().Row(row =>
-                {
-                    row.RelativeColumn().AlignLeft().Element(e =>
-                    {
-                        if (leftLogo != null) e.Image(leftLogo, ImageScaling.FitWidth);
-                    });
-                    row.RelativeColumn().AlignCenter().Text("Relatório de Trânsitos").SemiBold().FontSize(18);
-                    row.RelativeColumn().AlignRight().Element(e =>
-                    {
-                        if (rightLogo != null) e.Image(rightLogo, ImageScaling.FitWidth);
-                    });
-                });
-                page.Content().Table(table =>
-                {
-                    table.ColumnsDefinition(c =>
-                    {
-                        c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn(); c.RelativeColumn();
-                    });
-                    table.Cell().Text("Crachá"); table.Cell().Text("Name"); table.Cell().Text("Empresa"); table.Cell().Text("Terminal"); table.Cell().Text("TerminalDescription"); table.Cell().Text("TransitDate");
-                    foreach (var x in rows)
-                    {
-                        table.Cell().Text(x.card ?? "");
-                        table.Cell().Text(x.name ?? "");
-                        table.Cell().Text(x.empresa ?? "");
-                        table.Cell().Text(x.terminal ?? "");
-                        table.Cell().Text(x.termDesc ?? "");
-                        table.Cell().Text(x.date.ToString("yyyy-MM-dd HH:mm:ss"));
-                    }
-                });
-            });
-        }).GeneratePdf();
-        return Results.File(bytes, "application/pdf", "transit.pdf");
+        var clientInfo = await GetReportClientInfoAsync(ctx);
+        var criteriaParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(empresa)) criteriaParts.Add($"Empresa: {empresa}");
+        if (!string.IsNullOrWhiteSpace(terminal)) criteriaParts.Add($"Terminal: {terminal}");
+        criteriaParts.Add($"Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}");
+        var criteria = string.Join(" • ", criteriaParts);
+        var (cp, rp) = GetPdfOrientationFlags(ctx);
+        var bytesP = BuildTransitPdf(clientInfo.Name, clientInfo.Logo, "Trânsito por Período", startDt, endDt, rows.Select(x => (x.card, x.name, x.empresa, x.terminal, x.termDesc, x.date)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", "transit.pdf");
     }
     return Results.BadRequest(new { error = "Formato inválido" });
     static string Escape(string? s) => s == null ? "" : s.Contains(',') ? $"\"{s.Replace("\"","\"\"")}\"" : s;
@@ -5528,6 +5901,82 @@ WHERE x.PreferredName = @cpf";
         });
     }
     return Results.Ok(list);
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/card/by-cpf/export", async (HttpContext http, string cpf, string format = "csv") =>
+{
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    c.CardNumber,
+    'Employee' AS UserType
+FROM Employee e
+INNER JOIN Card c ON c.SbiID = e.SbiID
+WHERE e.PreferredName = @cpf
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    c.CardNumber,
+    'External' AS UserType
+FROM ExternalRegular x
+INNER JOIN Card c ON c.SbiID = x.SbiID
+WHERE x.PreferredName = @cpf
+ORDER BY CardNumber, Name";
+    cmd.Parameters.Add(new SqlParameter("@cpf", SqlDbType.VarChar) { Value = cpf });
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Nome, string? Cracha, string? Tipo)>();
+    while (await r.ReadAsync())
+    {
+        var tipoRaw = r.IsDBNull(3) ? null : r.GetString(3);
+        var tipo = tipoRaw;
+        if (string.Equals(tipoRaw, "Employee", StringComparison.OrdinalIgnoreCase)) tipo = "FUNCIONÁRIO";
+        else if (string.Equals(tipoRaw, "External", StringComparison.OrdinalIgnoreCase)) tipo = "EXTERNO";
+        rows.Add((
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Cracha: r.IsDBNull(2) ? null : r.GetString(2),
+            Tipo: tipo
+        ));
+    }
+
+    var fileCpf = DigitsOnly(cpf);
+    var fileName = $"cracha-por-cpf-{(string.IsNullOrWhiteSpace(fileCpf) ? "cpf" : fileCpf)}.{fmt}";
+    var criteria = $"CPF: {cpf}";
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME;CRACHÁ;TIPO");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Nome)};{CsvValue(x.Cracha)};{CsvValue(x.Tipo)}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildCardByCpfXlsx(clientInfo.Name, "Buscar Crachá por CPF", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildCardByCpfPdf(clientInfo.Name, clientInfo.Logo, "Buscar Crachá por CPF", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
 }).RequireAuthorization();
 
 static string DigitsOnly(string? s)
@@ -5886,6 +6335,2306 @@ byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, s
                         table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Tipo ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
                         table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text("GRANTED");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildVisitorsXlsx(string clientName, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Nome, string? Documento, string? Contato, string? Visitou, string? Telefone, string? Email, DateTime? Entrada, DateTime? Saida)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Visitantes" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (start != null && end != null) AddRow("PERÍODO", $"{start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("NOME", "DOCUMENTO", "CONTATO", "VISITOU", "TELEFONE", "EMAIL", "ENTRADA", "SAÍDA");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.Nome,
+                x.Documento,
+                x.Contato,
+                x.Visitou,
+                x.Telefone,
+                x.Email,
+                x.Entrada?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Saida?.ToString("dd/MM/yyyy HH:mm:ss")
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildVisitorsPdf(string clientName, byte[]? clientLogo, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Nome, string? Documento, string? Contato, string? Visitou, string? Telefone, string? Email, DateTime? Entrada, DateTime? Saida)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(1.8f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(1.5f);
+                        c.RelativeColumn(1.2f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(1.6f);
+                        c.RelativeColumn(1.2f);
+                        c.RelativeColumn(1.2f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("DOCUMENTO");
+                        h.Cell().Element(HeaderCell).Text("CONTATO");
+                        h.Cell().Element(HeaderCell).Text("VISITOU");
+                        h.Cell().Element(HeaderCell).Text("TELEFONE");
+                        h.Cell().Element(HeaderCell).Text("EMAIL");
+                        h.Cell().Element(HeaderCell).Text("ENTRADA");
+                        h.Cell().Element(HeaderCell).Text("SAÍDA");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Documento ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Contato ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Visitou ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Telefone ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Email ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Entrada?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Saida?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildEmployeesXlsx(string clientName, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Funcionários" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("CRACHÁ", "NOME", "MATRÍCULA", "STATUS", "CADASTRO", "EXPIRAÇÃO", "ÚLTIMO ACESSO", "EMPRESA");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.Cracha,
+                x.Nome,
+                x.Matricula,
+                x.Status,
+                x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Empresa
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildCardByCpfXlsx(string clientName, string title, IReadOnlyList<(string? Nome, string? Cracha, string? Tipo)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Crachá por CPF" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("NOME", "CRACHÁ", "TIPO");
+        foreach (var x in rows)
+        {
+            AddRow(x.Nome, x.Cracha, x.Tipo);
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildCardByCpfPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Nome, string? Cracha, string? Tipo)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(2.2f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(0.8f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("TIPO");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildCompanyInfoXlsx(string clientName, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Empresa" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ");
+        foreach (var x in rows)
+        {
+            AddRow(x.Nome, x.Cpf, x.Matricula, x.Empresa, x.Tipo, x.Cracha);
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildCompanyInfoPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(2.0f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(1.6f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(0.9f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("CPF");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(HeaderCell).Text("TIPO");
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cpf ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildCardInfoXlsx(string clientName, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Crachá" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ", "CADASTRO", "EXPIRAÇÃO");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.Nome,
+                x.Cpf,
+                x.Matricula,
+                x.Empresa,
+                x.Tipo,
+                x.Cracha,
+                x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Expira?.ToString("dd/MM/yyyy HH:mm:ss")
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildCardInfoPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(2.0f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.4f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.1f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("CPF");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(HeaderCell).Text("TIPO");
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("CADASTRO");
+                        h.Cell().Element(HeaderCell).Text("EXPIRAÇÃO");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cpf ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Expira?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildMatriculaInfoXlsx(string clientName, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Matrícula" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ", "CADASTRO", "EXPIRAÇÃO");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.Nome,
+                x.Cpf,
+                x.Matricula,
+                x.Empresa,
+                x.Tipo,
+                x.Cracha,
+                x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Expira?.ToString("dd/MM/yyyy HH:mm:ss")
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildMatriculaInfoPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(2.0f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.4f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(0.8f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.1f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("CPF");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(HeaderCell).Text("TIPO");
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("CADASTRO");
+                        h.Cell().Element(HeaderCell).Text("EXPIRAÇÃO");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cpf ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Expira?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.9f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(0.8f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.2f);
+                        c.RelativeColumn(1.4f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("STATUS");
+                        h.Cell().Element(HeaderCell).Text("CADASTRO");
+                        h.Cell().Element(HeaderCell).Text("EXPIRAÇÃO");
+                        h.Cell().Element(HeaderCell).Text("ÚLTIMO ACESSO");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Status ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Expira?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildAccessAggXlsx(string clientName, string title, IReadOnlyList<(int LevelId, string Level, int Total)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Acessos Agregados" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("LEVEL ID", "NÍVEL", "TOTAL");
+        foreach (var x in rows)
+        {
+            AddRow(x.LevelId.ToString(), x.Level, x.Total.ToString());
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildAccessAggPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(int LevelId, string Level, int Total)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(criteria)) h.Item().Text(criteria).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(0.6f);
+                        c.RelativeColumn(2.2f);
+                        c.RelativeColumn(0.6f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("LEVEL ID");
+                        h.Cell().Element(HeaderCell).Text("NÍVEL");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("TOTAL");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.LevelId.ToString());
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Level ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Total.ToString());
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildPopulationXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(string Label, int Total)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "População" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        AddRow("PERÍODO", $"{start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("LABEL", "TOTAL");
+        foreach (var x in rows)
+        {
+            AddRow(x.Label, x.Total.ToString());
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildPopulationPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(string Label, int Total)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    var criteriaLine = criteria;
+    if (string.IsNullOrWhiteSpace(criteriaLine))
+        criteriaLine = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}";
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        info.Item().Text(criteriaLine).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    h.Item().Text(criteriaLine).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(2.2f);
+                        c.RelativeColumn(0.8f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("LABEL");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("TOTAL");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Label);
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Total.ToString());
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Claviculário" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        AddRow("PERÍODO", $"{start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("DATA/HORA", "RESPONSÁVEL", "MATRÍCULA", "CÓD. CHAVE", "CHAVE", "DESCRIÇÃO");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.DataHora?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.ResponsavelNome,
+                x.Matricula,
+                x.CodigoChave,
+                x.ChaveDescricao,
+                x.Descricao
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    var criteriaLine = criteria;
+    if (string.IsNullOrWhiteSpace(criteriaLine))
+        criteriaLine = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}";
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        info.Item().Text(criteriaLine).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    h.Item().Text(criteriaLine).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(1.2f);
+                        c.RelativeColumn(1.6f);
+                        c.RelativeColumn(0.8f);
+                        c.RelativeColumn(0.8f);
+                        c.RelativeColumn(1.4f);
+                        c.RelativeColumn(2.2f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("DATA/HORA");
+                        h.Cell().Element(HeaderCell).Text("RESPONSÁVEL");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("CÓD. CHAVE");
+                        h.Cell().Element(HeaderCell).Text("CHAVE");
+                        h.Cell().Element(HeaderCell).Text("DESCRIÇÃO");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.ResponsavelNome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.CodigoChave ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.ChaveDescricao ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Descricao ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildTransitXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(string? Cracha, string? Nome, string? Empresa, string? Terminal, string? TerminalDescription, DateTime DataHora)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Trânsito" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        AddRow("PERÍODO", $"{start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("CRACHÁ", "NOME", "EMPRESA", "TERMINAL", "TERMINAL DESC.", "DATA/HORA");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.Cracha,
+                x.Nome,
+                x.Empresa,
+                x.Terminal,
+                x.TerminalDescription,
+                x.DataHora.ToString("dd/MM/yyyy HH:mm:ss")
+            );
+        }
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildTransitPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(string? Cracha, string? Nome, string? Empresa, string? Terminal, string? TerminalDescription, DateTime DataHora)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    var criteriaLine = criteria;
+    if (string.IsNullOrWhiteSpace(criteriaLine))
+        criteriaLine = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}";
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        info.Item().Text(criteriaLine).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    h.Item().Text(criteriaLine).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.6f);
+                        c.RelativeColumn(1.3f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.8f);
+                        c.RelativeColumn(1.1f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(HeaderCell).Text("TERMINAL");
+                        h.Cell().Element(HeaderCell).Text("TERMINAL DESC.");
+                        h.Cell().Element(HeaderCell).Text("DATA/HORA");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Terminal ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.TerminalDescription ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora.ToString("dd/MM/yyyy HH:mm:ss"));
                     }
                 });
             });
@@ -7440,6 +10189,101 @@ WHERE c.CardNumber = @card";
     return Results.Ok(list);
 }).RequireAuthorization();
 
+app.MapGet("/api/cms/person/by-card-info/export", async (HttpContext http, string card, string format = "csv") =>
+{
+    var defaultEmpresa = await GetDefaultClientNameAsync();
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
+    'FUNCIONÁRIO' AS Tipo,
+    c.CardNumber,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+INNER JOIN Card c ON c.SbiID = e.SbiID
+WHERE c.CardNumber = @card
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
+    'TERCEIRO' AS Tipo,
+    c.CardNumber,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira
+FROM ExternalRegular x
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+INNER JOIN Card c ON c.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+WHERE c.CardNumber = @card
+ORDER BY CardNumber, Name";
+    cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)>();
+    while (await r.ReadAsync())
+    {
+        var tipo = r.IsDBNull(5) ? null : r.GetString(5);
+        var empresa = r.IsDBNull(4) ? null : r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
+        rows.Add((
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Cpf: r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula: r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa: empresa,
+            Tipo: tipo,
+            Cracha: r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro: r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Expira: r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+        ));
+    }
+
+    var fileCard = DigitsOnly(card);
+    var fileName = $"cracha-info-{(string.IsNullOrWhiteSpace(fileCard) ? "cracha" : fileCard)}.{fmt}";
+    var criteria = $"Crachá: {card}";
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME;CPF;MATRÍCULA;EMPRESA;TIPO;CRACHÁ;CADASTRO;EXPIRAÇÃO");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Nome)};{CsvValue(x.Cpf)};{CsvValue(x.Matricula)};{CsvValue(x.Empresa)};{CsvValue(x.Tipo)};{CsvValue(x.Cracha)};{CsvValue(x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"))};{CsvValue(x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"))}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildCardInfoXlsx(clientInfo.Name, "Crachá - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildCardInfoPdf(clientInfo.Name, clientInfo.Logo, "Crachá - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
+}).RequireAuthorization();
+
 app.MapGet("/api/cms/person/by-matricula-info", async (string matricula) =>
 {
     var defaultEmpresa = await GetDefaultClientNameAsync();
@@ -7501,6 +10345,103 @@ WHERE x.Identifier = @matricula";
     return Results.Ok(list);
 }).RequireAuthorization();
 
+app.MapGet("/api/cms/person/by-matricula-info/export", async (HttpContext http, string matricula, string format = "csv") =>
+{
+    var defaultEmpresa = await GetDefaultClientNameAsync();
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
+    'FUNCIONÁRIO' AS Tipo,
+    c.CardNumber,
+    e.CommencementDateTime AS Cadastro,
+    e.ExpiryDateTime AS Expira
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+LEFT JOIN Card c ON c.SbiID = e.SbiID
+WHERE e.Identifier = @matricula
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
+    'TERCEIRO' AS Tipo,
+    c.CardNumber,
+    x.CommencementDateTime AS Cadastro,
+    x.ExpiryDateTime AS Expira
+FROM ExternalRegular x
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN Card c ON c.SbiID = x.SbiID
+LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+WHERE x.Identifier = @matricula
+ORDER BY Matricula, Name, CardNumber";
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula });
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha, DateTime? Cadastro, DateTime? Expira)>();
+    while (await r.ReadAsync())
+    {
+        var tipo = r.IsDBNull(5) ? null : r.GetString(5);
+        var empresa = r.IsDBNull(4) ? null : r.GetString(4);
+        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+            empresa = defaultEmpresa;
+        rows.Add((
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Cpf: r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula: r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa: empresa,
+            Tipo: tipo,
+            Cracha: r.IsDBNull(6) ? null : r.GetString(6),
+            Cadastro: r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            Expira: r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
+        ));
+    }
+
+    var fileMat = DigitsOnly(matricula);
+    var fileName = $"matricula-info-{(string.IsNullOrWhiteSpace(fileMat) ? "matricula" : fileMat)}.{fmt}";
+    var criteria = $"Matrícula: {matricula}";
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME;CPF;MATRÍCULA;EMPRESA;TIPO;CRACHÁ;CADASTRO;EXPIRAÇÃO");
+        foreach (var x in rows)
+        {
+            sb.AppendLine($"{CsvValue(x.Nome)};{CsvValue(x.Cpf)};{CsvValue(x.Matricula)};{CsvValue(x.Empresa)};{CsvValue(x.Tipo)};{CsvValue(x.Cracha)};{CsvValue(x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"))};{CsvValue(x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"))}");
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildMatriculaInfoXlsx(clientInfo.Name, "Matrícula - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildMatriculaInfoPdf(clientInfo.Name, clientInfo.Logo, "Matrícula - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
+}).RequireAuthorization();
+
 app.MapGet("/api/cms/transit/by-matricula", async (string matricula, DateTime start, DateTime end, bool onlyTurnstiles, int page, int pageSize) =>
 {
     page = ToPage(page); pageSize = ToPageSize(pageSize);
@@ -7519,12 +10460,13 @@ app.MapGet("/api/cms/transit/by-matricula", async (string matricula, DateTime st
     cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
     cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
     cmd.CommandText = $@"
-SELECT q.SbiID,q.Name,q.CardNumber,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+SELECT q.SbiID,q.Name,q.CardNumber,q.Empresa,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
 FROM (
     SELECT
         e.SbiID,
         e.Name,
         c.CardNumber,
+        uf.UF2 as Empresa,
         t.STR_DIRECTION,
         t.USER_TYPE,
         t.TERMINAL,
@@ -7533,6 +10475,7 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN Employee e ON e.SbiID = t.SBI_ID
     LEFT JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     {whereEmployee}
     UNION ALL
@@ -7540,6 +10483,7 @@ FROM (
         x.SbiID,
         x.Name,
         c.CardNumber,
+        COALESCE(ec.Name, ux.UF2) as Empresa,
         t.STR_DIRECTION,
         t.USER_TYPE,
         t.TERMINAL,
@@ -7548,6 +10492,8 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
     LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     {whereExternal}
 ) q
@@ -7576,16 +10522,116 @@ SELECT COUNT(1) FROM (
         {
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
-            Direction = r.IsDBNull(3) ? null : r.GetString(3),
-            UserType = r.IsDBNull(4) ? null : r.GetString(4),
-            Terminal = r.IsDBNull(5) ? null : r.GetString(5),
-            TerminalDescription = r.IsDBNull(6) ? null : r.GetString(6),
-            TransitDate = r.GetDateTime(7)
+            Empresa = r.IsDBNull(3) ? null : r.GetString(3),
+            Direction = r.IsDBNull(4) ? null : r.GetString(4),
+            UserType = r.IsDBNull(5) ? null : r.GetString(5),
+            Terminal = r.IsDBNull(6) ? null : r.GetString(6),
+            TerminalDescription = r.IsDBNull(7) ? null : r.GetString(7),
+            TransitDate = r.GetDateTime(8)
         });
     }
     int total = 0;
     if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
     return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-matricula/export", async (HttpContext http, string matricula, DateTime start, DateTime end, bool onlyTurnstiles, string format = "csv") =>
+{
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var whereEmployee = "WHERE e.Identifier = @matricula AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    var whereExternal = "WHERE x.Identifier = @matricula AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    if (onlyTurnstiles)
+    {
+        whereEmployee += " AND v.DESCRIPTION LIKE '%Catraca%'";
+        whereExternal += " AND v.DESCRIPTION LIKE '%Catraca%'";
+    }
+    cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.CommandText = $@"
+SELECT q.CardNumber,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        c.CardNumber,
+        e.Name,
+        uf.UF2 as Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT
+        c.CardNumber,
+        x.Name,
+        COALESCE(ec.Name, ux.UF2) as Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) q
+ORDER BY q.TRANSIT_DATE DESC";
+
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Cracha, string? Nome, string? Empresa, string? Terminal, string? TerminalDescription, DateTime DataHora)>();
+    while (await r.ReadAsync())
+    {
+        rows.Add((
+            Cracha: r.IsDBNull(0) ? null : r.GetString(0),
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Empresa: r.IsDBNull(2) ? null : r.GetString(2),
+            Terminal: r.IsDBNull(3) ? null : r.GetString(3),
+            TerminalDescription: r.IsDBNull(4) ? null : r.GetString(4),
+            DataHora: r.GetDateTime(5)
+        ));
+    }
+
+    var fileMat = DigitsOnly(matricula);
+    var fileName = $"transitos-matricula-{(string.IsNullOrWhiteSpace(fileMat) ? "matricula" : fileMat)}.{fmt}";
+    var criteria = $"Matrícula: {matricula} | Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}" + (onlyTurnstiles ? " | Somente Catracas" : "");
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHÁ;NOME;EMPRESA;TERMINAL;TERMINAL DESC.;DATA/HORA");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Cracha)};{CsvValue(x.Nome)};{CsvValue(x.Empresa)};{CsvValue(x.Terminal)};{CsvValue(x.TerminalDescription)};{CsvValue(x.DataHora.ToString("dd/MM/yyyy HH:mm:ss"))}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Matrícula", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildTransitPdf(clientInfo.Name, clientInfo.Logo, "Trânsito por Matrícula", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/transit/by-card-period", async (string card, DateTime start, DateTime end, bool onlyTurnstiles, int page, int pageSize) =>
@@ -7608,12 +10654,13 @@ app.MapGet("/api/cms/transit/by-card-period", async (string card, DateTime start
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     cmd.CommandText = $@"
-SELECT q.SbiID,q.Name,q.CardNumber,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+SELECT q.SbiID,q.Name,q.CardNumber,q.Empresa,q.STR_DIRECTION,q.USER_TYPE,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
 FROM (
     SELECT
         e.SbiID,
         e.Name,
         c.CardNumber,
+        uf.UF2 as Empresa,
         t.STR_DIRECTION,
         t.USER_TYPE,
         t.TERMINAL,
@@ -7622,6 +10669,7 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN Employee e ON e.SbiID = t.SBI_ID
     INNER JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     {whereEmployee}
     UNION ALL
@@ -7629,6 +10677,7 @@ FROM (
         x.SbiID,
         x.Name,
         c.CardNumber,
+        COALESCE(ec.Name, ux.UF2) as Empresa,
         t.STR_DIRECTION,
         t.USER_TYPE,
         t.TERMINAL,
@@ -7637,6 +10686,8 @@ FROM (
     FROM HA_TRANSIT t
     INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
     INNER JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
     LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
     {whereExternal}
 ) q
@@ -7665,16 +10716,116 @@ SELECT COUNT(1) FROM (
         {
             Name = r.IsDBNull(1) ? null : r.GetString(1),
             CardNumber = r.IsDBNull(2) ? null : r.GetString(2),
-            Direction = r.IsDBNull(3) ? null : r.GetString(3),
-            UserType = r.IsDBNull(4) ? null : r.GetString(4),
-            Terminal = r.IsDBNull(5) ? null : r.GetString(5),
-            TerminalDescription = r.IsDBNull(6) ? null : r.GetString(6),
-            TransitDate = r.GetDateTime(7)
+            Empresa = r.IsDBNull(3) ? null : r.GetString(3),
+            Direction = r.IsDBNull(4) ? null : r.GetString(4),
+            UserType = r.IsDBNull(5) ? null : r.GetString(5),
+            Terminal = r.IsDBNull(6) ? null : r.GetString(6),
+            TerminalDescription = r.IsDBNull(7) ? null : r.GetString(7),
+            TransitDate = r.GetDateTime(8)
         });
     }
     int total = 0;
     if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
     return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-card-period/export", async (HttpContext http, string card, DateTime start, DateTime end, bool onlyTurnstiles, string format = "csv") =>
+{
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    var whereEmployee = "WHERE c.CardNumber = @card AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    var whereExternal = "WHERE c.CardNumber = @card AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    if (onlyTurnstiles)
+    {
+        whereEmployee += " AND v.DESCRIPTION LIKE '%Catraca%'";
+        whereExternal += " AND v.DESCRIPTION LIKE '%Catraca%'";
+    }
+    cmd.Parameters.Add(new SqlParameter("@card", SqlDbType.VarChar) { Value = card });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.CommandText = $@"
+SELECT q.CardNumber,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        c.CardNumber,
+        e.Name,
+        uf.UF2 as Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = e.SbiID
+    LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereEmployee}
+    UNION ALL
+    SELECT
+        c.CardNumber,
+        x.Name,
+        COALESCE(ec.Name, ux.UF2) as Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN Card c ON c.SbiID = x.SbiID
+    LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    {whereExternal}
+) q
+ORDER BY q.TRANSIT_DATE DESC";
+
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Cracha, string? Nome, string? Empresa, string? Terminal, string? TerminalDescription, DateTime DataHora)>();
+    while (await r.ReadAsync())
+    {
+        rows.Add((
+            Cracha: r.IsDBNull(0) ? null : r.GetString(0),
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Empresa: r.IsDBNull(2) ? null : r.GetString(2),
+            Terminal: r.IsDBNull(3) ? null : r.GetString(3),
+            TerminalDescription: r.IsDBNull(4) ? null : r.GetString(4),
+            DataHora: r.GetDateTime(5)
+        ));
+    }
+
+    var fileCard = DigitsOnly(card);
+    var fileName = $"transitos-cracha-{(string.IsNullOrWhiteSpace(fileCard) ? "cracha" : fileCard)}.{fmt}";
+    var criteria = $"Crachá: {card} | Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}" + (onlyTurnstiles ? " | Somente Catracas" : "");
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHÁ;NOME;EMPRESA;TERMINAL;TERMINAL DESC.;DATA/HORA");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Cracha)};{CsvValue(x.Nome)};{CsvValue(x.Empresa)};{CsvValue(x.Terminal)};{CsvValue(x.TerminalDescription)};{CsvValue(x.DataHora.ToString("dd/MM/yyyy HH:mm:ss"))}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Crachá", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildTransitPdf(clientInfo.Name, clientInfo.Logo, "Trânsito por Crachá", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/reports/access/by-level-period", async (DateTime start, DateTime end) =>
@@ -7836,6 +10987,92 @@ WHERE ux.UF2 = @empresa";
     return Results.Ok(list);
 }).RequireAuthorization();
 
+app.MapGet("/api/cms/company/by-name-info/export", async (HttpContext http, string empresa, string format = "csv") =>
+{
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandText = @"
+SELECT DISTINCT
+    e.SbiID,
+    e.Name + ' ' + e.Surname AS Name,
+    e.PreferredName AS CPF,
+    e.Identifier AS Matricula,
+    uf.UF2 AS Empresa,
+    'Employee' AS Tipo,
+    c.CardNumber
+FROM Employee e
+INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
+WHERE uf.UF2 = @empresa
+UNION
+SELECT DISTINCT
+    x.SbiID,
+    x.Name + ' ' + x.Surname AS Name,
+    x.PreferredName AS CPF,
+    x.Identifier AS Matricula,
+    ux.UF2 AS Empresa,
+    'External' AS Tipo,
+    c.CardNumber
+FROM ExternalRegular x
+INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID ORDER BY CardNumber) c
+WHERE ux.UF2 = @empresa
+ORDER BY Empresa, Matricula, Name, CardNumber";
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Nome, string? Cpf, string? Matricula, string? Empresa, string? Tipo, string? Cracha)>();
+    while (await r.ReadAsync())
+    {
+        var tipoRaw = r.IsDBNull(5) ? null : r.GetString(5);
+        var tipo = tipoRaw;
+        if (string.Equals(tipoRaw, "Employee", StringComparison.OrdinalIgnoreCase)) tipo = "FUNCIONÁRIO";
+        else if (string.Equals(tipoRaw, "External", StringComparison.OrdinalIgnoreCase)) tipo = "EXTERNO";
+        rows.Add((
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Cpf: r.IsDBNull(2) ? null : r.GetString(2),
+            Matricula: r.IsDBNull(3) ? null : r.GetString(3),
+            Empresa: r.IsDBNull(4) ? null : r.GetValue(4).ToString(),
+            Tipo: tipo,
+            Cracha: r.IsDBNull(6) ? null : r.GetString(6)
+        ));
+    }
+
+    var fileName = $"empresa-info-{empresa}.{fmt}";
+    var criteria = $"Empresa: {empresa}";
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME;CPF;MATRÍCULA;EMPRESA;TIPO;CRACHÁ");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Nome)};{CsvValue(x.Cpf)};{CsvValue(x.Matricula)};{CsvValue(x.Empresa)};{CsvValue(x.Tipo)};{CsvValue(x.Cracha)}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildCompanyInfoXlsx(clientInfo.Name, "Empresa - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildCompanyInfoPdf(clientInfo.Name, clientInfo.Logo, "Empresa - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
+}).RequireAuthorization();
+
 app.MapGet("/api/cms/transit/by-empresa", async (string empresa, DateTime start, DateTime end, int page, int pageSize) =>
 {
     page = ToPage(page); pageSize = ToPageSize(pageSize);
@@ -7911,6 +11148,96 @@ SELECT COUNT(1) FROM (
     int total = 0;
     if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
     return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/transit/by-empresa/export", async (HttpContext http, string empresa, DateTime start, DateTime end, string format = "csv") =>
+{
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
+    cmd.CommandText = @"
+SELECT q.CardNumber,q.Name,q.Empresa,q.TERMINAL,q.DESCRIPTION,q.TRANSIT_DATE
+FROM (
+    SELECT
+        c.CardNumber,
+        e.Name,
+        uf.UF2 AS Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN Employee e ON e.SbiID = t.SBI_ID
+    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID ORDER BY CardNumber) c
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE uf.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+    UNION ALL
+    SELECT
+        c.CardNumber,
+        x.Name,
+        ux.UF2 AS Empresa,
+        t.TERMINAL,
+        v.DESCRIPTION,
+        t.TRANSIT_DATE
+    FROM HA_TRANSIT t
+    INNER JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+    OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID ORDER BY CardNumber) c
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE ux.UF2 = @empresa AND t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+ORDER BY q.CardNumber ASC, q.TRANSIT_DATE DESC";
+
+    using var r = await cmd.ExecuteReaderAsync();
+    var rows = new List<(string? Cracha, string? Nome, string? Empresa, string? Terminal, string? TerminalDescription, DateTime DataHora)>();
+    while (await r.ReadAsync())
+    {
+        rows.Add((
+            Cracha: r.IsDBNull(0) ? null : r.GetString(0),
+            Nome: r.IsDBNull(1) ? null : r.GetString(1),
+            Empresa: r.IsDBNull(2) ? null : r.GetString(2),
+            Terminal: r.IsDBNull(3) ? null : r.GetString(3),
+            TerminalDescription: r.IsDBNull(4) ? null : r.GetString(4),
+            DataHora: r.GetDateTime(5)
+        ));
+    }
+
+    var fileName = $"transitos-empresa-{empresa}.{fmt}";
+    var criteria = $"Empresa: {empresa} | Período: {start:dd/MM/yyyy HH:mm:ss} - {end:dd/MM/yyyy HH:mm:ss}";
+
+    if (fmt == "csv")
+    {
+        string CsvValue(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var v = s.Replace("\"", "\"\"");
+            return (v.Contains(';') || v.Contains('\n') || v.Contains('\r')) ? $"\"{v}\"" : v;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHÁ;NOME;EMPRESA;TERMINAL;TERMINAL DESC.;DATA/HORA");
+        foreach (var x in rows)
+            sb.AppendLine($"{CsvValue(x.Cracha)};{CsvValue(x.Nome)};{CsvValue(x.Empresa)};{CsvValue(x.Terminal)};{CsvValue(x.TerminalDescription)};{CsvValue(x.DataHora.ToString("dd/MM/yyyy HH:mm:ss"))}");
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Empresa", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+
+    var (cp, rp) = GetPdfOrientationFlags(http);
+    var bytesP = BuildTransitPdf(clientInfo.Name, clientInfo.Logo, "Trânsito por Empresa", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    return Results.File(bytesP, "application/pdf", fileName);
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/visitors/by-document", async (string documento, DateTime start, DateTime end, int page, int pageSize) =>
@@ -8015,6 +11342,196 @@ WHERE hv.SOCIETY = @empresa AND hv.VISIT_START >= @start AND hv.VISIT_START < @e
     int total = 0;
     if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
     return Results.Ok(new { page, pageSize, total, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/visitors/by-document/export", async (HttpContext http, string documento, string start, string end, string format = "csv") =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.CommandText = @"
+SELECT
+    hv.Name + ' ' + hv.Surname AS Nome,
+    hv.VISIT_DOCUMENT AS Documento,
+    hv.CONTACT_NAME + ' ' + hv.CONTACT_SURNAME AS Contato,
+    hv.SOCIETY AS Visitou,
+    v.Telephone AS Telefone,
+    v.EMail AS Email,
+    hv.VISIT_START AS Entrada,
+    hv.VISIT_END AS Saida
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.VISIT_DOCUMENT = @documento AND hv.VISIT_START >= @start AND hv.VISIT_START < @end
+ORDER BY hv.VISIT_START;";
+    cmd.Parameters.Add(new SqlParameter("@documento", SqlDbType.VarChar) { Value = documento });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+    using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    var rows = new List<(string? Nome, string? Documento, string? Contato, string? Visitou, string? Telefone, string? Email, DateTime? Entrada, DateTime? Saida)>();
+    while (await r.ReadAsync(http.RequestAborted))
+    {
+        rows.Add((
+            r.IsDBNull(0) ? null : r.GetString(0),
+            r.IsDBNull(1) ? null : r.GetString(1),
+            r.IsDBNull(2) ? null : r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.IsDBNull(4) ? null : r.GetString(4),
+            r.IsDBNull(5) ? null : r.GetString(5),
+            r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
+            r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7)
+        ));
+    }
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    var fileName = $"visitantes-documento-{DigitsOnly(documento)}.{fmt}";
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME,DOCUMENTO,CONTATO,VISITOU,TELEFONE,EMAIL,ENTRADA,SAIDA");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",", new[]
+            {
+                Csv(x.Nome),
+                Csv(x.Documento),
+                Csv(x.Contato),
+                Csv(x.Visitou),
+                Csv(x.Telefone),
+                Csv(x.Email),
+                Csv(x.Entrada?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.Saida?.ToString("yyyy-MM-dd HH:mm:ss"))
+            }));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var criteria = $"Documento: {documento} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildVisitorsPdf(clientInfo.Name, clientInfo.Logo, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+}).RequireAuthorization();
+
+app.MapGet("/api/cms/visitors/by-company/export", async (HttpContext http, string empresa, string start, string end, string format = "csv") =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 120;
+    cmd.CommandText = @"
+SELECT
+    hv.Name + ' ' + hv.Surname AS Nome,
+    hv.VISIT_DOCUMENT AS Documento,
+    hv.CONTACT_NAME + ' ' + hv.CONTACT_SURNAME AS Contato,
+    hv.SOCIETY AS Visitou,
+    v.Telephone AS Telefone,
+    v.EMail AS Email,
+    hv.VISIT_START AS Entrada,
+    hv.VISIT_END AS Saida
+FROM HA_VISIT hv
+INNER JOIN Visitor v ON hv.SBI_ID = v.SbiID
+WHERE hv.SOCIETY = @empresa AND hv.VISIT_START >= @start AND hv.VISIT_START < @end
+ORDER BY hv.VISIT_START;";
+    cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+    using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
+    var rows = new List<(string? Nome, string? Documento, string? Contato, string? Visitou, string? Telefone, string? Email, DateTime? Entrada, DateTime? Saida)>();
+    while (await r.ReadAsync(http.RequestAborted))
+    {
+        rows.Add((
+            r.IsDBNull(0) ? null : r.GetString(0),
+            r.IsDBNull(1) ? null : r.GetString(1),
+            r.IsDBNull(2) ? null : r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.IsDBNull(4) ? null : r.GetString(4),
+            r.IsDBNull(5) ? null : r.GetString(5),
+            r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
+            r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7)
+        ));
+    }
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    var fileName = $"visitantes-empresa.{fmt}";
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("NOME,DOCUMENTO,CONTATO,VISITOU,TELEFONE,EMAIL,ENTRADA,SAIDA");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",", new[]
+            {
+                Csv(x.Nome),
+                Csv(x.Documento),
+                Csv(x.Contato),
+                Csv(x.Visitou),
+                Csv(x.Telefone),
+                Csv(x.Email),
+                Csv(x.Entrada?.ToString("yyyy-MM-dd HH:mm:ss")),
+                Csv(x.Saida?.ToString("yyyy-MM-dd HH:mm:ss"))
+            }));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var criteria = $"Empresa: {empresa} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
+    if (fmt == "xlsx")
+    {
+        var bytesX = BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildVisitorsPdf(clientInfo.Name, clientInfo.Logo, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
 }).RequireAuthorization();
 
 app.MapGet("/api/cms/employees/by-matricula", async (string matricula, int page, int pageSize, string? sort, string? dir) =>

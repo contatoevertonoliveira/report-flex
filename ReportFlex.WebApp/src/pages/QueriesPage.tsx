@@ -2,11 +2,13 @@ import React, { useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { DOOR_LOCATIONS } from '../doorLocations'
 
-type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
+type QuickKind = 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
 type Mode = 'prontas' | 'personalizadas'
 type Dataset =
   | 'access-agg'
   | 'transit'
+  | 'population'
+  | 'eventos-claviculario'
   | 'employees'
   | 'external'
   | 'card-by-cpf'
@@ -214,42 +216,54 @@ function todayBr(): string {
 
 const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'access-agg': [
-    { key: 'LevelId', label: 'LevelId' },
-    { key: 'Level', label: 'Level' },
-    { key: 'Total', label: 'Total' }
+    { key: 'LevelId', label: 'LEVEL ID' },
+    { key: 'Level', label: 'NÍVEL' },
+    { key: 'Total', label: 'TOTAL' }
   ],
   'transit': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Terminal', label: 'Terminal' },
-    { key: 'TerminalDescription', label: 'Terminal Desc.' },
-    { key: 'TransitDate', label: 'Data/Hora' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Terminal', label: 'TERMINAL' },
+    { key: 'TerminalDescription', label: 'TERMINAL DESC.' },
+    { key: 'TransitDate', label: 'DATA/HORA' }
+  ],
+  'population': [
+    { key: 'Label', label: 'LABEL' },
+    { key: 'Total', label: 'TOTAL' }
+  ],
+  'eventos-claviculario': [
+    { key: 'DataHora', label: 'DATA/HORA' },
+    { key: 'ResponsavelNome', label: 'RESPONSÁVEL' },
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'CodigoChave', label: 'CÓD. CHAVE' },
+    { key: 'ChaveDescricao', label: 'CHAVE' },
+    { key: 'Descricao', label: 'DESCRIÇÃO' }
   ],
   'employees': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Identifier', label: 'Matrícula' },
-    { key: 'StatusCadastro', label: 'Status' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' },
-    { key: 'UltimoAcesso', label: 'Último Acesso' },
-    { key: 'Empresa', label: 'Empresa' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Identifier', label: 'MATRÍCULA' },
+    { key: 'StatusCadastro', label: 'STATUS' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' },
+    { key: 'UltimoAcesso', label: 'ÚLTIMO ACESSO' },
+    { key: 'Empresa', label: 'EMPRESA' }
   ],
   'external': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Identifier', label: 'Matrícula' },
-    { key: 'StatusCadastro', label: 'Status' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' },
-    { key: 'UltimoAcesso', label: 'Último Acesso' },
-    { key: 'Empresa', label: 'Empresa' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Identifier', label: 'MATRÍCULA' },
+    { key: 'StatusCadastro', label: 'STATUS' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' },
+    { key: 'UltimoAcesso', label: 'ÚLTIMO ACESSO' },
+    { key: 'Empresa', label: 'EMPRESA' }
   ],
   'card-by-cpf': [
-    { key: 'Name', label: 'Nome' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'UserType', label: 'Tipo' }
+    { key: 'Name', label: 'NOME' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'UserType', label: 'TIPO' }
   ],
   'cpf-info': [
     { key: 'Name', label: 'NOME' },
@@ -708,7 +722,7 @@ export function QueriesPage(){
   const exportEnabledPdf = reportOptions.pdf
 
   const canExport = useMemo(() => {
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) {
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) {
       return data && data.length > 0
     }
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') {
@@ -722,7 +736,7 @@ export function QueriesPage(){
 
   const exportAllowsPdf = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -730,7 +744,7 @@ export function QueriesPage(){
 
   const exportAllowsXlsx = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -739,7 +753,7 @@ export function QueriesPage(){
   const exportAllowsCsv = useMemo(() => {
     if (!canExport) return false
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
   }, [canExport, mode, quickKind, cpfObter, dataset])
@@ -748,7 +762,7 @@ export function QueriesPage(){
   const readyQueryEnabled = mode !== 'prontas' ? true : !!queriesCfg[quickKind]
   const enabledReadyKeys = useMemo(() => {
     const keys: QuickKind[] = [
-      'access-agg', 'transit-period', 'door-critical',
+      'access-agg', 'transit-period', 'population', 'eventos-claviculario', 'door-critical',
       'employees', 'external', 'card-by-cpf',
       'cpf', 'matricula', 'empresa', 'cracha', 'nivel', 'visitantes'
     ]
@@ -908,6 +922,8 @@ export function QueriesPage(){
 
   function mapQuickToDataset(k: QuickKind): Dataset{
     if (k === 'transit-period') return 'transit'
+    if (k === 'population') return 'population'
+    if (k === 'eventos-claviculario') return 'eventos-claviculario'
     if (k === 'door-critical') return 'door-critical'
     if (k === 'employees') return 'employees'
     if (k === 'external') return 'external'
@@ -1008,6 +1024,28 @@ export function QueriesPage(){
           return r
         })
         setData(collected)
+      }else if (quickKind === 'population'){
+        const r0 = rangeIso(filters)
+        if(!r0){ setError('Informe início e fim'); setLoading(false); return }
+        const res = await api.reportsPopulation({ start: r0.startIso, end: r0.endIso })
+        setData(Array.isArray(res) ? res : [])
+      }else if (quickKind === 'eventos-claviculario'){
+        const { nome, matricula, chave, dc } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0){ setError('Informe início e fim'); setLoading(false); return }
+        const collected = await collectUpTo(maxPreview, async (page, ps) => {
+          const r = await api.reportsEventosClaviculario({ start: r0.startIso, end: r0.endIso, nome, matricula, chave, dc, page, pageSize: ps })
+          const items = (r as any)?.items ?? r ?? []
+          return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
+        })
+        setData(collected.map((x:any) => ({
+          DataHora: formatBrDateTime(x?.DataHora ?? x?.dataHora ?? null),
+          ResponsavelNome: x?.ResponsavelNome ?? x?.responsavelNome ?? null,
+          Matricula: x?.Matricula ?? x?.matricula ?? null,
+          CodigoChave: x?.CodigoChave ?? x?.codigoChave ?? null,
+          ChaveDescricao: x?.ChaveDescricao ?? x?.chaveDescricao ?? null,
+          Descricao: x?.Descricao ?? x?.descricao ?? null
+        })))
       }else if (quickKind === 'employees'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
@@ -1434,6 +1472,24 @@ export function QueriesPage(){
         const qs = new URLSearchParams(p).toString()
         url = `/api/reports/transit/export?${qs}`
         name = `transit.${format}`
+      }else if (mode === 'prontas' && quickKind === 'population'){
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+        url = `/api/reports/population/export?${qs}`
+        name = `populacao.${format}`
+      }else if (mode === 'prontas' && quickKind === 'eventos-claviculario'){
+        const { nome, matricula, chave, dc } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        const p: Record<string,string> = { start: r0.startIso, end: r0.endIso, format }
+        if (nome) p.nome = nome
+        if (matricula) p.matricula = matricula
+        if (chave) p.chave = chave
+        if (dc) p.dc = dc
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/reports/eventos-claviculario/export?${qs}`
+        name = `eventos-claviculario.${format}`
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
@@ -1477,6 +1533,87 @@ export function QueriesPage(){
           url = `/api/access/by-document/export?${qs}`
         }
         name = `acessos-${cpf}.${format}`
+      }else if (mode === 'prontas' && quickKind === 'matricula'){
+        const { matricula } = filters as any
+        if (!matricula) return
+        if (matriculaObter === 'info'){
+          const qs = new URLSearchParams({ matricula, format }).toString()
+          url = `/api/cms/person/by-matricula-info/export?${qs}`
+          name = `matricula-info-${matricula}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const onlyTurnstiles = matriculaObter === 'catracas'
+          const qs = new URLSearchParams({ matricula, start: r0.startIso, end: r0.endIso, onlyTurnstiles: String(onlyTurnstiles), format }).toString()
+          url = `/api/cms/transit/by-matricula/export?${qs}`
+          name = `transitos-matricula-${matricula}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'empresa'){
+        const { empresa } = filters as any
+        if (!empresa) return
+        if (empresaObter === 'info'){
+          const qs = new URLSearchParams({ empresa, format }).toString()
+          url = `/api/cms/company/by-name-info/export?${qs}`
+          name = `empresa-info-${empresa}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const qs = new URLSearchParams({ empresa, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/transit/by-empresa/export?${qs}`
+          name = `transitos-empresa-${empresa}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'cracha'){
+        const { cracha } = filters as any
+        if (!cracha) return
+        if (crachaObter === 'info'){
+          const qs = new URLSearchParams({ card: cracha, format }).toString()
+          url = `/api/cms/person/by-card-info/export?${qs}`
+          name = `cracha-info-${cracha}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const onlyTurnstiles = crachaObter === 'catracas'
+          const qs = new URLSearchParams({ card: cracha, start: r0.startIso, end: r0.endIso, onlyTurnstiles: String(onlyTurnstiles), format }).toString()
+          url = `/api/cms/transit/by-card-period/export?${qs}`
+          name = `transitos-cracha-${cracha}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'visitantes'){
+        const { documento, empresa } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        if (visitantesObter === 'documento'){
+          if (!documento) return
+          const qs = new URLSearchParams({ documento, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/visitors/by-document/export?${qs}`
+          name = `visitantes-documento-${documento}.${format}`
+        }else{
+          if (!empresa) return
+          const qs = new URLSearchParams({ empresa, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/visitors/by-company/export?${qs}`
+          name = `visitantes-empresa-${empresa}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'employees'){
+        const { matricula, empresa } = filters as any
+        const p: Record<string,string> = { format }
+        if (matricula) p.matricula = matricula
+        if (empresa) p.empresa = empresa
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/cms/employees/search/export?${qs}`
+        name = `funcionarios.${format}`
+      }else if (mode === 'prontas' && quickKind === 'external'){
+        const { matricula, empresa } = filters as any
+        const p: Record<string,string> = { format }
+        if (matricula) p.matricula = matricula
+        if (empresa) p.empresa = empresa
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/cms/external/search/export?${qs}`
+        name = `externos.${format}`
+      }else if (mode === 'prontas' && quickKind === 'card-by-cpf'){
+        const { cpf } = filters as any
+        if (!cpf) return
+        const qs = new URLSearchParams({ cpf, format }).toString()
+        url = `/api/cms/card/by-cpf/export?${qs}`
+        name = `cracha-por-cpf-${cpf}.${format}`
       }
 
       if (!url || !name) return
@@ -1986,6 +2123,7 @@ export function QueriesPage(){
   }, [mode, quickColumns, datasetColumns])
 
   const filteredData = useMemo(()=>{
+    if (mode === 'prontas' && quickKind === 'employees') return data
     const term = (searchTerm || '').toLowerCase().trim()
     if (!term) return data
     const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
@@ -2001,7 +2139,7 @@ export function QueriesPage(){
     })
   }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
 
-  const hideSearchBar = mode === 'prontas' && quickKind === 'cpf' && cpfObter === 'info'
+  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees')
 
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
@@ -2016,6 +2154,25 @@ export function QueriesPage(){
     const start = (currentPage - 1) * pageSize
     return previewData.slice(start, start + pageSize)
   }, [previewData, currentPage, pageSize])
+
+  const formatCellValue = (row: any, key: string) => {
+    const v = getRowValue(row, key)
+    if (v == null) return ''
+    const k = (key || '').toLowerCase()
+    if (
+      k.includes('datahora') ||
+      k.includes('transitdate') ||
+      k.includes('cadastro') ||
+      k.includes('expira') ||
+      k.includes('ultimoacesso') ||
+      k.includes('transito') ||
+      k.includes('entrada') ||
+      k.includes('saida') ||
+      k.includes('date') ||
+      k.includes('data')
+    ) return formatBrDateTime(v)
+    return String(v)
+  }
 
   function confirmCloseExport() {
     if (exportTimerRef.current) clearInterval(exportTimerRef.current)
@@ -2315,6 +2472,8 @@ export function QueriesPage(){
             {([
               { key:'access-agg', label:'Acessos Agregados' },
               { key:'transit-period', label:'Trânsito por Período' },
+              { key:'population', label:'População' },
+              { key:'eventos-claviculario', label:'Eventos_Claviculario' },
               { key:'door-critical', label:'Eventos de Porta' },
               { key:'employees', label:'Funcionários' },
               { key:'external', label:'Externos' },
@@ -2345,7 +2504,7 @@ export function QueriesPage(){
                         setSearchTerm('')
                         setSearchColumn('*')
                         setCurrentPage(1)
-                        if (opt.key === 'door-critical') {
+                        if (opt.key === 'door-critical' || opt.key === 'population' || opt.key === 'eventos-claviculario') {
                           const today = todayBr()
                           setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }))
                         }
@@ -2365,7 +2524,7 @@ export function QueriesPage(){
 
           {readyQueryEnabled && (
           <div className="queries-row" style={{marginBottom:8}}>
-            {(quickKind === 'transit-period') && (
+            {(quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario') && (
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
@@ -2392,6 +2551,26 @@ export function QueriesPage(){
                     <div className="input-group">
                       <span className="input-group-text"><i className="bi bi-upc-scan" /></span>
                       <input className="form-control" placeholder="Terminal (opcional)" value={filters.terminal || ''} onChange={e=> setFilters({...filters, terminal: e.target.value})} />
+                    </div>
+                  </>
+                )}
+                {quickKind === 'eventos-claviculario' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-person" /></span>
+                      <input className="form-control" placeholder="Nome (opcional)" value={filters.nome || ''} onChange={e=> setFilters({...filters, nome: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-hash" /></span>
+                      <input className="form-control" placeholder="Matrícula (opcional)" value={filters.matricula || ''} onChange={e=> setFilters({...filters, matricula: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-key" /></span>
+                      <input className="form-control" placeholder="Chave (opcional)" value={filters.chave || ''} onChange={e=> setFilters({...filters, chave: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-filter" /></span>
+                      <input className="form-control" placeholder="DC (opcional)" value={filters.dc || ''} onChange={e=> setFilters({...filters, dc: e.target.value})} />
                     </div>
                   </>
                 )}
@@ -3090,7 +3269,7 @@ export function QueriesPage(){
           <tbody>
             {Array.isArray(pageRows) && pageRows.map((row, idx)=> (
               <tr key={idx}>
-                {tableColumns.map(c => <td key={c.key}>{String(getRowValue(row, c.key) ?? '')}</td>)}
+                {tableColumns.map(c => <td key={c.key}>{formatCellValue(row, c.key)}</td>)}
               </tr>
             ))}
           </tbody>
