@@ -2139,7 +2139,7 @@ export function QueriesPage(){
     })
   }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
 
-  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees')
+  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees' || quickKind === 'card-by-cpf')
 
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
@@ -2357,17 +2357,17 @@ export function QueriesPage(){
       {reportsModal && (
         <div className="modal show" style={{display:'block'}}>
           <div className="modal-dialog modal-lg">
-            <div className="modal-content">
+            <div className="modal-content shadow-lg border-0">
               <div className="modal-header">
                 <h5 className="modal-title">Relatórios</h5>
                 <button type="button" className="btn-close" onClick={()=> setReportsModal(false)}></button>
               </div>
               <div className="modal-body">
                 {exportsToday.length === 0 ? (
-                  <div className="text-muted">Nenhum relatório exportado hoje.</div>
+                  <div>Nenhum relatório exportado hoje.</div>
                 ) : (
                   <div className="table-responsive">
-                    <table className="table table-sm align-middle">
+                    <table className="table table-sm align-middle rf-table-light">
                       <thead>
                         <tr>
                           <th style={{width:90}}>Hora</th>

@@ -5526,10 +5526,19 @@ SELECT
     END AS StatusCadastro,
     la.LastAccess AS UltimoAcesso
 FROM ExternalRegular x
-INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN (
+    SELECT c0.SbiID, MAX(CAST(c0.CardNumber AS varchar(100))) AS CardNumber
+    FROM Card c0
+    WHERE c0.CardNumber IS NOT NULL
+    GROUP BY c0.SbiID
+) c ON c.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
-OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = x.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+LEFT JOIN (
+    SELECT t0.SBI_ID, MAX(t0.TRANSIT_DATE) AS LastAccess
+    FROM HA_TRANSIT t0
+    GROUP BY t0.SBI_ID
+) la ON la.SBI_ID = x.SbiID
 {whereSql}
 ORDER BY x.Name ASC";
     
@@ -11623,16 +11632,25 @@ SELECT
     END AS StatusCadastro,
     la.LastAccess AS UltimoAcesso
 FROM ExternalRegular x
-INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = x.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN (
+    SELECT c0.SbiID, MAX(CAST(c0.CardNumber AS varchar(100))) AS CardNumber
+    FROM Card c0
+    WHERE c0.CardNumber IS NOT NULL
+    GROUP BY c0.SbiID
+) c ON c.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
-OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = x.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+LEFT JOIN (
+    SELECT t0.SBI_ID, MAX(t0.TRANSIT_DATE) AS LastAccess
+    FROM HA_TRANSIT t0
+    GROUP BY t0.SBI_ID
+) la ON la.SBI_ID = x.SbiID
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM ExternalRegular x
-INNER JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 {whereSql}";
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
