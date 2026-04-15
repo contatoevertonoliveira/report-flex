@@ -98,29 +98,26 @@ export default function App() {
   return (
     <div className="layout" style={{ '--sidebar-width': showSidebar ? (expanded ? '250px' : '80px') : '0px' } as React.CSSProperties}>
       {showSidebar && <Sidebar expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
-      <main style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
-        {location.pathname !== '/login' && (
-          <div className="page-logo-mark">
-            <img src="/img/reportFlex.png" alt="Report Flex" />
-          </div>
-        )}
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/alterar-senha" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
-          <Route path="/consultas" element={<RequireScreenEnabled screenKey="consultas"><RequireAuth><QueriesPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/consultas-config" element={<RequireScreenEnabled screenKey="consultas-config"><RequireAdminOrSuper><ConsultasConfigPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
-          <Route path="/logs" element={<RequireScreenEnabled screenKey="logs"><RequireAdminOrSuper><LogsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
-          <Route path="/mensagens" element={<RequireScreenEnabled screenKey="mensagens"><RequireAuth><MessagesPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/inbox" element={<RequireScreenEnabled screenKey="inbox"><RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin></RequireScreenEnabled>} />
-          <Route path="/configuracoes" element={<RequireScreenEnabled screenKey="configuracoes"><RequireAdminOrSuper><SettingsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
-          <Route path="/clientes" element={<RequireScreenEnabled screenKey="clientes"><RequireAdminOrSuper><ClientesPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
-          <Route path="/prestadores" element={<RequireScreenEnabled screenKey="prestadores"><RequireAuth><PrestadoresPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/transit" element={<RequireScreenEnabled screenKey="transit"><RequireAuth><TransitPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/employees" element={<RequireScreenEnabled screenKey="employees"><RequireAuth><EmployeesPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/external" element={<RequireScreenEnabled screenKey="external"><RequireAuth><ExternalPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="/access" element={<RequireScreenEnabled screenKey="access"><RequireAuth><AccessPage /></RequireAuth></RequireScreenEnabled>} />
-          <Route path="*" element={<Navigate to="/login" />} />
-        </Routes>
+      <main className={'app-main' + (location.pathname === '/login' ? ' app-main-login' : '')} style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
+        <div className="app-content">
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/alterar-senha" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
+            <Route path="/consultas" element={<RequireScreenEnabled screenKey="consultas"><RequireAuth><QueriesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/consultas-config" element={<RequireScreenEnabled screenKey="consultas-config"><RequireAdminOrSuper><ConsultasConfigPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/logs" element={<RequireScreenEnabled screenKey="logs"><RequireAdminOrSuper><LogsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/mensagens" element={<RequireScreenEnabled screenKey="mensagens"><RequireAuth><MessagesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/inbox" element={<RequireScreenEnabled screenKey="inbox"><RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin></RequireScreenEnabled>} />
+            <Route path="/configuracoes" element={<RequireScreenEnabled screenKey="configuracoes"><RequireAdminOrSuper><SettingsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/clientes" element={<RequireScreenEnabled screenKey="clientes"><RequireAdminOrSuper><ClientesPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/prestadores" element={<RequireScreenEnabled screenKey="prestadores"><RequireAuth><PrestadoresPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/transit" element={<RequireScreenEnabled screenKey="transit"><RequireAuth><TransitPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/employees" element={<RequireScreenEnabled screenKey="employees"><RequireAuth><EmployeesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/external" element={<RequireScreenEnabled screenKey="external"><RequireAuth><ExternalPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/access" element={<RequireScreenEnabled screenKey="access"><RequireAuth><AccessPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="*" element={<Navigate to="/login" />} />
+          </Routes>
+        </div>
       </main>
       <div style={{
         position:'fixed', top:16, right:16, display:'flex', flexDirection:'column', gap:8, zIndex: 9999

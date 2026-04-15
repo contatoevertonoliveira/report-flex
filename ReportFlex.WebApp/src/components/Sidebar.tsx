@@ -19,6 +19,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   const [profileSaving, setProfileSaving] = React.useState(false)
   const [screensCfgTs, setScreensCfgTs] = React.useState(0)
   const [userName, setUserName] = React.useState<string | null>(null)
+  const [confirmSwitchUserOpen, setConfirmSwitchUserOpen] = React.useState(false)
   const screensCfg = React.useMemo(() => {
     try{
       const raw = localStorage.getItem('rf_screens_config')
@@ -119,7 +120,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     ...(isSuperAdmin && isScreenEnabled('inbox') ? [{ label: 'Inbox', href: '/inbox', icon: 'bi-inbox' }] : [])
   ]
   function handleSwitchUser(){
-    window.location.href = '/login'
+    setConfirmSwitchUserOpen(true)
   }
   function handleLogout(){
     import('../api').then(m=> m.logout())
@@ -365,6 +366,46 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
           </div>
         )}
       </div>
+      {confirmSwitchUserOpen && (
+        <div
+          style={{
+            position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex: 2500
+          }}
+          onClick={(e)=> { if (e.target === e.currentTarget) setConfirmSwitchUserOpen(false) }}
+        >
+          <div className="card" style={{minWidth:320, maxWidth:420}}>
+            <div className="card-header d-flex justify-content-between align-items-center">
+              <span>Trocar de Usuário</span>
+              <button type="button" className="btn-close" aria-label="Close" onClick={()=> setConfirmSwitchUserOpen(false)} />
+            </div>
+            <div className="card-body">
+              <div style={{fontSize:14}}>
+                Deseja realmente sair e voltar para a tela de login?
+              </div>
+              {userName && (
+                <div className="text-muted" style={{marginTop:8, fontSize:12}}>
+                  Usuário atual: {userName}
+                </div>
+              )}
+            </div>
+            <div className="card-footer d-flex justify-content-end gap-2">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={()=> setConfirmSwitchUserOpen(false)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2"
+                onClick={() => {
+                  setConfirmSwitchUserOpen(false)
+                  handleLogout()
+                }}
+              >
+                <i className="bi bi-box-arrow-right" /> Sair
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {profileOpen && isClient && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex: 2000

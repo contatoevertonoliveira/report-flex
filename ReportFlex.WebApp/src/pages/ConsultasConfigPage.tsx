@@ -51,7 +51,7 @@ export function ConsultasConfigPage() {
     { key:'visitantes', label:'Visitantes' }
   ]
   return (
-    <div className="container-fluid">
+    <section className="page">
       <div className="card">
         <div className="card-header d-flex justify-content-between align-items-center">
           <div className="d-flex align-items-center gap-2">
@@ -89,6 +89,6 @@ export function ConsultasConfigPage() {
           </div>
         </div>
       </div>
-    </div>
+    </section>
   )
 }

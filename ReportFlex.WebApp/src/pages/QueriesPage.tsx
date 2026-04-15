@@ -2190,6 +2190,16 @@ export function QueriesPage(){
     setShowCloseConfirm(false)
   }
 
+  if (mode === 'prontas' && enabledReadyKeys.length === 0) {
+    return (
+      <section className="queries">
+        <div className="alert alert-warning" style={{marginTop:12}}>
+          Nenhuma consulta pronta habilitada para exibição. Ative em Consultas Config.
+        </div>
+      </section>
+    )
+  }
+
   return (
     <section className="queries">
       <h2>Consultas</h2>
