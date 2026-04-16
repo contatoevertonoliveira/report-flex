@@ -23,6 +23,18 @@ export function SettingsPage(){
   const [authStatus, setAuthStatus] = useState<any | null>(null)
   const [authMode, setAuthMode] = useState<any | null>(null)
   const [loginOnlyStatus, setLoginOnlyStatus] = useState<any | null>(null)
+  const [sqlInstancesLoading, setSqlInstancesLoading] = useState(false)
+  const [sqlInstances, setSqlInstances] = useState<Array<{ dataSource: string, server?: string|null, instance?: string|null, version?: string|null }>>([])
+  const [sqlInstance, setSqlInstance] = useState('')
+  const [sqlDatabasesLoading, setSqlDatabasesLoading] = useState(false)
+  const [sqlDatabases, setSqlDatabases] = useState<string[]>([])
+  const [sqlDbCms, setSqlDbCms] = useState('CMS')
+  const [sqlDbLogins, setSqlDbLogins] = useState('Logins')
+  const [sqlDbEms, setSqlDbEms] = useState('EMS')
+  const [sqlTablesLoading, setSqlTablesLoading] = useState<Record<string, boolean>>({})
+  const [sqlTables, setSqlTables] = useState<Record<string, string[]>>({})
+  const [sqlDiscoverErr, setSqlDiscoverErr] = useState<string | null>(null)
+  const [sqlApplyLoading, setSqlApplyLoading] = useState(false)
   const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
   const [screensCfgLoading, setScreensCfgLoading] = useState(false)
   const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
@@ -48,16 +60,6 @@ export function SettingsPage(){
         if (!c?.EMS) {
           setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
         }
-        // Aplicar automaticamente JP4REPORTDEV01 como padrão e modo Real se ainda não houver configuração persistida
-        try{
-          if (r?.mode !== 'Real' || !c?.CMS) {
-            await api.setDbMode('Real')
-            setMode('Real')
-          }
-          if (!c?.CMS) {
-            await saveRealPath()
-          }
-        }catch{}
         setDbInfoErr(null)
         try{
           const info = await api.getDbInfo()
@@ -113,6 +115,110 @@ export function SettingsPage(){
       }catch{}
     })()
   }, [])
+
+  async function loadSqlInstances(){
+    setSqlDiscoverErr(null)
+    setSqlInstancesLoading(true)
+    try{
+      const r: any = await api.sqlInstances()
+      const items = Array.isArray(r?.items) ? r.items : []
+      setSqlInstances(items)
+      if (!sqlInstance && items[0]?.dataSource) setSqlInstance(String(items[0].dataSource))
+    }catch(e:any){
+      setSqlDiscoverErr(e?.message || 'Falha ao buscar instâncias SQL')
+      setSqlInstances([])
+    }finally{
+      setSqlInstancesLoading(false)
+    }
+  }
+
+  async function loadSqlDatabases(){
+    if (!sqlInstance) return
+    setSqlDiscoverErr(null)
+    setSqlDatabasesLoading(true)
+    try{
+      const r: any = await api.sqlDatabases(sqlInstance)
+      const items = Array.isArray(r?.items) ? r.items.map((x:any)=> String(x)) : []
+      setSqlDatabases(items)
+      if (items.includes('CMS')) setSqlDbCms('CMS')
+      if (items.includes('Logins')) setSqlDbLogins('Logins')
+      if (items.includes('EMS')) setSqlDbEms('EMS')
+      else if (items.includes('EMSEVENTS')) setSqlDbEms('EMSEVENTS')
+      else if (items.includes('hwreportsview')) setSqlDbEms('hwreportsview')
+    }catch(e:any){
+      setSqlDiscoverErr(e?.message || 'Falha ao listar bases')
+      setSqlDatabases([])
+    }finally{
+      setSqlDatabasesLoading(false)
+    }
+  }
+
+  async function loadSqlTablesPreview(database: string){
+    if (!sqlInstance || !database) return
+    setSqlTablesLoading(prev => ({ ...prev, [database]: true }))
+    try{
+      const r: any = await api.sqlTables(sqlInstance, database)
+      const items = Array.isArray(r?.items) ? r.items.map((x:any)=> String(x)) : []
+      setSqlTables(prev => ({ ...prev, [database]: items }))
+    }catch(e:any){
+      setSqlTables(prev => ({ ...prev, [database]: [String(e?.message || 'Falha ao listar tabelas')] }))
+    }finally{
+      setSqlTablesLoading(prev => ({ ...prev, [database]: false }))
+    }
+  }
+
+  function buildConnFromWizard(database: string){
+    const ds = sqlInstance
+    if (!ds || !database) return ''
+    const base = `Data Source=${ds};Initial Catalog=${database};Encrypt=True;TrustServerCertificate=True;`
+    if (useSqlAuth && sqlUser){
+      const u = `User ID=${sqlUser};`
+      const p = sqlPwd ? `Password=${sqlPwd};` : ''
+      return base + 'Integrated Security=False;' + u + p
+    }
+    return base + 'Integrated Security=True;'
+  }
+
+  async function applySqlWizardConnections(){
+    if (!sqlInstance) return
+    setErr(null); setMsg(null); setDbInfoErr(null); setSqlDiscoverErr(null)
+    setSqlApplyLoading(true)
+    try{
+      if (useSqlAuth && sqlUser){
+        await api.setSqlAuth({ user: sqlUser, pwd: sqlPwd })
+      }
+      const cms = buildConnFromWizard(sqlDbCms)
+      const logins = buildConnFromWizard(sqlDbLogins)
+      const ems = buildConnFromWizard(sqlDbEms)
+      const r: any = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems })
+      if (r?.CMS) setRealPath(r.CMS)
+      if (r?.EMS) setEmsPath(r.EMS)
+      setMsg('Configuração de conexão salva')
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+        setDbInfoErr(null)
+      }catch{
+        setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+      }
+      try{
+        const st = await api.testSqlAuth()
+        setAuthStatus(st)
+      }catch{}
+      try{
+        const md = await api.getSqlAuthMode()
+        setAuthMode(md)
+      }catch{}
+      try{
+        const lo = await api.testSqlLoginOnly()
+        setLoginOnlyStatus(lo)
+      }catch{}
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao salvar configuração')
+    }finally{
+      setSqlApplyLoading(false)
+    }
+  }
 
   async function applyRecommended(){
     setErr(null); setMsg(null); setDbInfoErr(null)
@@ -438,6 +544,119 @@ export function SettingsPage(){
                     <div>Teste login (master): {loginOnlyStatus?.ok ? (`OK (${loginOnlyStatus?.user||''})`) : (`Falha: ${loginOnlyStatus?.error||''}`)}</div>
                   </div>
                 </div>
+              </div>
+              <div className="border rounded p-3" style={{background:'#f8fafc'}}>
+                <div className="d-flex align-items-center" style={{gap:8, marginBottom:8}}>
+                  <i className="bi bi-hdd-network" />
+                  <strong>Assistente de Conexão</strong>
+                </div>
+                <div className="text-muted" style={{fontSize:12, marginBottom:10}}>
+                  Liste as instâncias SQL detectadas e escolha as bases para CMS / Logins / EMS. Depois aplique para o sistema usar as tabelas existentes.
+                </div>
+                <div className="d-flex flex-wrap align-items-end" style={{gap:12}}>
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary d-flex align-items-center"
+                    onClick={loadSqlInstances}
+                    disabled={sqlInstancesLoading}
+                  >
+                    {sqlInstancesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Buscando...</> : <><i className="bi bi-search me-1" /> Buscar instâncias</>}
+                  </button>
+                  <div style={{minWidth:320, flex:1}}>
+                    <label className="form-label" style={{fontSize:12, marginBottom:4}}>Instância SQL</label>
+                    <input
+                      className="form-control"
+                      list="sqlInstancesDatalist"
+                      placeholder="Ex: .\\SQLEXPRESS ou SERVIDOR\\INSTANCIA"
+                      value={sqlInstance}
+                      onChange={e=> { setSqlInstance(e.target.value); setSqlDatabases([]); setSqlTables({}); }}
+                    />
+                    <datalist id="sqlInstancesDatalist">
+                      {sqlInstances.map((it, idx) => (
+                        <option key={(it.dataSource || '') + '_' + idx} value={it.dataSource}>
+                          {it.dataSource}{it.version ? ` (v${it.version})` : ''}
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-primary d-flex align-items-center"
+                    onClick={loadSqlDatabases}
+                    disabled={!sqlInstance || sqlDatabasesLoading}
+                  >
+                    {sqlDatabasesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Carregando...</> : <><i className="bi bi-database me-1" /> Carregar bases</>}
+                  </button>
+                </div>
+                {sqlDiscoverErr && (
+                  <div className="alert alert-warning py-2 mt-2 mb-0">
+                    {sqlDiscoverErr}
+                  </div>
+                )}
+                {sqlDatabases.length > 0 && (
+                  <div className="row" style={{marginTop:12, rowGap:12}}>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base CMS</label>
+                      <select className="form-select" value={sqlDbCms} onChange={e=> { setSqlDbCms(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbCms)} disabled={!!sqlTablesLoading[sqlDbCms]}>
+                          {sqlTablesLoading[sqlDbCms] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbCms] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbCms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base Logins</label>
+                      <select className="form-select" value={sqlDbLogins} onChange={e=> { setSqlDbLogins(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbLogins)} disabled={!!sqlTablesLoading[sqlDbLogins]}>
+                          {sqlTablesLoading[sqlDbLogins] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbLogins] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbLogins].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base EMS</label>
+                      <select className="form-select" value={sqlDbEms} onChange={e=> { setSqlDbEms(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbEms)} disabled={!!sqlTablesLoading[sqlDbEms]}>
+                          {sqlTablesLoading[sqlDbEms] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbEms] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbEms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {sqlDatabases.length > 0 && (
+                  <div className="d-flex justify-content-end" style={{marginTop:12}}>
+                    <button
+                      type="button"
+                      className="btn btn-primary d-flex align-items-center"
+                      onClick={applySqlWizardConnections}
+                      disabled={sqlApplyLoading || !sqlInstance}
+                    >
+                      {sqlApplyLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Aplicando...</> : <><i className="bi bi-check2-circle me-1" /> Aplicar conexões</>}
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
                 <div className="input-group" style={{minWidth:420}}>

@@ -1350,6 +1350,154 @@ app.MapGet("/api/admin/sql/test-auth", async () =>
     return Results.Ok(result);
 }).RequireAuthorization();
 
+app.MapGet("/api/admin/sql/instances", async () =>
+{
+    try
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return;
+            candidates.Add(s.Trim());
+        }
+
+        Add(".");
+        Add("(local)");
+        Add("localhost");
+        Add("127.0.0.1");
+
+        var machine = Environment.MachineName;
+        Add(machine);
+        Add(machine + "\\SQLEXPRESS");
+        Add(".\\SQLEXPRESS");
+        Add("localhost\\SQLEXPRESS");
+
+        try
+        {
+            foreach (var key in new[] { "CMS", "Logins", "EMS" })
+            {
+                var conn = GetConn(key);
+                if (string.IsNullOrWhiteSpace(conn)) continue;
+                try
+                {
+                    var b = new SqlConnectionStringBuilder(conn);
+                    Add(b.DataSource);
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        var list = new List<Dictionary<string, object?>>();
+        foreach (var ds in candidates.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var b = new SqlConnectionStringBuilder
+                {
+                    DataSource = ds,
+                    InitialCatalog = "master",
+                    Encrypt = true,
+                    TrustServerCertificate = true,
+                    IntegratedSecurity = true,
+                    ConnectTimeout = 2
+                };
+                using var cn = new SqlConnection(b.ConnectionString);
+                await cn.OpenAsync();
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = "SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(50))";
+                var ver = (string?)await cmd.ExecuteScalarAsync();
+                list.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["dataSource"] = ds,
+                    ["version"] = ver
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        return Results.Ok(new { items = list });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization("AdminsOnly");
+
+app.MapGet("/api/admin/sql/databases", async (string? dataSource) =>
+{
+    if (string.IsNullOrWhiteSpace(dataSource))
+    {
+        return Results.BadRequest(new { error = "Parâmetro 'dataSource' é obrigatório." });
+    }
+    try
+    {
+        var b = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            InitialCatalog = "master",
+            Encrypt = true,
+            TrustServerCertificate = true,
+            IntegratedSecurity = true
+        };
+        using var cn = new SqlConnection(b.ConnectionString);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name";
+        using var r = await cmd.ExecuteReaderAsync();
+        var items = new List<string>();
+        while (await r.ReadAsync())
+        {
+            if (!r.IsDBNull(0)) items.Add(r.GetString(0));
+        }
+        return Results.Ok(new { items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization("AdminsOnly");
+
+app.MapGet("/api/admin/sql/tables", async (string? dataSource, string? database) =>
+{
+    if (string.IsNullOrWhiteSpace(dataSource) || string.IsNullOrWhiteSpace(database))
+    {
+        return Results.BadRequest(new { error = "Parâmetros 'dataSource' e 'database' são obrigatórios." });
+    }
+    try
+    {
+        var b = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            InitialCatalog = database,
+            Encrypt = true,
+            TrustServerCertificate = true,
+            IntegratedSecurity = true
+        };
+        using var cn = new SqlConnection(b.ConnectionString);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME";
+        using var r = await cmd.ExecuteReaderAsync();
+        var items = new List<string>();
+        while (await r.ReadAsync())
+        {
+            if (!r.IsDBNull(0)) items.Add(r.GetString(0));
+        }
+        return Results.Ok(new { items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).RequireAuthorization("AdminsOnly");
+
 app.MapGet("/api/admin/db-table/rows", async (string db, string table, int page, int pageSize) =>
 {
     if (string.IsNullOrWhiteSpace(db) || string.IsNullOrWhiteSpace(table))

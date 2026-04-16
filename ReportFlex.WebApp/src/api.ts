@@ -208,6 +208,10 @@ export const api = {
 
   getDbInfo: async () => withAuth(apiFetch('/api/admin/db-info', { headers: headers() })),
   getSqlLogins: async () => withAuth(apiFetch('/api/admin/sql/logins', { headers: headers() })),
+  sqlInstances: async () => withAuth(apiFetch('/api/admin/sql/instances', { headers: headers() })),
+  sqlDatabases: async (dataSource: string) => withAuth(apiFetch('/api/admin/sql/databases?dataSource=' + encodeURIComponent(dataSource), { headers: headers() })),
+  sqlTables: async (dataSource: string, database: string) =>
+    withAuth(apiFetch('/api/admin/sql/tables?dataSource=' + encodeURIComponent(dataSource) + '&database=' + encodeURIComponent(database), { headers: headers() })),
   testSqlAuth: async () => withAuth(apiFetch('/api/admin/sql/test-auth', { headers: headers() })),
   getSqlAuthMode: async () => withAuth(apiFetch('/api/admin/sql/auth-mode', { headers: headers() })),
   testSqlLoginOnly: async () => withAuth(apiFetch('/api/admin/sql/test-login-only', { headers: headers() })),
