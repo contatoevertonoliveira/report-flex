@@ -8,7 +8,7 @@ import { EmployeesPage } from './pages/EmployeesPage'
 import { ExternalPage } from './pages/ExternalPage'
 import { AccessPage } from './pages/AccessPage'
 import { LoginPage } from './pages/LoginPage'
-import { RequireAuth, RequireSuperAdmin, RequireNotClient, RequireAdminOrSuper } from './components/RequireAuth'
+import { RequireAuth, RequireSuperAdmin, RequireNotClient, RequireAdminOrSuper, RequireScreenEnabled } from './components/RequireAuth'
 import { useLocation } from 'react-router-dom'
 import { QueriesPage } from './pages/QueriesPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -17,11 +17,26 @@ import { AdminMessagesPage } from './pages/AdminMessagesPage'
 import { ConsultasConfigPage } from './pages/ConsultasConfigPage'
 import { ChangePasswordPage } from './pages/ChangePasswordPage'
 import { LogsPage } from './pages/LogsPage'
+import { api } from './api'
 
 export default function App() {
-  const [expanded, setExpanded] = React.useState(true)
+  const [expanded, setExpanded] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('rf_sidebar_expanded')
+      return saved !== null ? JSON.parse(saved) : true
+    } catch {
+      return true
+    }
+  })
+
+  React.useEffect(() => {
+    localStorage.setItem('rf_sidebar_expanded', JSON.stringify(expanded))
+  }, [expanded])
+
   const location = useLocation()
   const showSidebar = location.pathname !== '/login'
+  const screensFetchedRef = React.useRef(false)
+  const [, setScreensCfgTick] = React.useState(0)
   const [toasts, setToasts] = React.useState<Array<{ id: number, type: 'success'|'error'|'info'|'warning', message: string }>>([])
 
   React.useEffect(() => {
@@ -51,32 +66,58 @@ export default function App() {
     return () => window.removeEventListener('app:toast', handler as EventListener)
   }, [])
 
+  React.useEffect(() => {
+    const handler = () => {
+      setScreensCfgTick(Date.now())
+    }
+    window.addEventListener('rf:screens-config', handler as EventListener)
+    window.addEventListener('storage', handler)
+    return () => {
+      window.removeEventListener('rf:screens-config', handler as EventListener)
+      window.removeEventListener('storage', handler)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    if (!showSidebar) return
+    if (!localStorage.getItem('rf_token')) return
+    if (screensFetchedRef.current) return
+    screensFetchedRef.current = true
+    ;(async () => {
+      try{
+        const cfg: any = await api.getScreensConfig()
+        if (cfg && typeof cfg === 'object'){
+          localStorage.setItem('rf_screens_config', JSON.stringify(cfg))
+          localStorage.setItem('rf_screens_config_ts', String(Date.now()))
+          window.dispatchEvent(new Event('rf:screens-config'))
+        }
+      }catch{}
+    })()
+  }, [showSidebar])
+
   return (
-    <div className="layout">
+    <div className="layout" style={{ '--sidebar-width': showSidebar ? (expanded ? '250px' : '80px') : '0px' } as React.CSSProperties}>
       {showSidebar && <Sidebar expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
-      <main style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
-        {location.pathname !== '/login' && (
-          <div className="page-logo-mark">
-            <img src="http://localhost:5000/images-legacy/Logo_Principal_Fundo2.png" alt="Report Flex" />
-          </div>
-        )}
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/alterar-senha" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
-          <Route path="/consultas" element={<RequireAuth><QueriesPage /></RequireAuth>} />
-          <Route path="/consultas-config" element={<RequireAdminOrSuper><ConsultasConfigPage /></RequireAdminOrSuper>} />
-          <Route path="/logs" element={<RequireAdminOrSuper><LogsPage /></RequireAdminOrSuper>} />
-          <Route path="/mensagens" element={<RequireAuth><MessagesPage /></RequireAuth>} />
-          <Route path="/inbox" element={<RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin>} />
-          <Route path="/configuracoes" element={<RequireNotClient><SettingsPage /></RequireNotClient>} />
-          <Route path="/clientes" element={<RequireSuperAdmin><ClientesPage /></RequireSuperAdmin>} />
-          <Route path="/prestadores" element={<RequireAuth><PrestadoresPage /></RequireAuth>} />
-          <Route path="/transit" element={<RequireAuth><TransitPage /></RequireAuth>} />
-          <Route path="/employees" element={<RequireAuth><EmployeesPage /></RequireAuth>} />
-          <Route path="/external" element={<RequireAuth><ExternalPage /></RequireAuth>} />
-          <Route path="/access" element={<RequireAuth><AccessPage /></RequireAuth>} />
-          <Route path="*" element={<Navigate to="/login" />} />
-        </Routes>
+      <main className={'app-main' + (location.pathname === '/login' ? ' app-main-login' : '')} style={{ overflow: showSidebar ? 'auto' : 'hidden', position:'relative' }}>
+        <div className="app-content">
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/alterar-senha" element={<RequireAuth><ChangePasswordPage /></RequireAuth>} />
+            <Route path="/consultas" element={<RequireScreenEnabled screenKey="consultas"><RequireAuth><QueriesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/consultas-config" element={<RequireScreenEnabled screenKey="consultas-config"><RequireAdminOrSuper><ConsultasConfigPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/logs" element={<RequireScreenEnabled screenKey="logs"><RequireAdminOrSuper><LogsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/mensagens" element={<RequireScreenEnabled screenKey="mensagens"><RequireAuth><MessagesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/inbox" element={<RequireScreenEnabled screenKey="inbox"><RequireSuperAdmin><AdminMessagesPage /></RequireSuperAdmin></RequireScreenEnabled>} />
+            <Route path="/configuracoes" element={<RequireScreenEnabled screenKey="configuracoes"><RequireAdminOrSuper><SettingsPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/clientes" element={<RequireScreenEnabled screenKey="clientes"><RequireAdminOrSuper><ClientesPage /></RequireAdminOrSuper></RequireScreenEnabled>} />
+            <Route path="/prestadores" element={<RequireScreenEnabled screenKey="prestadores"><RequireAuth><PrestadoresPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/transit" element={<RequireScreenEnabled screenKey="transit"><RequireAuth><TransitPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/employees" element={<RequireScreenEnabled screenKey="employees"><RequireAuth><EmployeesPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/external" element={<RequireScreenEnabled screenKey="external"><RequireAuth><ExternalPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="/access" element={<RequireScreenEnabled screenKey="access"><RequireAuth><AccessPage /></RequireAuth></RequireScreenEnabled>} />
+            <Route path="*" element={<Navigate to="/login" />} />
+          </Routes>
+        </div>
       </main>
       <div style={{
         position:'fixed', top:16, right:16, display:'flex', flexDirection:'column', gap:8, zIndex: 9999

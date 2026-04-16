@@ -2,11 +2,13 @@ import React, { useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { DOOR_LOCATIONS } from '../doorLocations'
 
-type QuickKind = 'access-agg' | 'transit-period' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
+type QuickKind = 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
 type Mode = 'prontas' | 'personalizadas'
 type Dataset =
   | 'access-agg'
   | 'transit'
+  | 'population'
+  | 'eventos-claviculario'
   | 'employees'
   | 'external'
   | 'card-by-cpf'
@@ -133,6 +135,23 @@ function formatBrDateTime(v: any): string {
   return String(v)
 }
 
+function normalizeDoorStatusDisplay(statusAcesso: any, detalheStatusAcesso: any): string {
+  const s1 = statusAcesso == null ? '' : String(statusAcesso).trim()
+  const s2 = detalheStatusAcesso == null ? '' : String(detalheStatusAcesso).trim()
+  const all = `${s1} ${s2}`.toLowerCase()
+  if (
+    all.includes('denied') ||
+    all.includes('negado') ||
+    all.includes('não liberado') ||
+    all.includes('nao liberado') ||
+    all.includes('inactive card') ||
+    (all.includes('inactive') && all.includes('card'))
+  ) return 'Negado'
+  if (all.includes('granted') || all.includes('liberado')) return 'Liberado'
+  const parts = [s1, s2].filter(Boolean)
+  return parts.length ? parts.join(' - ') : ''
+}
+
 function getRowValue(row: any, key: string): any {
   if (!row || !key) return undefined
   if (row[key] !== undefined) return row[key]
@@ -197,114 +216,128 @@ function todayBr(): string {
 
 const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
   'access-agg': [
-    { key: 'LevelId', label: 'LevelId' },
-    { key: 'Level', label: 'Level' },
-    { key: 'Total', label: 'Total' }
+    { key: 'LevelId', label: 'LEVEL ID' },
+    { key: 'Level', label: 'NÍVEL' },
+    { key: 'Total', label: 'TOTAL' }
   ],
   'transit': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Terminal', label: 'Terminal' },
-    { key: 'TerminalDescription', label: 'Terminal Desc.' },
-    { key: 'TransitDate', label: 'Data/Hora' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Terminal', label: 'TERMINAL' },
+    { key: 'TerminalDescription', label: 'TERMINAL DESC.' },
+    { key: 'TransitDate', label: 'DATA/HORA' }
+  ],
+  'population': [
+    { key: 'Label', label: 'LABEL' },
+    { key: 'Total', label: 'TOTAL' }
+  ],
+  'eventos-claviculario': [
+    { key: 'DataHora', label: 'DATA/HORA' },
+    { key: 'ResponsavelNome', label: 'RESPONSÁVEL' },
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'CodigoChave', label: 'CÓD. CHAVE' },
+    { key: 'ChaveDescricao', label: 'CHAVE' },
+    { key: 'Descricao', label: 'DESCRIÇÃO' }
   ],
   'employees': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Identifier', label: 'Matrícula' },
-    { key: 'StatusCadastro', label: 'Status' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' },
-    { key: 'UltimoAcesso', label: 'Último Acesso' },
-    { key: 'Empresa', label: 'Empresa' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Identifier', label: 'MATRÍCULA' },
+    { key: 'StatusCadastro', label: 'STATUS' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' },
+    { key: 'UltimoAcesso', label: 'ÚLTIMO ACESSO' },
+    { key: 'Empresa', label: 'EMPRESA' }
   ],
   'external': [
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Name', label: 'Nome' },
-    { key: 'Identifier', label: 'Matrícula' },
-    { key: 'StatusCadastro', label: 'Status' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' },
-    { key: 'UltimoAcesso', label: 'Último Acesso' },
-    { key: 'Empresa', label: 'Empresa' }
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Name', label: 'NOME' },
+    { key: 'Identifier', label: 'MATRÍCULA' },
+    { key: 'StatusCadastro', label: 'STATUS' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' },
+    { key: 'UltimoAcesso', label: 'ÚLTIMO ACESSO' },
+    { key: 'Empresa', label: 'EMPRESA' }
   ],
   'card-by-cpf': [
-    { key: 'Name', label: 'Nome' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'UserType', label: 'Tipo' }
+    { key: 'Name', label: 'NOME' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'UserType', label: 'TIPO' }
   ],
   'cpf-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Placa', label: 'PLACA' },
+    { key: 'Modelo', label: 'MODELO' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'document-access': [
-    { key: 'Name', label: 'Nome' },
-    { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Cartao', label: 'Crachá' },
-    { key: 'Direcao', label: 'Direção' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'Terminal', label: 'Terminal' },
-    { key: 'TerminalDescription', label: 'Descrição' },
-    { key: 'Transito', label: 'Trânsito' }
+    { key: 'DataHora', label: 'DATA/HORA' },
+    { key: 'TAG', label: 'TAG' },
+    { key: 'Acesso', label: 'ACESSO' },
+    { key: 'Evento', label: 'EVENTO' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'DocumentoMatricula', label: 'MATRÍCULA' },
+    { key: 'Cartao', label: 'CRACHÁ' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Status', label: 'STATUS' }
   ],
   'matricula-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'empresa-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' }
   ],
   'cracha-info': [
-    { key: 'Name', label: 'Nome' },
+    { key: 'Name', label: 'NOME' },
     { key: 'CPF', label: 'CPF' },
-    { key: 'Matricula', label: 'Matrícula' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'CardNumber', label: 'Crachá' },
-    { key: 'Cadastro', label: 'Cadastro' },
-    { key: 'Expira', label: 'Expira' }
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'Cadastro', label: 'CADASTRO' },
+    { key: 'Expira', label: 'EXPIRAÇÃO' }
   ],
   'visitors': [
-    { key: 'Nome', label: 'Nome' },
-    { key: 'Documento', label: 'Documento' },
-    { key: 'Contato', label: 'Contato' },
-    { key: 'Visitou', label: 'Visitou' },
-    { key: 'Telefone', label: 'Telefone' },
-    { key: 'Email', label: 'Email' },
-    { key: 'Entrada', label: 'Entrada' },
-    { key: 'Saida', label: 'Saída' }
+    { key: 'Nome', label: 'NOME' },
+    { key: 'Documento', label: 'DOCUMENTO' },
+    { key: 'Contato', label: 'CONTATO' },
+    { key: 'Visitou', label: 'VISITOU' },
+    { key: 'Telefone', label: 'TELEFONE' },
+    { key: 'Email', label: 'EMAIL' },
+    { key: 'Entrada', label: 'ENTRADA' },
+    { key: 'Saida', label: 'SAÍDA' }
   ],
   'door-critical': [
-    { key: 'Cartao', label: 'Cartão/Crachá' },
-    { key: 'NomeCompleto', label: 'Nome Completo' },
-    { key: 'Tipo', label: 'Tipo' },
-    { key: 'DataHora', label: 'Data/hora' },
-    { key: 'Evento', label: 'Evento' },
-    { key: 'Acesso', label: 'Acesso' },
-    { key: 'DocumentoMatricula', label: 'Documento/Matrícula' },
-    { key: 'StatusAcessoDisplay', label: 'Status/Acesso' },
-    { key: 'Empresa', label: 'Empresa' },
-    { key: 'TAG', label: 'TAG' }
+    { key: 'DataHora', label: 'DATA/HORA' },
+    { key: 'TAG', label: 'TAG' },
+    { key: 'Acesso', label: 'ACESSO' },
+    { key: 'Evento', label: 'EVENTO' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'DocumentoMatricula', label: 'MATRÍCULA' },
+    { key: 'Cartao', label: 'CRACHÁ' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'Empresa', label: 'EMPRESA' },
+    { key: 'StatusAcessoDisplay', label: 'STATUS' }
   ],
   'db-table': []
 }
@@ -324,17 +357,21 @@ export function QueriesPage(){
   const [exportUrl, setExportUrl] = useState<string | null>(null)
   const [exportErr, setExportErr] = useState<string | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const exportTimerRef = React.useRef<any>(null)
   const [exportJobId, setExportJobId] = useState<string | null>(null)
   const exportJobPollRef = React.useRef<any>(null)
   const [exportPos, setExportPos] = useState<{x:number, y:number}>({x:0, y:0})
   const exportDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
   const exportDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
-  const [exportFloatPos, setExportFloatPos] = useState<{x:number, y:number}>({x:0, y:0})
-  const exportFloatDragRef = React.useRef<{startX:number, startY:number, origX:number, origY:number} | null>(null)
-  const exportFloatDragHandlersRef = React.useRef<{move:(e:MouseEvent)=>void, up:(e:MouseEvent)=>void} | null>(null)
   const [reportsModal, setReportsModal] = useState(false)
-  const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }[]>([])
+  const [exportHistory, setExportHistory] = useState<{ id: string, ts: number, label: string, fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string, savedPath?: string }[]>([])
+  const [lastPdfRequestUrl, setLastPdfRequestUrl] = useState<string | null>(null)
+  const [lastPdfSavedPath, setLastPdfSavedPath] = useState<string | null>(null)
+  const [lastPdfFileName, setLastPdfFileName] = useState<string>('')
+  const restoredPdfOnceRef = React.useRef(false)
+  const [hasCachedPdf, setHasCachedPdf] = React.useState(false)
+  const [restoredCache, setRestoredCache] = React.useState(false)
   const [sqlModal, setSqlModal] = useState(false)
   const [sqlUser, setSqlUser] = useState('')
   const [sqlPwd, setSqlPwd] = useState('')
@@ -348,7 +385,7 @@ export function QueriesPage(){
   const [progress, setProgress] = useState(0)
   const progressTimerRef = React.useRef<any>(null)
   const [resultTotal, setResultTotal] = useState<number | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean }>({ csv: true, xlsx: true, excel: true, pdf: true, txt: false, word: false })
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean, customQueries: boolean }>({ csv: false, xlsx: true, excel: true, pdf: true, txt: false, word: false, customQueries: true })
 
   // Personalizadas
   const [dataset, setDataset] = useState<Dataset>('transit')
@@ -358,7 +395,7 @@ export function QueriesPage(){
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
   const maxPreview = 1000
-  const [cpfObter, setCpfObter] = useState<'info'|'todos'|'catracas'|'faciais'>('info')
+  const [cpfObter, setCpfObter] = useState<'info'|'todos'|'catracas-faciais'>('info')
   const [matriculaObter, setMatriculaObter] = useState<'info'|'todos'|'catracas'>('info')
   const [empresaObter, setEmpresaObter] = useState<'info'|'todos'>('info')
   const [crachaObter, setCrachaObter] = useState<'info'|'todos'|'catracas'>('info')
@@ -373,6 +410,7 @@ export function QueriesPage(){
   const [doorAllData, setDoorAllData] = useState(false)
   const [doorAllSources, setDoorAllSources] = useState(true)
   const [doorSources, setDoorSources] = useState<{ key: string, description?: string, group?: string, subGroup?: string }[]>([])
+  const [doorCriticalSources, setDoorCriticalSources] = useState<{ key: string, description?: string, group?: string, subGroup?: string }[]>([])
   const [doorSourcesLoading, setDoorSourcesLoading] = useState(false)
   const [doorSourcesErr, setDoorSourcesErr] = useState<string | null>(null)
   const [doorSelectedSources, setDoorSelectedSources] = useState<string[]>([])
@@ -413,7 +451,13 @@ export function QueriesPage(){
   const saveExportHistory = (items: any[]) => {
     try{
       localStorage.setItem(exportHistoryKey, JSON.stringify(items))
-    }catch{}
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao exportar'
+      setError(msg)
+      setExportErr(msg)
+      setExportStage('error')
+      setExportModal(true)
+    }
   }
 
   React.useEffect(() => {
@@ -428,8 +472,12 @@ export function QueriesPage(){
           excel: !!opts.excel,
           pdf: !!opts.pdf,
           txt: !!opts.txt,
-          word: !!opts.word
+          word: !!opts.word,
+          customQueries: !!opts.customQueries
         })
+        if (opts.customQueries === false) {
+          setMode('prontas')
+        }
       }catch{}
     })()
     return () => { mounted = false }
@@ -445,27 +493,62 @@ export function QueriesPage(){
   }, [])
 
   React.useEffect(() => {
-    try{
-      const raw = localStorage.getItem(doorSourcesCacheKey)
-      const st = raw ? JSON.parse(raw) : null
-      if (st && Array.isArray(st.items)) setDoorSources(st.items)
-    }catch{}
     setDoorSourcesLoading(true)
     setDoorSourcesErr(null)
-    api.reportsDoorSources({ daysBack: 3650 })
-      .then((r: any) => {
-        const items = Array.isArray(r?.items) ? r.items : []
-        setDoorSources(items)
-        try{
-          localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items }))
-        }catch{}
-      })
-      .catch((e:any) => {
-        setDoorSources([])
+    const fetchCritical = async () => {
+      const r: any = await api.reportsDoorCriticalSources({ daysBack: 3650 })
+      const items = Array.isArray(r?.items) ? r.items : []
+      setDoorCriticalSources(items)
+    }
+    const fetchGeneral = async () => {
+      // Tenta carregar do cache primeiro para Portas Gerais
+      try {
+        const raw = localStorage.getItem(doorSourcesCacheKey)
+        const st = raw ? JSON.parse(raw) : null
+        if (st && Array.isArray(st.items) && st.items.length > 0) {
+          setDoorSources(st.items)
+          setDoorSourcesLoading(false)
+          // Atualiza em background
+          api.reportsDoorSources({ daysBack: 3650 }).then(r => {
+            const items = Array.isArray(r?.items) ? r.items : []
+            if (items.length > 0) {
+              // Só atualiza se o que veio da API for maior ou a lista atual estiver vazia/pequena
+              setDoorSources(prev => {
+                if (items.length >= prev.length || prev.length <= 100) {
+                  localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items }))
+                  return items
+                }
+                return prev
+              })
+            }
+          }).catch(() => { })
+          return
+        }
+      } catch { }
+
+      const r: any = await api.reportsDoorSources({ daysBack: 3650 })
+      const items = Array.isArray(r?.items) ? r.items : []
+      setDoorSources(items)
+      if (items.length > 0) {
+        try { localStorage.setItem(doorSourcesCacheKey, JSON.stringify({ ts: Date.now(), items })) } catch { }
+      }
+    }
+    ; (async () => {
+      try {
+        if (quickKind === 'door-critical' && doorMode === 'critical') {
+          await fetchCritical()
+        } else {
+          await fetchGeneral()
+        }
+      } catch (e: any) {
+        if (quickKind === 'door-critical' && doorMode === 'critical') setDoorCriticalSources([])
+        else setDoorSources([])
         setDoorSourcesErr(e?.message || 'Falha ao carregar portas')
-      })
-      .finally(() => setDoorSourcesLoading(false))
-  }, [])
+      } finally {
+        setDoorSourcesLoading(false)
+      }
+    })()
+  }, [quickKind, doorMode])
 
   React.useEffect(() => {
     try{
@@ -477,6 +560,7 @@ export function QueriesPage(){
       if (!raw) return
       const st = JSON.parse(raw)
       if (!st || st.v !== 1) return
+      if (typeof st.lastPdfSavedPath === 'string' || typeof st.lastPdfRequestUrl === 'string') setHasCachedPdf(true)
       if (st.mode === 'prontas' || st.mode === 'personalizadas') setMode(st.mode)
       if (typeof st.quickKind === 'string') setQuickKind(st.quickKind)
       if (typeof st.dataset === 'string') setDataset(st.dataset)
@@ -486,6 +570,30 @@ export function QueriesPage(){
       if (typeof st.currentPage === 'number' && st.currentPage > 0) setCurrentPage(st.currentPage)
       if (st.filters && typeof st.filters === 'object') setFilters(st.filters)
       if (Array.isArray(st.data)) setData(st.data)
+      if (typeof st.resultTotal === 'number') setResultTotal(st.resultTotal)
+      if (typeof st.lastSuccessfulRun === 'number' && st.lastSuccessfulRun > 0) setLastSuccessfulRun(st.lastSuccessfulRun)
+      if (typeof st.doorMode === 'string') setDoorMode(st.doorMode)
+      if (Array.isArray(st.doorSources)) setDoorSources(st.doorSources)
+      if (typeof st.doorAllData === 'boolean') setDoorAllData(st.doorAllData)
+      if (typeof st.doorAllSources === 'boolean') setDoorAllSources(st.doorAllSources)
+      if (Array.isArray(st.doorSelectedSources)) setDoorSelectedSources(st.doorSelectedSources)
+      if (typeof st.doorPickSource === 'string') setDoorPickSource(st.doorPickSource)
+      if (typeof st.doorSourceFilter === 'string') setDoorSourceFilter(st.doorSourceFilter)
+      if (typeof st.doorName === 'string') setDoorName(st.doorName)
+      if (typeof st.doorSite === 'string') setDoorSite(st.doorSite)
+      if (typeof st.lastPdfRequestUrl === 'string') setLastPdfRequestUrl(st.lastPdfRequestUrl)
+      if (typeof st.lastPdfSavedPath === 'string') setLastPdfSavedPath(st.lastPdfSavedPath)
+      if (typeof st.lastPdfFileName === 'string') setLastPdfFileName(st.lastPdfFileName)
+      if (st.exportModal === true) setExportModal(true)
+      if (typeof st.exportMinimized === 'boolean') setExportMinimized(st.exportMinimized)
+      if (typeof st.exportMaximized === 'boolean') setExportMaximized(st.exportMaximized)
+      if (typeof st.exportStage === 'string') setExportStage(st.exportStage)
+      if (typeof st.exportProgress === 'number') setExportProgress(st.exportProgress)
+      if (typeof st.exportFileName === 'string') setExportFileName(st.exportFileName)
+      if (typeof st.exportFmt === 'string') setExportFmt(st.exportFmt)
+      if (typeof st.exportUrl === 'string') setExportUrl(st.exportUrl)
+      if (typeof st.exportErr === 'string') setExportErr(st.exportErr)
+      if (typeof st.exportJobId === 'string') setExportJobId(st.exportJobId)
       if (typeof st.cpfObter === 'string') setCpfObter(st.cpfObter)
       if (typeof st.matriculaObter === 'string') setMatriculaObter(st.matriculaObter)
       if (typeof st.empresaObter === 'string') setEmpresaObter(st.empresaObter)
@@ -493,7 +601,15 @@ export function QueriesPage(){
       if (typeof st.nivelObter === 'string') setNivelObter(st.nivelObter)
       if (typeof st.visitantesObter === 'string') setVisitantesObter(st.visitantesObter)
     }catch{}
+    setTimeout(() => { setRestoredCache(true) }, 0)
   }, [])
+
+  React.useEffect(() => {
+    if (restoredPdfOnceRef.current) return
+    if (!restoredCache) return
+    if (!hasCachedPdf) return
+    restoredPdfOnceRef.current = true
+  }, [restoredCache, hasCachedPdf])
 
   React.useEffect(() => {
     try{
@@ -502,6 +618,8 @@ export function QueriesPage(){
         return
       }
       if (!lastSuccessfulRun) return
+      const dataPreview = Array.isArray(data) ? data.slice(0, maxPreview) : []
+      const total = typeof resultTotal === 'number' ? resultTotal : (Array.isArray(data) ? data.length : 0)
       const snapshot = {
         v: 1,
         ts: Date.now(),
@@ -513,7 +631,31 @@ export function QueriesPage(){
         searchColumn,
         currentPage,
         filters,
-        data,
+        data: dataPreview,
+        resultTotal: total,
+        lastSuccessfulRun,
+        doorMode,
+        doorSources,
+        doorAllData,
+        doorAllSources,
+        doorSelectedSources,
+        doorPickSource,
+        doorSourceFilter,
+        doorName,
+        doorSite,
+        lastPdfRequestUrl,
+        lastPdfSavedPath,
+        lastPdfFileName,
+        exportModal,
+        exportMinimized,
+        exportMaximized,
+        exportStage,
+        exportFmt,
+        exportFileName,
+        exportProgress,
+        exportUrl,
+        exportErr,
+        exportJobId,
         cpfObter,
         matriculaObter,
         empresaObter,
@@ -523,14 +665,64 @@ export function QueriesPage(){
       }
       sessionStorage.setItem(cacheKey, JSON.stringify(snapshot))
     }catch{}
-  }, [lastSuccessfulRun])
+  }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal, exportMinimized, exportMaximized, exportUrl, exportProgress, exportJobId])
+
+  React.useEffect(() => {
+    if (!restoredCache) return
+    if (exportJobId && exportStage === 'generating') {
+      if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+      const h: Record<string, string> = {}
+      const t = localStorage.getItem('rf_token')
+      if (t) h['Authorization'] = `Bearer ${t}`
+      const cid = localStorage.getItem('rf_client_id')
+      if (cid) h['X-Client-Id'] = cid
+
+      exportJobPollRef.current = setInterval(async () => {
+        try {
+          const st = await fetch(`/api/reports/export-jobs/${exportJobId}`, { headers: h })
+          if (!st.ok) return
+          const s: any = await st.json()
+          const status = s?.status
+          const prog = Number(s?.progress ?? 0)
+          if (!Number.isNaN(prog)) {
+            let mapped = 65
+            if (prog >= 100) mapped = 100
+            else if (prog >= 90) mapped = 90
+            else if (prog >= 50) mapped = 75
+            else mapped = 65
+            setExportProgress(mapped)
+          }
+          if (status === 'done' && s?.downloadUrl) {
+            if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+            exportJobPollRef.current = null
+            setExportUrl(s.downloadUrl)
+            setExportStage('ready')
+            setExportProgress(100)
+          } else if (status === 'error') {
+            if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+            exportJobPollRef.current = null
+            const msg = s?.error || 'Falha ao exportar'
+            setError(msg)
+            setExportErr(msg)
+            setExportStage('error')
+          }
+        } catch { }
+      }, 1200)
+    }
+    return () => {
+      if (exportJobPollRef.current) {
+        clearInterval(exportJobPollRef.current)
+        exportJobPollRef.current = null
+      }
+    }
+  }, [restoredCache, exportJobId, exportStage])
 
   const exportEnabledCsv = reportOptions.csv
   const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
   const exportEnabledPdf = reportOptions.pdf
 
   const canExport = useMemo(() => {
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) {
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) {
       return data && data.length > 0
     }
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') {
@@ -544,7 +736,7 @@ export function QueriesPage(){
 
   const exportAllowsPdf = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -552,7 +744,7 @@ export function QueriesPage(){
 
   const exportAllowsXlsx = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -561,7 +753,7 @@ export function QueriesPage(){
   const exportAllowsCsv = useMemo(() => {
     if (!canExport) return false
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'door-critical')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
   }, [canExport, mode, quickKind, cpfObter, dataset])
@@ -570,7 +762,7 @@ export function QueriesPage(){
   const readyQueryEnabled = mode !== 'prontas' ? true : !!queriesCfg[quickKind]
   const enabledReadyKeys = useMemo(() => {
     const keys: QuickKind[] = [
-      'access-agg', 'transit-period', 'door-critical',
+      'access-agg', 'transit-period', 'population', 'eventos-claviculario', 'door-critical',
       'employees', 'external', 'card-by-cpf',
       'cpf', 'matricula', 'empresa', 'cracha', 'nivel', 'visitantes'
     ]
@@ -578,22 +770,27 @@ export function QueriesPage(){
   }, [queriesCfg])
 
   React.useEffect(() => {
+    if (!restoredCache) return
     if (mode !== 'prontas') return
     if (readyQueryEnabled) return
     if (enabledReadyKeys.length === 0) return
     setQuickKind(enabledReadyKeys[0])
     setData([])
     setError(null)
-  }, [mode, readyQueryEnabled, enabledReadyKeys])
+  }, [restoredCache, mode, readyQueryEnabled, enabledReadyKeys])
 
   const exportsToday = useMemo(() => {
     const k = todayKey()
     return exportHistory.filter(x => todayKey(x.ts) === k).sort((a,b)=> b.ts - a.ts)
   }, [exportHistory])
 
+  const activeDoorSources = useMemo(() => {
+    return doorMode === 'critical' ? doorCriticalSources : doorSources
+  }, [doorMode, doorCriticalSources, doorSources])
+
   const doorSourcesGrouped = useMemo(() => {
     const map = new Map<string, { label: string, items: { key: string, label: string }[] }>()
-    for (const s of doorSources) {
+    for (const s of activeDoorSources) {
       const g = (s.group || '').trim() || 'Outros'
       const sg = (s.subGroup || '').trim()
       const groupKey = `${g}__${sg}`
@@ -609,17 +806,39 @@ export function QueriesPage(){
       g.items.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
     }
     return groups
-  }, [doorSources])
+  }, [activeDoorSources])
 
   const doorSourceLabelByKey = useMemo(() => {
     const m = new Map<string, string>()
-    for (const s of doorSources) {
+    for (const s of activeDoorSources) {
       const desc = DOOR_LOCATIONS[s.key] || s.description
       const label = desc ? `${desc} (${s.key})` : s.key
       m.set(s.key, label)
     }
     return m
-  }, [doorSources])
+  }, [activeDoorSources])
+
+  React.useEffect(() => {
+    if (doorSelectedSources.length > 0 && doorAllSources) {
+      setDoorAllSources(false)
+    }
+  }, [doorSelectedSources, doorAllSources])
+
+  const autoRunTimerRef = React.useRef<any>(null)
+  React.useEffect(() => {
+    if (!restoredCache) return
+    if (mode !== 'prontas') return
+    if (quickKind !== 'door-critical') return
+    if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
+    autoRunTimerRef.current = setTimeout(() => {
+      runQuick()
+    }, 400)
+    return () => {
+      if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
+      autoRunTimerRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoredCache, mode, quickKind, doorMode, doorAllSources, doorSelectedSources.join('|')])
 
   const doorShortKey = (key: string) => {
     const parts = (key || '').split('_').filter(Boolean)
@@ -676,7 +895,6 @@ export function QueriesPage(){
     setExportProgress(0)
     setExportJobId(null)
     setExportPos({x:0, y:0})
-    setExportFloatPos({x:0, y:0})
     if (exportTimerRef.current) clearInterval(exportTimerRef.current)
     exportTimerRef.current = null
     if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
@@ -695,8 +913,17 @@ export function QueriesPage(){
     exportFloatDragRef.current = null
   }
 
+  function resetOnFilterChange(){
+    resetData()
+    setSearchTerm('')
+    setSearchColumn('*')
+    setCurrentPage(1)
+  }
+
   function mapQuickToDataset(k: QuickKind): Dataset{
     if (k === 'transit-period') return 'transit'
+    if (k === 'population') return 'population'
+    if (k === 'eventos-claviculario') return 'eventos-claviculario'
     if (k === 'door-critical') return 'door-critical'
     if (k === 'employees') return 'employees'
     if (k === 'external') return 'external'
@@ -797,6 +1024,28 @@ export function QueriesPage(){
           return r
         })
         setData(collected)
+      }else if (quickKind === 'population'){
+        const r0 = rangeIso(filters)
+        if(!r0){ setError('Informe início e fim'); setLoading(false); return }
+        const res = await api.reportsPopulation({ start: r0.startIso, end: r0.endIso })
+        setData(Array.isArray(res) ? res : [])
+      }else if (quickKind === 'eventos-claviculario'){
+        const { nome, matricula, chave, dc } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0){ setError('Informe início e fim'); setLoading(false); return }
+        const collected = await collectUpTo(maxPreview, async (page, ps) => {
+          const r = await api.reportsEventosClaviculario({ start: r0.startIso, end: r0.endIso, nome, matricula, chave, dc, page, pageSize: ps })
+          const items = (r as any)?.items ?? r ?? []
+          return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
+        })
+        setData(collected.map((x:any) => ({
+          DataHora: formatBrDateTime(x?.DataHora ?? x?.dataHora ?? null),
+          ResponsavelNome: x?.ResponsavelNome ?? x?.responsavelNome ?? null,
+          Matricula: x?.Matricula ?? x?.matricula ?? null,
+          CodigoChave: x?.CodigoChave ?? x?.codigoChave ?? null,
+          ChaveDescricao: x?.ChaveDescricao ?? x?.chaveDescricao ?? null,
+          Descricao: x?.Descricao ?? x?.descricao ?? null
+        })))
       }else if (quickKind === 'employees'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
@@ -845,12 +1094,35 @@ export function QueriesPage(){
           setData(list)
         }else{
           const mode = cpfObter === 'todos' ? 'all' : cpfObter
+          const toDoorLike = (x: any) => {
+            const nome = x?.Name ?? x?.name ?? null
+            const cpfV = x?.CPF ?? x?.cpf ?? null
+            const mat = x?.Matricula ?? x?.matricula ?? null
+            const empresa = x?.Empresa ?? x?.empresa ?? null
+            const cartao = x?.Cartao ?? x?.cartao ?? null
+            const direcao = x?.Direcao ?? x?.direcao ?? null
+            const terminal = x?.Terminal ?? x?.terminal ?? null
+            const desc = x?.TerminalDescription ?? x?.terminalDescription ?? x?.Descricao ?? x?.descricao ?? null
+            const transito = x?.Transito ?? x?.transito ?? null
+            return {
+              DataHora: formatBrDateTime(transito),
+              TAG: terminal,
+              Acesso: direcao,
+              Evento: desc,
+              NomeCompleto: nome,
+              DocumentoMatricula: mat || cpfV,
+              Cartao: cartao,
+              Tipo: x?.Tipo ?? x?.tipo ?? null,
+              Empresa: empresa,
+              Status: 'GRANTED'
+            }
+          }
           if (cpfSemPeriodo){
             const collected = await collectUpTo(maxPreview, async (page, ps) => {
               const r = await api.accessByDocumentAll({ documento: cpf, mode, page, pageSize: ps })
               return r
             })
-            setData(collected)
+            setData(collected.map(toDoorLike))
           }else{
             const r0 = rangeIso(filters)
             if(!r0){ setError('Informe início e fim'); setLoading(false); return }
@@ -858,7 +1130,7 @@ export function QueriesPage(){
               const r = await api.accessByDocument({ documento: cpf, start: r0.startIso, end: r0.endIso, mode, page, pageSize: ps })
               return r
             })
-            setData(collected)
+            setData(collected.map(toDoorLike))
           }
         }
       }else if (quickKind === 'matricula'){
@@ -958,29 +1230,37 @@ export function QueriesPage(){
             })()
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
         const src = doorAllSources ? undefined : doorSelectedSources.join(';')
-        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
-          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso })
+          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general'){
           const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
           const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); setLoading(false); return }
           const res = await api.reportsDoorGeneralBySite({ start: r0.startIso, end: r0.endIso, site: doorSite })
           const list = (res as any)?.data ?? res
           const rows = Array.isArray(list) ? list : []
-          setData(rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: [getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')].filter(Boolean).join(' - ') })))
+          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          setResultTotal(mapped.length)
+          setData(mapped.slice(0, maxPreview))
         }
       }
       ok = true
@@ -1100,25 +1380,34 @@ export function QueriesPage(){
         setExportModal(true)
         setExportMinimized(false)
         setExportMaximized(false)
-        setExportProgress(0)
-        setExportJobId(null)
-        if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-        setExportUrl(null)
+        setExportProgress(25) // Checkpoint inicial: 25%
+
         if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-        exportTimerRef.current = null
-        if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-        exportJobPollRef.current = null
+        let waitSeconds = 0
+        exportTimerRef.current = setInterval(() => {
+          waitSeconds++
+          setExportProgress(p => {
+            if (waitSeconds === 1) return 35 // Checkpoint: 35% após 1s
+            if (waitSeconds === 2) return 50 // Checkpoint: 50% após 2s
+            return p
+          })
+        }, 1000)
+
         const res = await fetch('/api/reports/door-general/export-jobs', {
           method: 'POST',
           headers: { ...h, 'Content-Type': 'application/json' },
           body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, format: 'csv' })
         })
+        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+        exportTimerRef.current = null
+
         if (!res.ok){ await showErr(res); return }
         const j: any = await res.json()
         const id = j?.id
         if (!id){ setExportErr('Falha ao iniciar exportação'); setExportStage('error'); return }
         setExportJobId(id)
-        setExportProgress(5)
+        setExportProgress(65) // Já iniciou o job -> 65%
+
         exportJobPollRef.current = setInterval(async () => {
           try{
             const st = await fetch(`/api/reports/export-jobs/${id}`, { headers: h })
@@ -1126,7 +1415,15 @@ export function QueriesPage(){
             const s: any = await st.json()
             const status = s?.status
             const prog = Number(s?.progress ?? 0)
-            if (!Number.isNaN(prog)) setExportProgress(Math.max(0, Math.min(100, prog)))
+            if (!Number.isNaN(prog)) {
+              // Mapeia o progresso do servidor (0-100) para os checkpoints 65, 75, 90
+              let mapped = 65
+              if (prog >= 100) mapped = 100
+              else if (prog >= 90) mapped = 90
+              else if (prog >= 50) mapped = 75
+              else mapped = 65
+              setExportProgress(mapped)
+            }
             if (status === 'done' && s?.downloadUrl){
               if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
               exportJobPollRef.current = null
@@ -1150,8 +1447,9 @@ export function QueriesPage(){
       }
       const showErr = async (res: Response) => {
         try{
-          const j: any = await res.json()
-          const msg = j?.detail || j?.title || 'Falha ao exportar'
+          const raw = await res.text()
+          const j: any = raw ? JSON.parse(raw) : null
+          const msg = j?.detail || j?.title || j?.error || j?.message || raw || 'Falha ao exportar'
           setError(msg)
           setExportErr(msg)
           setExportStage('error')
@@ -1174,25 +1472,43 @@ export function QueriesPage(){
         const qs = new URLSearchParams(p).toString()
         url = `/api/reports/transit/export?${qs}`
         name = `transit.${format}`
+      }else if (mode === 'prontas' && quickKind === 'population'){
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+        url = `/api/reports/population/export?${qs}`
+        name = `populacao.${format}`
+      }else if (mode === 'prontas' && quickKind === 'eventos-claviculario'){
+        const { nome, matricula, chave, dc } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        const p: Record<string,string> = { start: r0.startIso, end: r0.endIso, format }
+        if (nome) p.nome = nome
+        if (matricula) p.matricula = matricula
+        if (chave) p.chave = chave
+        if (dc) p.dc = dc
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/reports/eventos-claviculario/export?${qs}`
+        name = `eventos-claviculario.${format}`
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
-        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
-        if ((doorMode === 'general' || doorMode === 'general-by-name') && !doorAllSources && !src) return
+        const src = doorAllSources ? undefined : (doorSelectedSources.length ? doorSelectedSources.join(';') : undefined)
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src) return
         const daysRange = Math.abs((new Date(r0.endIso).getTime() - new Date(r0.startIso).getTime()) / 86400000)
         if (doorMode === 'critical'){
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-critical/export?${qs}`
           name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
-          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
           if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src }, `portas-gerais.${format}`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
           name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
           if (!doorName) return
-          if (format !== 'csv' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use CSV.'); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
           if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: doorName }, `portas-gerais-por-nome.${format}`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format, ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
@@ -1217,9 +1533,138 @@ export function QueriesPage(){
           url = `/api/access/by-document/export?${qs}`
         }
         name = `acessos-${cpf}.${format}`
+      }else if (mode === 'prontas' && quickKind === 'matricula'){
+        const { matricula } = filters as any
+        if (!matricula) return
+        if (matriculaObter === 'info'){
+          const qs = new URLSearchParams({ matricula, format }).toString()
+          url = `/api/cms/person/by-matricula-info/export?${qs}`
+          name = `matricula-info-${matricula}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const onlyTurnstiles = matriculaObter === 'catracas'
+          const qs = new URLSearchParams({ matricula, start: r0.startIso, end: r0.endIso, onlyTurnstiles: String(onlyTurnstiles), format }).toString()
+          url = `/api/cms/transit/by-matricula/export?${qs}`
+          name = `transitos-matricula-${matricula}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'empresa'){
+        const { empresa } = filters as any
+        if (!empresa) return
+        if (empresaObter === 'info'){
+          const qs = new URLSearchParams({ empresa, format }).toString()
+          url = `/api/cms/company/by-name-info/export?${qs}`
+          name = `empresa-info-${empresa}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const qs = new URLSearchParams({ empresa, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/transit/by-empresa/export?${qs}`
+          name = `transitos-empresa-${empresa}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'cracha'){
+        const { cracha } = filters as any
+        if (!cracha) return
+        if (crachaObter === 'info'){
+          const qs = new URLSearchParams({ card: cracha, format }).toString()
+          url = `/api/cms/person/by-card-info/export?${qs}`
+          name = `cracha-info-${cracha}.${format}`
+        }else{
+          const r0 = rangeIso(filters)
+          if(!r0) return
+          const onlyTurnstiles = crachaObter === 'catracas'
+          const qs = new URLSearchParams({ card: cracha, start: r0.startIso, end: r0.endIso, onlyTurnstiles: String(onlyTurnstiles), format }).toString()
+          url = `/api/cms/transit/by-card-period/export?${qs}`
+          name = `transitos-cracha-${cracha}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'visitantes'){
+        const { documento, empresa } = filters as any
+        const r0 = rangeIso(filters)
+        if(!r0) return
+        if (visitantesObter === 'documento'){
+          if (!documento) return
+          const qs = new URLSearchParams({ documento, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/visitors/by-document/export?${qs}`
+          name = `visitantes-documento-${documento}.${format}`
+        }else{
+          if (!empresa) return
+          const qs = new URLSearchParams({ empresa, start: r0.startIso, end: r0.endIso, format }).toString()
+          url = `/api/cms/visitors/by-company/export?${qs}`
+          name = `visitantes-empresa-${empresa}.${format}`
+        }
+      }else if (mode === 'prontas' && quickKind === 'employees'){
+        const { matricula, empresa } = filters as any
+        const p: Record<string,string> = { format }
+        if (matricula) p.matricula = matricula
+        if (empresa) p.empresa = empresa
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/cms/employees/search/export?${qs}`
+        name = `funcionarios.${format}`
+      }else if (mode === 'prontas' && quickKind === 'external'){
+        const { matricula, empresa } = filters as any
+        const p: Record<string,string> = { format }
+        if (matricula) p.matricula = matricula
+        if (empresa) p.empresa = empresa
+        const qs = new URLSearchParams(p).toString()
+        url = `/api/cms/external/search/export?${qs}`
+        name = `externos.${format}`
+      }else if (mode === 'prontas' && quickKind === 'card-by-cpf'){
+        const { cpf } = filters as any
+        if (!cpf) return
+        const qs = new URLSearchParams({ cpf, format }).toString()
+        url = `/api/cms/card/by-cpf/export?${qs}`
+        name = `cracha-por-cpf-${cpf}.${format}`
       }
 
       if (!url || !name) return
+
+      const readBlobUrlWithProgress = async (res: Response, initialPct: number) => {
+        const ct = res.headers.get('Content-Type') || 'application/octet-stream'
+        const lenRaw = res.headers.get('Content-Length')
+        const total = lenRaw ? Number(lenRaw) : NaN
+        const body = res.body
+        if (!body || !('getReader' in body)) {
+          const blob = await res.blob()
+          return URL.createObjectURL(blob)
+        }
+        const reader = body.getReader()
+        const chunks: BlobPart[] = []
+        let received = 0
+
+        // Checkpoints após início do download: 65, 75, 90
+        setExportProgress(65)
+
+        while (true){
+          const { done, value } = await reader.read()
+          if (done) break
+          if (value){
+            const copy = new Uint8Array(value.byteLength)
+            copy.set(value)
+            chunks.push(copy)
+            received += value.byteLength
+
+            if (Number.isFinite(total) && total > 0){
+              const ratio = received / total
+              // Mapeia ratio (0 a 1) para checkpoints (65 a 90)
+              let pct = 65
+              if (ratio >= 0.9) pct = 90
+              else if (ratio >= 0.5) pct = 75
+              else pct = 65
+              setExportProgress(p => Math.max(p, pct))
+            } else {
+              // Sem Content-Length, progride baseado em bytes lidos (estimativa)
+              const estimatedPct = 65 + Math.floor(received / 100000)
+              let pct = 65
+              if (estimatedPct >= 90) pct = 90
+              else if (estimatedPct >= 75) pct = 75
+              else pct = 65
+              setExportProgress(p => Math.max(p, pct))
+            }
+          }
+        }
+        const blob = new Blob(chunks, { type: ct })
+        return URL.createObjectURL(blob)
+      }
       setExportFmt(format)
       setExportFileName(name)
       setExportErr(null)
@@ -1228,36 +1673,43 @@ export function QueriesPage(){
       setExportMinimized(false)
       setExportMaximized(false)
       setExportPos({x:0, y:0})
-      setExportFloatPos({x:0, y:0})
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
       if (format !== 'pdf' && pdfUrl){ URL.revokeObjectURL(pdfUrl); setPdfUrl(null) }
-      setExportProgress(0)
+
+      // Checkpoint inicial: 25%
+      setExportProgress(25)
+
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      let waitSeconds = 0
       exportTimerRef.current = setInterval(() => {
+        waitSeconds++
         setExportProgress(p => {
-          if (p >= 92) return p
-          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
-          return Math.min(92, p + inc)
+          if (waitSeconds === 1) return 35 // Checkpoint: 35% após 1s
+          if (waitSeconds === 2) return 50 // Checkpoint: 50% após 2s
+          return p
         })
-      }, 500)
+      }, 1000)
 
       const res = await fetch(url, { headers: h })
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      exportTimerRef.current = null
       if(!res.ok){ await showErr(res); return }
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      const savedPath = res.headers.get('X-Report-Path')
+      const blobUrl = await readBlobUrlWithProgress(res, 50)
       setExportUrl(blobUrl)
       if (format === 'pdf'){
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
         setPdfUrl(blobUrl)
         setPdfExportedRun(lastSuccessfulRun)
+        setLastPdfSavedPath(savedPath || null)
+        setLastPdfRequestUrl(url.length > 1600 ? null : url)
+        setLastPdfFileName(name)
       }
       const a = document.createElement('a')
       a.href = blobUrl
       a.download = name
       a.click()
-      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-      exportTimerRef.current = null
       setExportProgress(100)
       setExportStage('ready')
       const label = (() => {
@@ -1276,7 +1728,7 @@ export function QueriesPage(){
       const ts = Date.now()
       const id = `${ts}-${Math.random().toString(16).slice(2)}`
       setExportHistory(prev => {
-        const next = [{ id, ts, label, fileName: name, format, requestUrl: url }, ...prev].slice(0, 100)
+        const next = [{ id, ts, label, fileName: name, format, requestUrl: url, savedPath: savedPath || undefined }, ...prev].slice(0, 100)
         saveExportHistory(next)
         return next
       })
@@ -1308,34 +1760,6 @@ export function QueriesPage(){
       exportDragRef.current = null
     }
     exportDragHandlersRef.current = { move, up }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-  }
-
-  const beginExportFloatDrag = (e: React.MouseEvent) => {
-    const t = e.target as HTMLElement
-    if (t && t.closest('button, a')) return
-    e.preventDefault()
-    if (exportFloatDragHandlersRef.current){
-      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-      exportFloatDragHandlersRef.current = null
-    }
-    exportFloatDragRef.current = { startX: e.clientX, startY: e.clientY, origX: exportFloatPos.x, origY: exportFloatPos.y }
-    const move = (ev: MouseEvent) => {
-      const st = exportFloatDragRef.current
-      if (!st) return
-      setExportFloatPos({ x: st.origX + (ev.clientX - st.startX), y: st.origY + (ev.clientY - st.startY) })
-    }
-    const up = () => {
-      if (exportFloatDragHandlersRef.current){
-        window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-        window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-        exportFloatDragHandlersRef.current = null
-      }
-      exportFloatDragRef.current = null
-    }
-    exportFloatDragHandlersRef.current = { move, up }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
@@ -1420,6 +1844,8 @@ export function QueriesPage(){
       const u = await api.fetchReportPdf(url)
       if (pdfUrl) URL.revokeObjectURL(pdfUrl)
       setPdfUrl(u)
+      setLastPdfRequestUrl(url)
+      setLastPdfFileName(exportFileName && exportFileName.toLowerCase().endsWith('.pdf') ? exportFileName : 'relatorio.pdf')
     }catch(e:any){
       const msg = e?.message || 'Falha ao gerar PDF'
       setError(msg)
@@ -1427,7 +1853,50 @@ export function QueriesPage(){
     }
   }
 
-  async function openHistoryItem(it: { fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string }){
+  async function openLastPdf(){
+    try{
+      setError(null)
+      if (!localStorage.getItem('rf_token')) return
+      if (pdfUrl && exportFmt === 'pdf' && exportStage === 'ready'){
+        setExportUrl(pdfUrl)
+        setExportFmt('pdf')
+        setExportFileName(lastPdfFileName || exportFileName || 'relatorio.pdf')
+        setExportErr(null)
+        setExportStage('ready')
+        setExportProgress(100)
+        setExportModal(true)
+        setExportMinimized(false)
+        setExportMaximized(false)
+        return
+      }
+      if (!lastPdfSavedPath && !lastPdfRequestUrl){
+        setError('Nenhum PDF em cache para visualizar')
+        return
+      }
+      const u = lastPdfSavedPath
+        ? await api.fetchSavedReport(lastPdfSavedPath)
+        : await api.fetchReportPdf(lastPdfRequestUrl!)
+      if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
+      if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
+      setPdfUrl(u)
+      setExportUrl(u)
+      setExportFmt('pdf')
+      setExportFileName(lastPdfFileName || 'relatorio.pdf')
+      setExportErr(null)
+      setExportStage('ready')
+      setExportProgress(100)
+      setExportModal(true)
+      setExportMinimized(false)
+      setExportMaximized(false)
+      setExportPos({x:0, y:0})
+    }catch(e:any){
+      const msg = e?.message || 'Falha ao abrir PDF'
+      setError(msg)
+      if (/Login failed for user/i.test(msg)) setSqlModal(true)
+    }
+  }
+
+  async function openHistoryItem(it: { fileName: string, format: 'csv'|'xlsx'|'pdf', requestUrl: string, savedPath?: string }){
     try{
       setError(null)
       const h: Record<string,string> = {}
@@ -1447,35 +1916,79 @@ export function QueriesPage(){
       setExportPos({x:0, y:0})
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
-      setExportProgress(0)
-      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-      exportTimerRef.current = setInterval(() => {
-        setExportProgress(p => {
-          if (p >= 92) return p
-          const inc = p < 20 ? 7 : p < 50 ? 4 : p < 75 ? 2 : 1
-          return Math.min(92, p + inc)
-        })
-      }, 500)
+      setExportProgress(25) // Checkpoint inicial
 
-      const res = await fetch(it.requestUrl, { headers: h })
-      if(!res.ok){
-        let msg = `HTTP ${res.status}`
-        try{
-          const j: any = await res.json()
-          msg = j?.detail || j?.title || j?.error || j?.message || msg
-        }catch{}
-        setError(msg)
-        setExportErr(msg)
-        setExportStage('error')
-        if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-        exportTimerRef.current = null
-        return
-      }
-      const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+      let waitSeconds = 0
+      exportTimerRef.current = setInterval(() => {
+        waitSeconds++
+        setExportProgress(p => {
+          if (waitSeconds === 1) return 35 // Checkpoint 35%
+          if (waitSeconds === 2) return 50 // Checkpoint 50%
+          return p
+        })
+      }, 1000)
+
+      const blobUrl = it.savedPath
+        ? await api.fetchSavedReport(it.savedPath)
+        : await (async () => {
+            const res = await fetch(it.requestUrl, { headers: h })
+            if(!res.ok){
+              let msg = `HTTP ${res.status}`
+              try{
+                const j: any = await res.json()
+                msg = j?.detail || j?.title || j?.error || j?.message || msg
+              }catch{}
+              throw new Error(msg)
+            }
+            // Inicia download real -> 65%
+            if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+            exportTimerRef.current = null
+            setExportProgress(65)
+
+            const ct = res.headers.get('Content-Type') || 'application/octet-stream'
+            const lenRaw = res.headers.get('Content-Length')
+            const total = lenRaw ? Number(lenRaw) : NaN
+            const body = res.body
+            if (!body || !('getReader' in body)) {
+              const blob = await res.blob()
+              return URL.createObjectURL(blob)
+            }
+            const reader = body.getReader()
+            const chunks: BlobPart[] = []
+            let received = 0
+            while (true){
+              const { done, value } = await reader.read()
+              if (done) break
+              if (value){
+                const copy = new Uint8Array(value.byteLength)
+                copy.set(value)
+                chunks.push(copy)
+                received += value.byteLength
+
+                if (Number.isFinite(total) && total > 0){
+                  const ratio = received / total
+                  let pct = 65
+                  if (ratio >= 0.9) pct = 90
+                  else if (ratio >= 0.5) pct = 75
+                  else pct = 65
+                  setExportProgress(p => Math.max(p, pct))
+                } else {
+                  const estimatedPct = 65 + Math.floor(received / 100000)
+                  let pct = 65
+                  if (estimatedPct >= 90) pct = 90
+                  else if (estimatedPct >= 75) pct = 75
+                  else pct = 65
+                  setExportProgress(p => Math.max(p, pct))
+                }
+              }
+            }
+            const blob = new Blob(chunks, { type: ct })
+            return URL.createObjectURL(blob)
+          })()
       setExportUrl(blobUrl)
       if (it.format === 'pdf'){
-        if (pdfUrl) URL.revokeObjectURL(pdfUrl)
+        if (pdfUrl && pdfUrl.startsWith('blob:')) URL.revokeObjectURL(pdfUrl)
         setPdfUrl(blobUrl)
       }else{
         const a = document.createElement('a')
@@ -1495,6 +2008,14 @@ export function QueriesPage(){
       if (exportTimerRef.current) clearInterval(exportTimerRef.current)
       exportTimerRef.current = null
     }
+  }
+
+  function deleteHistoryItem(id: string){
+    setExportHistory(prev => {
+      const next = prev.filter(x => x.id !== id)
+      saveExportHistory(next)
+      return next
+    })
   }
 
   async function applySqlAuth(){
@@ -1590,7 +2111,7 @@ export function QueriesPage(){
 
   const tableColumns = useMemo(() => {
     if (mode === 'personalizadas') return visibleColumns
-    if (quickKind === 'door-critical') return quickColumns
+    if (mode === 'prontas') return quickColumns.length ? quickColumns : (Array.isArray(data) && data[0] ? Object.keys(data[0]).map(k => ({ key: k, label: k })) : [])
     if (Array.isArray(data) && data[0]) return Object.keys(data[0]).map(k => ({ key: k, label: k }))
     return []
   }, [mode, visibleColumns, quickKind, quickColumns, data])
@@ -1602,6 +2123,7 @@ export function QueriesPage(){
   }, [mode, quickColumns, datasetColumns])
 
   const filteredData = useMemo(()=>{
+    if (mode === 'prontas' && quickKind === 'employees') return data
     const term = (searchTerm || '').toLowerCase().trim()
     if (!term) return data
     const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
@@ -1617,6 +2139,8 @@ export function QueriesPage(){
     })
   }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
 
+  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees' || quickKind === 'card-by-cpf')
+
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
     return filteredData.slice(0, maxPreview)
@@ -1630,6 +2154,51 @@ export function QueriesPage(){
     const start = (currentPage - 1) * pageSize
     return previewData.slice(start, start + pageSize)
   }, [previewData, currentPage, pageSize])
+
+  const formatCellValue = (row: any, key: string) => {
+    const v = getRowValue(row, key)
+    if (v == null) return ''
+    const k = (key || '').toLowerCase()
+    if (
+      k.includes('datahora') ||
+      k.includes('transitdate') ||
+      k.includes('cadastro') ||
+      k.includes('expira') ||
+      k.includes('ultimoacesso') ||
+      k.includes('transito') ||
+      k.includes('entrada') ||
+      k.includes('saida') ||
+      k.includes('date') ||
+      k.includes('data')
+    ) return formatBrDateTime(v)
+    return String(v)
+  }
+
+  function confirmCloseExport() {
+    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
+    exportTimerRef.current = null
+    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
+    exportJobPollRef.current = null
+    setExportJobId(null)
+    if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
+    setExportUrl(null)
+    setExportModal(false)
+    setExportMinimized(false)
+    setExportMaximized(false)
+    setExportProgress(0)
+    setExportPos({x:0, y:0})
+    setShowCloseConfirm(false)
+  }
+
+  if (mode === 'prontas' && enabledReadyKeys.length === 0) {
+    return (
+      <section className="queries">
+        <div className="alert alert-warning" style={{marginTop:12}}>
+          Nenhuma consulta pronta habilitada para exibição. Ative em Consultas Config.
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className="queries">
@@ -1647,39 +2216,13 @@ export function QueriesPage(){
               <div className="modal-header" onMouseDown={beginExportDrag} style={exportMaximized ? {cursor:'default'} : {cursor:'move'}}>
                 <h5 className="modal-title">Exportação</h5>
                 <div className="d-flex align-items-center" style={{gap:8}}>
-                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => { setExportFloatPos({x:0, y:0}); setExportMinimized(true) }} title="Minimizar">
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setExportMinimized(true)} title="Minimizar">
                     <i className="bi bi-dash-lg" />
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setExportMaximized(v => !v)} title={exportMaximized ? 'Restaurar' : 'Maximizar'}>
                     <i className={exportMaximized ? "bi bi-fullscreen-exit" : "bi bi-fullscreen"} />
                   </button>
-                  <button type="button" className="btn-close" onClick={()=>{
-                    if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                    exportTimerRef.current = null
-                    if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                    exportJobPollRef.current = null
-                    setExportJobId(null)
-                    if (exportDragHandlersRef.current){
-                      window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
-                      window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
-                      exportDragHandlersRef.current = null
-                    }
-                    exportDragRef.current = null
-                    if (exportFloatDragHandlersRef.current){
-                      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                      exportFloatDragHandlersRef.current = null
-                    }
-                    exportFloatDragRef.current = null
-                    if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                    setExportUrl(null)
-                    setExportModal(false)
-                    setExportMinimized(false)
-                    setExportMaximized(false)
-                    setExportProgress(0)
-                    setExportPos({x:0, y:0})
-                    setExportFloatPos({x:0, y:0})
-                  }}></button>
+                  <button type="button" className="btn-close" onClick={() => setShowCloseConfirm(true)}></button>
                 </div>
               </div>
               <div className="modal-body">
@@ -1723,33 +2266,7 @@ export function QueriesPage(){
                 )}
               </div>
               <div className="modal-footer">
-                <button className="btn btn-outline-secondary" onClick={()=>{
-                  if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                  exportTimerRef.current = null
-                  if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                  exportJobPollRef.current = null
-                  setExportJobId(null)
-                  if (exportDragHandlersRef.current){
-                    window.removeEventListener('mousemove', exportDragHandlersRef.current.move)
-                    window.removeEventListener('mouseup', exportDragHandlersRef.current.up)
-                    exportDragHandlersRef.current = null
-                  }
-                  exportDragRef.current = null
-                  if (exportFloatDragHandlersRef.current){
-                    window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                    window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                    exportFloatDragHandlersRef.current = null
-                  }
-                  exportFloatDragRef.current = null
-                  if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                  setExportUrl(null)
-                  setExportModal(false)
-                  setExportMinimized(false)
-                  setExportMaximized(false)
-                  setExportProgress(0)
-                  setExportPos({x:0, y:0})
-                  setExportFloatPos({x:0, y:0})
-                }} disabled={exportStage === 'generating'}>
+                <button className="btn btn-outline-secondary" onClick={() => setShowCloseConfirm(true)} disabled={exportStage === 'generating'}>
                   Fechar
                 </button>
               </div>
@@ -1758,51 +2275,91 @@ export function QueriesPage(){
         </div> : null
       )}
       {exportModal && exportMinimized && (
-        <div className="export-float" style={{transform:`translate(${exportFloatPos.x}px, ${exportFloatPos.y}px)`}}>
-          <div className="d-flex justify-content-between align-items-center" onMouseDown={beginExportFloatDrag} style={{cursor:'move'}}>
-            <strong style={{fontSize:12}}>Exportação</strong>
-            <div className="d-flex align-items-center" style={{gap:6}}>
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => setExportMinimized(false)} title="Abrir">
-                <i className="bi bi-box-arrow-up-right" />
-              </button>
-              <button className="btn btn-sm btn-outline-secondary" onClick={() => {
-                if (exportTimerRef.current) clearInterval(exportTimerRef.current)
-                exportTimerRef.current = null
-                if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
-                exportJobPollRef.current = null
-                setExportJobId(null)
-                if (exportFloatDragHandlersRef.current){
-                  window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-                  window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-                  exportFloatDragHandlersRef.current = null
-                }
-                exportFloatDragRef.current = null
-                if (exportUrl && exportUrl !== pdfUrl && exportUrl.startsWith('blob:')) URL.revokeObjectURL(exportUrl)
-                setExportUrl(null)
-                setExportModal(false)
-                setExportMinimized(false)
-                setExportMaximized(false)
-                setExportProgress(0)
-                setExportFloatPos({x:0, y:0})
-              }} title="Fechar">
-                <i className="bi bi-x-lg" />
-              </button>
+        <div className="export-float">
+          <div className="d-flex align-items-center flex-grow-1" style={{gap:12}}>
+            <strong style={{fontSize:13, whiteSpace:'nowrap'}}>
+              <i className={exportFmt === 'pdf' ? "bi bi-file-earmark-pdf me-2" : "bi bi-file-earmark-excel me-2"} />
+              Exportação: {exportFmt.toUpperCase()}
+            </strong>
+            <div className="flex-grow-1" style={{maxWidth:400}}>
+              {exportStage === 'generating' ? (
+                <div className="d-flex align-items-center gap-3">
+                  <div className="progress flex-grow-1" style={{height:8}}>
+                    <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                  </div>
+                  <span style={{fontSize:12, color:'#374151', minWidth:36}}>{exportProgress}%</span>
+                </div>
+              ) : (
+                <div className="d-flex align-items-center gap-2">
+                  <span style={{fontSize:12, color: exportStage === 'error' ? '#dc2626' : '#059669', fontWeight:500}}>
+                    {exportStage === 'ready' ? '✓ Arquivo pronto' : `⚠ ${exportErr || 'Falha ao exportar'}`}
+                  </span>
+                  {exportStage === 'ready' && exportUrl && (
+                    <a className="btn btn-sm btn-link p-0 text-primary" style={{fontSize:12, textDecoration:'none'}} href={exportUrl} download={exportFileName}>
+                      Baixar agora
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-          <div style={{fontSize:12, marginTop:4, color:'#111827'}}>
-            {exportStage === 'generating' ? `Gerando ${exportFmt.toUpperCase()}...` : exportStage === 'ready' ? 'Arquivo pronto' : 'Falha ao exportar'}
+
+          <div className="d-flex align-items-center ms-3" style={{gap:8}}>
+            <button className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={() => setExportMinimized(false)} title="Abrir visualização">
+              <i className="bi bi-box-arrow-up-right" />
+              <span className="d-none d-sm-inline">Maximizar</span>
+            </button>
+            <button className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1" onClick={() => setShowCloseConfirm(true)} title="Fechar">
+              <i className="bi bi-x-lg" />
+              <span className="d-none d-sm-inline">Fechar</span>
+            </button>
           </div>
-          {exportStage === 'generating' && (
-            <div className="progress mt-2" style={{height:8}}>
-              <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
-            </div>
-          )}
-          {exportStage === 'ready' && exportUrl && (
-            <a className="btn btn-sm btn-primary mt-2" href={exportUrl} download={exportFileName}>
-              Baixar
-            </a>
-          )}
         </div>
+      )}
+      {showCloseConfirm && (
+        <>
+          <div className="modal-backdrop show" style={{ zIndex: 1070 }}></div>
+          <div className="modal show" style={{ display: 'block', zIndex: 1080 }}>
+            <div className="modal-dialog modal-dialog-centered">
+              <div className="modal-content shadow-lg border-0" style={{ borderRadius: '15px' }}>
+                <div className="modal-header border-0 pb-0">
+                  <h5 className="modal-title w-100 text-center mt-3">
+                    <i className="bi bi-exclamation-triangle text-warning mb-2 d-block" style={{ fontSize: '2.5rem' }}></i>
+                    Confirmar Fechamento
+                  </h5>
+                </div>
+                <div className="modal-body text-center py-4">
+                  <p className="mb-0 px-3" style={{ fontSize: '1.1rem', color: '#4b5563' }}>
+                    Deseja mesmo fechar a prévia do <strong>{exportFmt.toUpperCase()}</strong>?
+                  </p>
+                  <small className="text-muted d-block mt-2">
+                    {exportStage === 'generating' 
+                      ? 'A geração em andamento será interrompida.' 
+                      : 'Você poderá abrir este relatório novamente através do histórico.'}
+                  </small>
+                </div>
+                <div className="modal-footer border-0 justify-content-center pb-4 pt-0" style={{ gap: '15px' }}>
+                  <button 
+                    type="button" 
+                    className="btn btn-light px-4" 
+                    style={{ borderRadius: '8px', fontWeight: 500, minWidth: '120px' }}
+                    onClick={() => setShowCloseConfirm(false)}
+                  >
+                    Não, manter
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-danger px-4" 
+                    style={{ borderRadius: '8px', fontWeight: 500, minWidth: '120px' }}
+                    onClick={confirmCloseExport}
+                  >
+                    Sim, fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
       {reportsModal && (
         <div className="modal-backdrop show" style={{display:'block'}}></div>
@@ -1810,17 +2367,17 @@ export function QueriesPage(){
       {reportsModal && (
         <div className="modal show" style={{display:'block'}}>
           <div className="modal-dialog modal-lg">
-            <div className="modal-content">
+            <div className="modal-content shadow-lg border-0">
               <div className="modal-header">
                 <h5 className="modal-title">Relatórios</h5>
                 <button type="button" className="btn-close" onClick={()=> setReportsModal(false)}></button>
               </div>
               <div className="modal-body">
                 {exportsToday.length === 0 ? (
-                  <div className="text-muted">Nenhum relatório exportado hoje.</div>
+                  <div>Nenhum relatório exportado hoje.</div>
                 ) : (
                   <div className="table-responsive">
-                    <table className="table table-sm align-middle">
+                    <table className="table table-sm align-middle rf-table-light">
                       <thead>
                         <tr>
                           <th style={{width:90}}>Hora</th>
@@ -1840,6 +2397,9 @@ export function QueriesPage(){
                             <td>
                               <button className="btn btn-sm btn-primary" onClick={()=> openHistoryItem(it)}>
                                 {it.format === 'pdf' ? 'Abrir' : 'Baixar'}
+                              </button>
+                              <button className="btn btn-sm btn-outline-danger ms-2" onClick={(e)=> { e.stopPropagation(); deleteHistoryItem(it.id) }} title="Excluir da lista">
+                                <i className="bi bi-trash" />
                               </button>
                             </td>
                           </tr>
@@ -1902,14 +2462,16 @@ export function QueriesPage(){
               />
               <label className="form-check-label" htmlFor="switchProntas">Consultas Prontas</label>
             </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" role="switch"
-                id="switchPersonalizadas"
-                checked={mode==='personalizadas'}
-                onChange={()=>{ setMode('personalizadas'); resetData() }}
-              />
-              <label className="form-check-label" htmlFor="switchPersonalizadas">Consultas Personalizadas</label>
-            </div>
+            {reportOptions.customQueries && (
+              <div className="form-check form-switch">
+                <input className="form-check-input" type="checkbox" role="switch"
+                  id="switchPersonalizadas"
+                  checked={mode==='personalizadas'}
+                  onChange={()=>{ setMode('personalizadas'); resetData() }}
+                />
+                <label className="form-check-label" htmlFor="switchPersonalizadas">Consultas Personalizadas</label>
+              </div>
+            )}
           </div>
         </div>
         <div className="card-body">
@@ -1920,6 +2482,8 @@ export function QueriesPage(){
             {([
               { key:'access-agg', label:'Acessos Agregados' },
               { key:'transit-period', label:'Trânsito por Período' },
+              { key:'population', label:'População' },
+              { key:'eventos-claviculario', label:'Eventos_Claviculario' },
               { key:'door-critical', label:'Eventos de Porta' },
               { key:'employees', label:'Funcionários' },
               { key:'external', label:'Externos' },
@@ -1950,7 +2514,7 @@ export function QueriesPage(){
                         setSearchTerm('')
                         setSearchColumn('*')
                         setCurrentPage(1)
-                        if (opt.key === 'door-critical') {
+                        if (opt.key === 'door-critical' || opt.key === 'population' || opt.key === 'eventos-claviculario') {
                           const today = todayBr()
                           setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }))
                         }
@@ -1970,7 +2534,7 @@ export function QueriesPage(){
 
           {readyQueryEnabled && (
           <div className="queries-row" style={{marginBottom:8}}>
-            {(quickKind === 'transit-period') && (
+            {(quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario') && (
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
@@ -2000,13 +2564,33 @@ export function QueriesPage(){
                     </div>
                   </>
                 )}
+                {quickKind === 'eventos-claviculario' && (
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-person" /></span>
+                      <input className="form-control" placeholder="Nome (opcional)" value={filters.nome || ''} onChange={e=> setFilters({...filters, nome: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-hash" /></span>
+                      <input className="form-control" placeholder="Matrícula (opcional)" value={filters.matricula || ''} onChange={e=> setFilters({...filters, matricula: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-key" /></span>
+                      <input className="form-control" placeholder="Chave (opcional)" value={filters.chave || ''} onChange={e=> setFilters({...filters, chave: e.target.value})} />
+                    </div>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-filter" /></span>
+                      <input className="form-control" placeholder="DC (opcional)" value={filters.dc || ''} onChange={e=> setFilters({...filters, dc: e.target.value})} />
+                    </div>
+                  </>
+                )}
               </>
             )}
             {(quickKind === 'door-critical') && (
               <>
                 <div className="input-group" style={{maxWidth:280}}>
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={doorMode} onChange={e=> setDoorMode(e.target.value as any)}>
+                  <select className="form-select" value={doorMode} onChange={e=> { setDoorMode(e.target.value as any); resetOnFilterChange() }}>
                     <option value="critical">Portas Críticas</option>
                     <option value="general">Portas Gerais</option>
                     <option value="general-by-name">Portas Gerais por Nome</option>
@@ -2030,12 +2614,12 @@ export function QueriesPage(){
                   <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
                   <label className="form-check-label">Todas as portas</label>
                   <span className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"} style={{fontSize:11}}>
-                    {doorSourcesLoading ? "Carregando..." : `Portas: ${doorSources.length}`}
+                    {doorSourcesLoading ? "Carregando..." : doorSourceFilter.trim() ? `Portas: ${filteredDoorKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
                   </span>
                 </div>
                 {doorAllData && doorAllSources && (doorMode === 'general' || doorMode === 'general-by-name') && (
-                  <div className="text-danger" style={{fontSize:12, marginLeft:8}}>
-                    Para evitar timeout, desmarque "Todas as portas" e selecione uma ou mais portas.
+                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
+                    Consulta em grande volume habilitada. Para obter todos os registros com segurança, use Exportação (CSV Job).
                   </div>
                 )}
                 {doorSourcesErr && (
@@ -2067,12 +2651,7 @@ export function QueriesPage(){
                     </div>
                   </>
                 )}
-                {doorMode === 'critical' && (
-                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
-                    Nesta opção não há filtro por portas selecionadas. Para filtrar por portas, use "Portas Gerais".
-                  </div>
-                )}
-                {doorMode !== 'general-by-site' && doorMode !== 'critical' && !doorAllSources && (
+                {(doorMode !== 'general-by-site') && !doorAllSources && (
                   <div className="d-flex align-items-start" style={{gap:12, minWidth:520}}>
                     <div style={{flex:1, minWidth:320}}>
                       {doorSelectedSources.length === 0 && (
@@ -2106,18 +2685,19 @@ export function QueriesPage(){
                         <select
                           className="form-select"
                           value={doorPickSource}
-                          disabled={doorSourcesLoading || doorSources.length === 0}
+                          disabled={doorSourcesLoading || activeDoorSources.length === 0}
                           onChange={e => {
                             const v = e.target.value
                             setDoorPickSource(v)
                             if (!v) return
+                            setDoorAllSources(false)
                             setDoorSelectedSources(prev => prev.includes(v) ? prev : [...prev, v])
                           }}
                         >
                           <option value="">
-                            {doorSourcesLoading ? 'Carregando portas...' : doorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
+                            {doorSourcesLoading ? 'Carregando portas...' : activeDoorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
                           </option>
-                          {!doorSourcesLoading && doorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
+                          {!doorSourcesLoading && activeDoorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
                               <optgroup key={g.label} label={g.label}>
                                 {g.items.map(it => (
                                   <option key={it.key} value={it.key}>{it.label}</option>
@@ -2184,11 +2764,14 @@ export function QueriesPage(){
                   <div style={{minWidth:0}}>
                     <div className="input-group" style={{width:'100%'}}>
                       <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                      <select className="form-select" value={cpfObter} onChange={e=> setCpfObter(e.target.value as any)}>
+                      <select className="form-select" value={cpfObter} onChange={e=> {
+                        const v = e.target.value as any
+                        setCpfObter(v)
+                        resetOnFilterChange()
+                      }}>
                         <option value="info">Informação de Cadastro</option>
                         <option value="todos">Todos os Acessos</option>
-                        <option value="catracas">Somente Catracas</option>
-                        <option value="faciais">Somente Faciais</option>
+                        <option value="catracas-faciais">Somente Catracas e Faciais</option>
                       </select>
                     </div>
                   </div>
@@ -2243,7 +2826,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={matriculaObter} onChange={e=> setMatriculaObter(e.target.value as any)}>
+                  <select className="form-select" value={matriculaObter} onChange={e=> { setMatriculaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -2279,7 +2862,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={empresaObter} onChange={e=> setEmpresaObter(e.target.value as any)}>
+                  <select className="form-select" value={empresaObter} onChange={e=> { setEmpresaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                   </select>
@@ -2314,7 +2897,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={crachaObter} onChange={e=> setCrachaObter(e.target.value as any)}>
+                  <select className="form-select" value={crachaObter} onChange={e=> { setCrachaObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -2350,7 +2933,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={nivelObter} onChange={e=> setNivelObter(e.target.value as any)}>
+                  <select className="form-select" value={nivelObter} onChange={e=> { setNivelObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="todos">Todos os Níveis (Agregado)</option>
                     <option value="acessos">Acessos por Nível</option>
                   </select>
@@ -2389,7 +2972,7 @@ export function QueriesPage(){
               <div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={visitantesObter} onChange={e=> setVisitantesObter(e.target.value as any)}>
+                  <select className="form-select" value={visitantesObter} onChange={e=> { setVisitantesObter(e.target.value as any); resetOnFilterChange() }}>
                     <option value="documento">Acessos por Documento</option>
                     <option value="empresa">Acessos por Empresa</option>
                   </select>
@@ -2427,7 +3010,7 @@ export function QueriesPage(){
           </div>
           )}
 
-          {(data.length > 0 || searchTerm) && (
+          {!hideSearchBar && (data.length > 0 || searchTerm) && (
             <div className="queries-row" style={{marginBottom:8}}>
               <select className="form-select" style={{width:220}} value={searchColumn} onChange={e=> { setSearchColumn(e.target.value); setCurrentPage(1) }}>
                 <option value="*">Todas as colunas</option>
@@ -2477,8 +3060,8 @@ export function QueriesPage(){
                         <i className="bi bi-journal-text me-1" /> Relatórios
                       </button>
                     )}
-                    {pdfExportedRun === lastSuccessfulRun && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
                       </button>
                     )}
@@ -2609,8 +3192,8 @@ export function QueriesPage(){
                         <i className="bi bi-journal-text me-1" /> Relatórios
                       </button>
                     )}
-                    {pdfExportedRun === lastSuccessfulRun && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={previewPdf}>
+                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
+                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
                         <i className="bi bi-eye me-1" /> Visualizar PDF
                       </button>
                     )}
@@ -2686,8 +3269,8 @@ export function QueriesPage(){
         </div>
       )}
 
-      <div className={`table-responsive${mode === 'prontas' && quickKind === 'door-critical' ? ' pro-table' : ''}`}>
-        <table className="table table-hover table-striped align-middle">
+      <div className={`table-responsive${mode === 'prontas' && (quickKind === 'door-critical' || quickKind === 'cpf') ? ' pro-table' : ''}`}>
+        <table className="table table-hover table-striped align-middle rf-table-light">
           <thead>
             <tr>
               {tableColumns.map(c=> <th key={c.key}>{c.label}</th>)}
@@ -2696,7 +3279,7 @@ export function QueriesPage(){
           <tbody>
             {Array.isArray(pageRows) && pageRows.map((row, idx)=> (
               <tr key={idx}>
-                {tableColumns.map(c => <td key={c.key}>{String(getRowValue(row, c.key) ?? '')}</td>)}
+                {tableColumns.map(c => <td key={c.key}>{formatCellValue(row, c.key)}</td>)}
               </tr>
             ))}
           </tbody>

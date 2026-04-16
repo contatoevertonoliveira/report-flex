@@ -8,7 +8,7 @@ export function AccessPage(){
   const [pageSize, setPageSize] = useState(20)
   const [rows, setRows] = useState<any[]>([])
   const [agg, setAgg] = useState<any[]>([])
-  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: true, xlsx: true, pdf: true })
+  const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, pdf: boolean }>({ csv: false, xlsx: true, pdf: true })
   React.useEffect(() => {
     let mounted = true
     ;(async () => {

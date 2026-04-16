@@ -129,12 +129,20 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit?' + qs, { headers: headers() }))
   },
+  reportsPopulation: async (p: { start: string, end: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/population?' + qs, { headers: headers() }))
+  },
+  reportsEventosClaviculario: async (p: { start: string, end: string, nome?: string, matricula?: string, chave?: string, dc?: string, page?: number, pageSize?: number }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
+    return await withAuth(apiFetch('/api/reports/eventos-claviculario?' + qs, { headers: headers() }))
+  },
   reportsTransitAggregated: async (p: { empresa?: string, start: string, end: string }) => {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit/aggregated?' + qs, { headers: headers() }))
   },
-  reportsDoorCritical: async (p: { start: string, end: string }) => {
-    const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
+  reportsDoorCritical: async (p: { start: string, end: string, sourceList?: string }) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
   },
   reportsDoorGeneral: async (p: { start: string, end: string, sourceList?: string }) => {
@@ -152,6 +160,10 @@ export const api = {
   reportsDoorSources: async (p?: { daysBack?: number }) => {
     const qs = p && p.daysBack != null ? `?daysBack=${encodeURIComponent(String(p.daysBack))}` : ''
     return await withAuth(apiFetch('/api/reports/door-sources' + qs, { headers: headers() }))
+  },
+  reportsDoorCriticalSources: async (p?: { daysBack?: number, start?: string, end?: string }) => {
+    const qs = p ? ('?' + new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()) : ''
+    return await withAuth(apiFetch('/api/reports/door-critical/sources' + qs, { headers: headers() }))
   },
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
@@ -173,7 +185,7 @@ export const api = {
   },
   seedCompanies: async () => withAuth(apiFetch('/api/dev/seed-companies', { method:'POST', headers: headers() })),
   getReportOptions: async () => withAuth(apiFetch('/api/admin/report-options', { headers: headers() })),
-  setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }) =>
+  setReportOptions: async (p: { txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean, cover?: boolean, coverOrientation?: 'portrait'|'landscape', reportOrientation?: 'portrait'|'landscape' }) =>
     withAuth(apiFetch('/api/admin/report-options', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getReportDefaultClient: async () => withAuth(apiFetch('/api/admin/report-default-client', { headers: headers() })),
   setReportDefaultClient: async (clientId: number) =>
@@ -181,6 +193,10 @@ export const api = {
   getQueriesConfig: async () => withAuth(apiFetch('/api/admin/queries-config', { headers: headers() })),
   setQueriesConfig: async (p: Record<string, boolean>) =>
     withAuth(apiFetch('/api/admin/queries-config', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  getScreensConfig: async () => withAuth(apiFetch('/api/screens-config', { headers: headers() })),
+  adminGetScreensConfig: async () => withAuth(apiFetch('/api/admin/screens-config', { headers: headers() })),
+  adminSetScreensConfig: async (p: Record<string, boolean>) =>
+    withAuth(apiFetch('/api/admin/screens-config', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   getDbMode: async () => withAuth(apiFetch('/api/admin/db-mode', { headers: headers() })),
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),
@@ -192,6 +208,10 @@ export const api = {
 
   getDbInfo: async () => withAuth(apiFetch('/api/admin/db-info', { headers: headers() })),
   getSqlLogins: async () => withAuth(apiFetch('/api/admin/sql/logins', { headers: headers() })),
+  sqlInstances: async () => withAuth(apiFetch('/api/admin/sql/instances', { headers: headers() })),
+  sqlDatabases: async (dataSource: string) => withAuth(apiFetch('/api/admin/sql/databases?dataSource=' + encodeURIComponent(dataSource), { headers: headers() })),
+  sqlTables: async (dataSource: string, database: string) =>
+    withAuth(apiFetch('/api/admin/sql/tables?dataSource=' + encodeURIComponent(dataSource) + '&database=' + encodeURIComponent(database), { headers: headers() })),
   testSqlAuth: async () => withAuth(apiFetch('/api/admin/sql/test-auth', { headers: headers() })),
   getSqlAuthMode: async () => withAuth(apiFetch('/api/admin/sql/auth-mode', { headers: headers() })),
   testSqlLoginOnly: async () => withAuth(apiFetch('/api/admin/sql/test-login-only', { headers: headers() })),
@@ -209,6 +229,19 @@ export const api = {
     if(!r.ok) throw new Error('Upload failed')
     return await r.json()
   },
+  adminUsers: async (p: { page?: number, pageSize?: number, clientId?: number } = {}) => {
+    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+    const url = qs ? '/api/admin/users?' + qs : '/api/admin/users'
+    return await withAuth(apiFetch(url, { headers: headers() }))
+  },
+  adminUsersCreate: async (p: { email: string, nome: string, nivel: 'SuperAdmin'|'Administrador'|'Básico'|'Basico', clientId?: number|null }) =>
+    withAuth(apiFetch('/api/admin/users', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  adminUsersUpdate: async (id: number, p: { email?: string, nome?: string, nivel?: 'SuperAdmin'|'Administrador'|'Básico'|'Basico', clientId?: number|null, isActive?: boolean }) =>
+    withAuth(apiFetch(`/api/admin/users/${id}`, { method:'PUT', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  adminUsersResetPassword: async (id: number) =>
+    withAuth(apiFetch(`/api/admin/users/${id}/reset-password`, { method:'POST', headers: headers() })),
+  adminUsersDelete: async (id: number) =>
+    withAuth(apiFetch(`/api/admin/users/${id}`, { method:'DELETE', headers: headers() })),
   sendMessage: async (p: { assunto: string, texto: string }) =>
     withAuth(apiFetch('/api/messages', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   adminMessages: async (p: { page?: number, pageSize?: number } = {}) => {
@@ -225,6 +258,21 @@ export const api = {
         throw new Error(data?.detail || data?.title || data?.error || data?.message || 'Falha ao obter PDF')
       }catch{
         throw new Error(raw || 'Falha ao obter PDF')
+      }
+    }
+    const b = await r.blob()
+    return URL.createObjectURL(b)
+  },
+  fetchSavedReport: async (relPath: string) => {
+    const qs = 'path=' + encodeURIComponent(relPath || '')
+    const r = await apiFetch('/api/reports/download?' + qs, { headers: headers() })
+    if(!r.ok){
+      const raw = await r.text()
+      try{
+        const data: any = raw ? JSON.parse(raw) : null
+        throw new Error(data?.detail || data?.title || data?.error || data?.message || 'Falha ao obter arquivo')
+      }catch{
+        throw new Error(raw || 'Falha ao obter arquivo')
       }
     }
     const b = await r.blob()

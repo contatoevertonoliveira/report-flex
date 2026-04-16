@@ -62,34 +62,50 @@ export function LoginPage() {
     }
   }
   return (
-    <section className="login-layout">
-      <div className="login-card">
-        <div className="login-brand">
-          <img alt="Logo" src="http://localhost:5001/images-legacy/Logo_Principal_Fundo2.png" style={{maxWidth:'180px'}} />
+    <section className="login-split">
+      <div className="login-left">
+        <div className="login-left-inner">
+          <img alt="JumperFour" src="/img/Jumperfour_logo_branco_adap.png" className="login-left-logo" />
         </div>
-        <form className="login-actions" onSubmit={e=>{ e.preventDefault(); handleLogin() }}>
-          <input
-            className="form-control"
-            value={email}
-            onChange={e=>setEmail(e.target.value)}
-            placeholder="Email"
-            disabled={loading}
-          />
-          <input
-            className="form-control"
-            type="password"
-            value={senha}
-            onChange={e=>setSenha(e.target.value)}
-            placeholder="Senha"
-            disabled={loading}
-          />
-          <button className="btn btn-secondary" type="submit" disabled={loading}>
-            {loading
-              ? (<><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Autenticando...</>)
-              : 'Entrar'}
-          </button>
-        </form>
-        {error && <div style={{color:'red', marginTop:8}}>{error}</div>}
+      </div>
+      <div className="login-right">
+        <div className="login-right-inner">
+          <div className="login-panel">
+            <div className="login-panel-head">
+              <div className="login-panel-title">Acesso</div>
+              <div className="login-panel-subtitle">Entre com seu email e senha</div>
+            </div>
+            <form className="login-form" onSubmit={e=>{ e.preventDefault(); handleLogin() }}>
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-envelope" /></span>
+                <input
+                  className="form-control"
+                  value={email}
+                  onChange={e=>setEmail(e.target.value)}
+                  placeholder="Email"
+                  disabled={loading}
+                />
+              </div>
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-key" /></span>
+                <input
+                  className="form-control"
+                  type="password"
+                  value={senha}
+                  onChange={e=>setSenha(e.target.value)}
+                  placeholder="Senha"
+                  disabled={loading}
+                />
+              </div>
+              <button className="btn btn-dark w-100 d-flex align-items-center justify-content-center" type="submit" disabled={loading}>
+                {loading
+                  ? (<><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Autenticando...</>)
+                  : (<><i className="bi bi-box-arrow-in-right me-2" /> Entrar</>)}
+              </button>
+            </form>
+            {error && <div className="alert alert-danger py-2 mt-3 mb-0">{error}</div>}
+          </div>
+        </div>
       </div>
     </section>
   )

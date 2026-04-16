@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api } from '../api'
 
 export function SettingsPage(){
+  const [tab, setTab] = useState<'Relatorios'|'Banco'|'Telas'>('Relatorios')
   const [mode, setMode] = useState<'Real'|'Demo'>('Demo')
   const [loading, setLoading] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
@@ -11,8 +12,8 @@ export function SettingsPage(){
   const [emsPath, setEmsPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ txt: boolean, xlsx: boolean, pdf: boolean, word: boolean, excel: boolean, csv: boolean }>({
-    txt: false, xlsx: true, pdf: true, word: false, excel: true, csv: true
+  const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape', customQueries: boolean }>({
+    xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape', customQueries: true
   })
   const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
   const [useSqlAuth, setUseSqlAuth] = useState(false)
@@ -22,6 +23,24 @@ export function SettingsPage(){
   const [authStatus, setAuthStatus] = useState<any | null>(null)
   const [authMode, setAuthMode] = useState<any | null>(null)
   const [loginOnlyStatus, setLoginOnlyStatus] = useState<any | null>(null)
+  const [sqlInstancesLoading, setSqlInstancesLoading] = useState(false)
+  const [sqlInstances, setSqlInstances] = useState<Array<{ dataSource: string, server?: string|null, instance?: string|null, version?: string|null }>>([])
+  const [sqlInstance, setSqlInstance] = useState('')
+  const [sqlDatabasesLoading, setSqlDatabasesLoading] = useState(false)
+  const [sqlDatabases, setSqlDatabases] = useState<string[]>([])
+  const [sqlDbCms, setSqlDbCms] = useState('CMS')
+  const [sqlDbLogins, setSqlDbLogins] = useState('Logins')
+  const [sqlDbEms, setSqlDbEms] = useState('EMS')
+  const [sqlTablesLoading, setSqlTablesLoading] = useState<Record<string, boolean>>({})
+  const [sqlTables, setSqlTables] = useState<Record<string, string[]>>({})
+  const [sqlDiscoverErr, setSqlDiscoverErr] = useState<string | null>(null)
+  const [sqlApplyLoading, setSqlApplyLoading] = useState(false)
+  const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
+  const [screensCfgLoading, setScreensCfgLoading] = useState(false)
+  const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
+  const nivel = (typeof window !== 'undefined' ? (localStorage.getItem('rf_level') || '') : '')
+  const isSuperAdmin = nivel === 'SuperAdmin'
+  const isAdmin = nivel === 'Administrador'
 
   useEffect(() => {
     (async () => {
@@ -41,16 +60,6 @@ export function SettingsPage(){
         if (!c?.EMS) {
           setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
         }
-        // Aplicar automaticamente JP4REPORTDEV01 como padrão e modo Real se ainda não houver configuração persistida
-        try{
-          if (r?.mode !== 'Real' || !c?.CMS) {
-            await api.setDbMode('Real')
-            setMode('Real')
-          }
-          if (!c?.CMS) {
-            await saveRealPath()
-          }
-        }catch{}
         setDbInfoErr(null)
         try{
           const info = await api.getDbInfo()
@@ -78,17 +87,138 @@ export function SettingsPage(){
         try{
           const opts = await api.getReportOptions()
           setReportOptions({
-            txt: !!opts.txt,
             xlsx: !!opts.xlsx,
             pdf: !!opts.pdf,
-            word: !!opts.word,
             excel: !!opts.excel,
-            csv: !!opts.csv
+            cover: !!opts.cover,
+            coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
+            reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
+            customQueries: !!opts.customQueries
           })
         }catch{}
+        try{
+          setScreensCfgErr(null)
+          setScreensCfgLoading(true)
+          const sc: any = await api.adminGetScreensConfig()
+          const obj: any = sc && typeof sc === 'object' ? sc : {}
+          const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+          for (const k of Object.keys(obj)){
+            const it = obj[k]
+            out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+          }
+          setScreensCfg(out)
+        }catch(e:any){
+          setScreensCfgErr(e?.message || 'Falha ao carregar configuração de telas')
+        }finally{
+          setScreensCfgLoading(false)
+        }
       }catch{}
     })()
   }, [])
+
+  async function loadSqlInstances(){
+    setSqlDiscoverErr(null)
+    setSqlInstancesLoading(true)
+    try{
+      const r: any = await api.sqlInstances()
+      const items = Array.isArray(r?.items) ? r.items : []
+      setSqlInstances(items)
+      if (!sqlInstance && items[0]?.dataSource) setSqlInstance(String(items[0].dataSource))
+    }catch(e:any){
+      setSqlDiscoverErr(e?.message || 'Falha ao buscar instâncias SQL')
+      setSqlInstances([])
+    }finally{
+      setSqlInstancesLoading(false)
+    }
+  }
+
+  async function loadSqlDatabases(){
+    if (!sqlInstance) return
+    setSqlDiscoverErr(null)
+    setSqlDatabasesLoading(true)
+    try{
+      const r: any = await api.sqlDatabases(sqlInstance)
+      const items = Array.isArray(r?.items) ? r.items.map((x:any)=> String(x)) : []
+      setSqlDatabases(items)
+      if (items.includes('CMS')) setSqlDbCms('CMS')
+      if (items.includes('Logins')) setSqlDbLogins('Logins')
+      if (items.includes('EMS')) setSqlDbEms('EMS')
+      else if (items.includes('EMSEVENTS')) setSqlDbEms('EMSEVENTS')
+      else if (items.includes('hwreportsview')) setSqlDbEms('hwreportsview')
+    }catch(e:any){
+      setSqlDiscoverErr(e?.message || 'Falha ao listar bases')
+      setSqlDatabases([])
+    }finally{
+      setSqlDatabasesLoading(false)
+    }
+  }
+
+  async function loadSqlTablesPreview(database: string){
+    if (!sqlInstance || !database) return
+    setSqlTablesLoading(prev => ({ ...prev, [database]: true }))
+    try{
+      const r: any = await api.sqlTables(sqlInstance, database)
+      const items = Array.isArray(r?.items) ? r.items.map((x:any)=> String(x)) : []
+      setSqlTables(prev => ({ ...prev, [database]: items }))
+    }catch(e:any){
+      setSqlTables(prev => ({ ...prev, [database]: [String(e?.message || 'Falha ao listar tabelas')] }))
+    }finally{
+      setSqlTablesLoading(prev => ({ ...prev, [database]: false }))
+    }
+  }
+
+  function buildConnFromWizard(database: string){
+    const ds = sqlInstance
+    if (!ds || !database) return ''
+    const base = `Data Source=${ds};Initial Catalog=${database};Encrypt=True;TrustServerCertificate=True;`
+    if (useSqlAuth && sqlUser){
+      const u = `User ID=${sqlUser};`
+      const p = sqlPwd ? `Password=${sqlPwd};` : ''
+      return base + 'Integrated Security=False;' + u + p
+    }
+    return base + 'Integrated Security=True;'
+  }
+
+  async function applySqlWizardConnections(){
+    if (!sqlInstance) return
+    setErr(null); setMsg(null); setDbInfoErr(null); setSqlDiscoverErr(null)
+    setSqlApplyLoading(true)
+    try{
+      if (useSqlAuth && sqlUser){
+        await api.setSqlAuth({ user: sqlUser, pwd: sqlPwd })
+      }
+      const cms = buildConnFromWizard(sqlDbCms)
+      const logins = buildConnFromWizard(sqlDbLogins)
+      const ems = buildConnFromWizard(sqlDbEms)
+      const r: any = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems })
+      if (r?.CMS) setRealPath(r.CMS)
+      if (r?.EMS) setEmsPath(r.EMS)
+      setMsg('Configuração de conexão salva')
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+        setDbInfoErr(null)
+      }catch{
+        setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+      }
+      try{
+        const st = await api.testSqlAuth()
+        setAuthStatus(st)
+      }catch{}
+      try{
+        const md = await api.getSqlAuthMode()
+        setAuthMode(md)
+      }catch{}
+      try{
+        const lo = await api.testSqlLoginOnly()
+        setLoginOnlyStatus(lo)
+      }catch{}
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao salvar configuração')
+    }finally{
+      setSqlApplyLoading(false)
+    }
+  }
 
   async function applyRecommended(){
     setErr(null); setMsg(null); setDbInfoErr(null)
@@ -241,14 +371,15 @@ export function SettingsPage(){
     setErr(null); setMsg(null)
     setReportOptionsLoading(true)
     try{
-      const r = await api.setReportOptions(reportOptions)
+      const r = await api.setReportOptions(reportOptions as any)
       setReportOptions({
-        txt: !!r.txt,
         xlsx: !!r.xlsx,
         pdf: !!r.pdf,
-        word: !!r.word,
         excel: !!r.excel,
-        csv: !!r.csv
+        cover: !!r.cover,
+        coverOrientation: (r.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
+        reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
+        customQueries: !!r.customQueries
       })
       setMsg('Opções de formatos de relatórios salvas')
     }catch(e:any){
@@ -258,9 +389,90 @@ export function SettingsPage(){
     }
   }
 
+  const screensCatalog = React.useMemo(() => ([
+    { key: 'consultas', label: 'Consultas', desc: 'Tela principal de consultas e geração de relatórios' },
+    { key: 'mensagens', label: 'Mensagens', desc: 'Mensagens do sistema' },
+    { key: 'prestadores', label: 'Prestadores', desc: 'Consulta de prestadores' },
+    { key: 'transit', label: 'Trânsitos', desc: 'Consulta de trânsitos' },
+    { key: 'employees', label: 'Funcionários', desc: 'Consulta de funcionários' },
+    { key: 'external', label: 'Externos', desc: 'Consulta de externos' },
+    { key: 'access', label: 'Acessos', desc: 'Consulta de acessos' },
+    { key: 'logs', label: 'Logs', desc: 'Auditoria de eventos relevantes' },
+    { key: 'consultas-config', label: 'Config Consultas', desc: 'Ativar/desativar consultas' },
+    { key: 'configuracoes', label: 'Configurações', desc: 'Banco, relatórios e telas' },
+    { key: 'clientes', label: 'Clientes', desc: 'Cadastro de clientes e usuários' },
+    { key: 'inbox', label: 'Inbox', desc: 'Inbox administrativo' }
+  ]), [])
+
+  async function reloadScreensConfig(){
+    setScreensCfgErr(null); setErr(null); setMsg(null)
+    setScreensCfgLoading(true)
+    try{
+      const sc: any = await api.adminGetScreensConfig()
+      const obj: any = sc && typeof sc === 'object' ? sc : {}
+      const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+      for (const k of Object.keys(obj)){
+        const it = obj[k]
+        out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+      }
+      setScreensCfg(out)
+    }catch(e:any){
+      setScreensCfgErr(e?.message || 'Falha ao recarregar configuração de telas')
+    }finally{
+      setScreensCfgLoading(false)
+    }
+  }
+
+  async function saveScreensConfig(){
+    setMsg(null); setErr(null); setScreensCfgErr(null)
+    setScreensCfgLoading(true)
+    try{
+      const payload: Record<string, boolean> = {}
+      for (const it of screensCatalog){
+        payload[it.key] = !!screensCfg?.[it.key]?.enabled
+      }
+      const r: any = await api.adminSetScreensConfig(payload)
+      const out: Record<string, { enabled: boolean, lockedBy?: string }> = {}
+      for (const k of Object.keys(r || {})){
+        const it = (r as any)[k]
+        out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
+      }
+      setScreensCfg(out)
+      try{
+        const simple: Record<string, boolean> = {}
+        for (const k of Object.keys(out)) simple[k] = !!out[k].enabled
+        localStorage.setItem('rf_screens_config', JSON.stringify(simple))
+        localStorage.setItem('rf_screens_config_ts', String(Date.now()))
+        window.dispatchEvent(new Event('rf:screens-config'))
+      }catch{}
+      setMsg('Configuração de telas salva')
+    }catch(e:any){
+      const m = String(e?.message || '')
+      if (m.includes('403')) setErr('Você não tem permissão para alterar uma tela travada por um nível superior.')
+      else setErr(e?.message || 'Falha ao salvar configuração de telas')
+    }finally{
+      setScreensCfgLoading(false)
+    }
+  }
+
   return (
     <section>
       <h2>Configurações</h2>
+      <ul className="nav nav-tabs" style={{marginBottom:12}}>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Relatorios' ? ' active' : '')} type="button" onClick={()=> setTab('Relatorios')}>Relatórios</button>
+        </li>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Telas' ? ' active' : '')} type="button" onClick={()=> setTab('Telas')}>Telas</button>
+        </li>
+        <li className="nav-item">
+          <button className={'nav-link' + (tab === 'Banco' ? ' active' : '')} type="button" onClick={()=> setTab('Banco')}>Banco</button>
+        </li>
+      </ul>
+      {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
+      {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
+      {tab === 'Banco' && (
+      <>
       <div className="card">
         <div className="card-header d-flex align-items-center" style={{gap:8}}>
           <i className="bi bi-gear" /> Preferências do Banco de Dados
@@ -333,6 +545,119 @@ export function SettingsPage(){
                   </div>
                 </div>
               </div>
+              <div className="border rounded p-3" style={{background:'#f8fafc'}}>
+                <div className="d-flex align-items-center" style={{gap:8, marginBottom:8}}>
+                  <i className="bi bi-hdd-network" />
+                  <strong>Assistente de Conexão</strong>
+                </div>
+                <div className="text-muted" style={{fontSize:12, marginBottom:10}}>
+                  Liste as instâncias SQL detectadas e escolha as bases para CMS / Logins / EMS. Depois aplique para o sistema usar as tabelas existentes.
+                </div>
+                <div className="d-flex flex-wrap align-items-end" style={{gap:12}}>
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary d-flex align-items-center"
+                    onClick={loadSqlInstances}
+                    disabled={sqlInstancesLoading}
+                  >
+                    {sqlInstancesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Buscando...</> : <><i className="bi bi-search me-1" /> Buscar instâncias</>}
+                  </button>
+                  <div style={{minWidth:320, flex:1}}>
+                    <label className="form-label" style={{fontSize:12, marginBottom:4}}>Instância SQL</label>
+                    <input
+                      className="form-control"
+                      list="sqlInstancesDatalist"
+                      placeholder="Ex: .\\SQLEXPRESS ou SERVIDOR\\INSTANCIA"
+                      value={sqlInstance}
+                      onChange={e=> { setSqlInstance(e.target.value); setSqlDatabases([]); setSqlTables({}); }}
+                    />
+                    <datalist id="sqlInstancesDatalist">
+                      {sqlInstances.map((it, idx) => (
+                        <option key={(it.dataSource || '') + '_' + idx} value={it.dataSource}>
+                          {it.dataSource}{it.version ? ` (v${it.version})` : ''}
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-primary d-flex align-items-center"
+                    onClick={loadSqlDatabases}
+                    disabled={!sqlInstance || sqlDatabasesLoading}
+                  >
+                    {sqlDatabasesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Carregando...</> : <><i className="bi bi-database me-1" /> Carregar bases</>}
+                  </button>
+                </div>
+                {sqlDiscoverErr && (
+                  <div className="alert alert-warning py-2 mt-2 mb-0">
+                    {sqlDiscoverErr}
+                  </div>
+                )}
+                {sqlDatabases.length > 0 && (
+                  <div className="row" style={{marginTop:12, rowGap:12}}>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base CMS</label>
+                      <select className="form-select" value={sqlDbCms} onChange={e=> { setSqlDbCms(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbCms)} disabled={!!sqlTablesLoading[sqlDbCms]}>
+                          {sqlTablesLoading[sqlDbCms] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbCms] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbCms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base Logins</label>
+                      <select className="form-select" value={sqlDbLogins} onChange={e=> { setSqlDbLogins(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbLogins)} disabled={!!sqlTablesLoading[sqlDbLogins]}>
+                          {sqlTablesLoading[sqlDbLogins] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbLogins] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbLogins].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base EMS</label>
+                      <select className="form-select" value={sqlDbEms} onChange={e=> { setSqlDbEms(e.target.value); }}>
+                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                      </select>
+                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
+                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbEms)} disabled={!!sqlTablesLoading[sqlDbEms]}>
+                          {sqlTablesLoading[sqlDbEms] ? 'Carregando...' : 'Ver tabelas'}
+                        </button>
+                      </div>
+                      {sqlTables[sqlDbEms] && (
+                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
+                          {sqlTables[sqlDbEms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {sqlDatabases.length > 0 && (
+                  <div className="d-flex justify-content-end" style={{marginTop:12}}>
+                    <button
+                      type="button"
+                      className="btn btn-primary d-flex align-items-center"
+                      onClick={applySqlWizardConnections}
+                      disabled={sqlApplyLoading || !sqlInstance}
+                    >
+                      {sqlApplyLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Aplicando...</> : <><i className="bi bi-check2-circle me-1" /> Aplicar conexões</>}
+                    </button>
+                  </div>
+                )}
+              </div>
               <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
                 <div className="input-group" style={{minWidth:420}}>
                   <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
@@ -362,8 +687,6 @@ export function SettingsPage(){
             </button>
             <div className="text-muted" style={{fontSize:12}}>Cria empresas solicitadas, 20 funcionários e acessos em dias úteis</div>
           </div>
-          {msg && <div className="alert alert-success d-flex align-items-center" style={{gap:8}}><i className="bi bi-check-circle" /> {msg}</div>}
-          {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
         </div>
       </div>
       <div className="card" style={{marginTop:16}}>
@@ -480,6 +803,71 @@ export function SettingsPage(){
           )}
         </div>
       </div>
+      </>
+      )}
+      {tab === 'Telas' && (
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header d-flex align-items-center" style={{gap:8}}>
+          <i className="bi bi-layout-text-sidebar-reverse" /> Telas do Sistema
+        </div>
+        <div className="card-body">
+          <div className="text-muted" style={{fontSize:12, marginBottom:12}}>
+            Se uma tela foi habilitada/desabilitada por um nível superior, somente um nível igual ou superior consegue alterar novamente.
+          </div>
+          {screensCfgErr && <div className="alert alert-danger py-2">{screensCfgErr}</div>}
+          <div className="table-responsive">
+            <table className="table table-hover table-striped align-middle rf-table-light">
+              <thead>
+                <tr>
+                  <th style={{width:220}}>Tela</th>
+                  <th>Descrição</th>
+                  <th style={{width:160}}>Status</th>
+                  <th style={{width:170}}>Travado por</th>
+                </tr>
+              </thead>
+              <tbody>
+                {screensCatalog.map(it => {
+                  const current = screensCfg?.[it.key]
+                  const enabled = current ? !!current.enabled : true
+                  const lockedBy = (current?.lockedBy || 'SuperAdmin')
+                  const lockRank = lockedBy === 'SuperAdmin' ? 2 : lockedBy === 'Administrador' ? 1 : 0
+                  const actorRank = isSuperAdmin ? 2 : isAdmin ? 1 : 0
+                  const canEdit = actorRank >= lockRank
+                  return (
+                    <tr key={it.key}>
+                      <td><strong>{it.label}</strong><div className="text-muted" style={{fontSize:12}}>{it.key}</div></td>
+                      <td>{it.desc}</td>
+                      <td>
+                        <div className="form-check form-switch d-flex align-items-center gap-2">
+                          <input className="form-check-input" type="checkbox" checked={enabled} disabled={!canEdit || screensCfgLoading} onChange={e => {
+                            const v = e.target.checked
+                            setScreensCfg(prev => ({ ...prev, [it.key]: { enabled: v, lockedBy: prev?.[it.key]?.lockedBy } }))
+                          }} />
+                          <span>{enabled ? 'Ativa' : 'Desativada'}</span>
+                        </div>
+                        {!canEdit && (
+                          <div className="text-muted" style={{fontSize:12}}>Requer {lockedBy}</div>
+                        )}
+                      </td>
+                      <td>{lockedBy}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="d-flex gap-2">
+            <button className="btn btn-outline-primary d-flex align-items-center" onClick={saveScreensConfig} disabled={screensCfgLoading}>
+              {screensCfgLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Salvando...</> : <><i className="bi bi-save me-1" /> Salvar telas</>}
+            </button>
+            <button className="btn btn-outline-secondary d-flex align-items-center" onClick={reloadScreensConfig} disabled={screensCfgLoading}>
+              <i className="bi bi-arrow-clockwise me-1" /> Recarregar
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+      {tab === 'Relatorios' && (
       <div className="card" style={{marginTop:16}}>
         <div className="card-header d-flex align-items-center" style={{gap:8}}>
           <i className="bi bi-filetype-pdf" /> Formatos de relatórios disponíveis
@@ -489,14 +877,6 @@ export function SettingsPage(){
             Os formatos ativados aqui aparecerão como botões de sugestão quando uma consulta retornar dados.
           </p>
           <div className="d-flex flex-wrap" style={{gap:12}}>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repTxt" checked={reportOptions.txt} onChange={e=> setReportOptions(o=> ({...o, txt: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repTxt">TXT</label>
-            </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repCsv" checked={reportOptions.csv} onChange={e=> setReportOptions(o=> ({...o, csv: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repCsv">CSV</label>
-            </div>
             <div className="form-check form-switch">
               <input className="form-check-input" type="checkbox" id="repXlsx" checked={reportOptions.xlsx} onChange={e=> setReportOptions(o=> ({...o, xlsx: e.target.checked}))} />
               <label className="form-check-label" htmlFor="repXlsx">XLSX</label>
@@ -510,8 +890,28 @@ export function SettingsPage(){
               <label className="form-check-label" htmlFor="repPdf">PDF</label>
             </div>
             <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repWord" checked={reportOptions.word} onChange={e=> setReportOptions(o=> ({...o, word: e.target.checked}))} />
-              <label className="form-check-label" htmlFor="repWord">Word</label>
+              <input className="form-check-input" type="checkbox" id="repPdfCover" checked={reportOptions.cover} onChange={e=> setReportOptions(o=> ({...o, cover: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repPdfCover">Incluir capa nos PDFs</label>
+            </div>
+            <div className="form-check form-switch">
+              <input className="form-check-input" type="checkbox" id="repCustomQueries" checked={reportOptions.customQueries} onChange={e=> setReportOptions(o=> ({...o, customQueries: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repCustomQueries">Consultas Personalizadas</label>
+            </div>
+          </div>
+          <div className="row" style={{rowGap:12}}>
+            <div className="col-md-6">
+              <label className="form-label" htmlFor="repCoverOri">Orientação da capa (PDF)</label>
+              <select id="repCoverOri" className="form-select" value={reportOptions.coverOrientation} onChange={e=> setReportOptions(o=> ({...o, coverOrientation: (e.target.value === 'portrait' ? 'portrait' : 'landscape')}))}>
+                <option value="landscape">Paisagem</option>
+                <option value="portrait">Retrato</option>
+              </select>
+            </div>
+            <div className="col-md-6">
+              <label className="form-label" htmlFor="repBodyOri">Orientação do relatório (PDF)</label>
+              <select id="repBodyOri" className="form-select" value={reportOptions.reportOrientation} onChange={e=> setReportOptions(o=> ({...o, reportOrientation: (e.target.value === 'portrait' ? 'portrait' : 'landscape')}))}>
+                <option value="landscape">Paisagem</option>
+                <option value="portrait">Retrato</option>
+              </select>
             </div>
           </div>
           <div>
@@ -521,6 +921,7 @@ export function SettingsPage(){
           </div>
         </div>
       </div>
+      )}
     </section>
   )
 }

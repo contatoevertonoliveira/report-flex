@@ -1,6 +1,6 @@
 import React from 'react'
 import { api } from '../api'
-import { useLocation } from 'react-router-dom'
+import { useLocation, Link } from 'react-router-dom'
 
 export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: ()=>void }) {
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
@@ -17,6 +17,18 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   const [profileOpen, setProfileOpen] = React.useState(false)
   const [profileForm, setProfileForm] = React.useState<{ nome?: string, responsavel?: string, endereco?: string, fone?: string, email?: string, site?: string }>({})
   const [profileSaving, setProfileSaving] = React.useState(false)
+  const [screensCfgTs, setScreensCfgTs] = React.useState(0)
+  const [userName, setUserName] = React.useState<string | null>(null)
+  const [confirmSwitchUserOpen, setConfirmSwitchUserOpen] = React.useState(false)
+  const screensCfg = React.useMemo(() => {
+    try{
+      const raw = localStorage.getItem('rf_screens_config')
+      const obj = raw ? JSON.parse(raw) : null
+      return obj && typeof obj === 'object' ? obj : {}
+    }catch{
+      return {}
+    }
+  }, [screensCfgTs])
   const fileRef = React.useRef<HTMLInputElement | null>(null)
   const [isNarrow, setIsNarrow] = React.useState<boolean>(() => typeof window !== 'undefined' ? window.innerWidth <= 768 : false)
   const location = useLocation()
@@ -47,6 +59,37 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     }).catch(()=>{})
   }, [])
   React.useEffect(() => {
+    const handler = () => {
+      const ts = parseInt(localStorage.getItem('rf_screens_config_ts') || '0', 10)
+      setScreensCfgTs(Number.isNaN(ts) ? Date.now() : ts)
+    }
+    handler()
+    window.addEventListener('storage', handler)
+    window.addEventListener('rf:screens-config', handler as EventListener)
+    return () => {
+      window.removeEventListener('storage', handler)
+      window.removeEventListener('rf:screens-config', handler as EventListener)
+    }
+  }, [])
+  React.useEffect(() => {
+    try{
+      const t = localStorage.getItem('rf_token')
+      if (t && t.split('.').length >= 2){
+        const seg = t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')
+        let s = seg
+        while (s.length % 4 !== 0) s += '='
+        const json = atob(s)
+        const p = JSON.parse(json)
+        const nm = p?.nome || p?.usuario || null
+        setUserName(nm)
+      }else{
+        setUserName(null)
+      }
+    }catch{
+      setUserName(null)
+    }
+  }, [])
+  React.useEffect(() => {
     return () => {
       if (tokenTimerRef.current != null){
         window.clearTimeout(tokenTimerRef.current)
@@ -63,17 +106,21 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     window.addEventListener('resize', handler)
     return () => window.removeEventListener('resize', handler)
   }, [])
+  const isScreenEnabled = (key: string) => {
+    const v = (screensCfg as any)?.[key]
+    return v === undefined || v === true
+  }
   const links = [
-    { label: 'Consultas', href: '/consultas', icon: 'bi-search' },
-    ...((isAdmin || isSuperAdmin) ? [{ label: 'Consultas Config', href: '/consultas-config', icon: 'bi-sliders' }] : []),
-    ...((isAdmin || isSuperAdmin) ? [{ label: 'Logs', href: '/logs', icon: 'bi-clipboard-data' }] : []),
-    { label: 'Mensagens', href: '/mensagens', icon: 'bi-chat-dots' },
-    ...(isClient ? [] : [{ label: 'Configurações', href: '/configuracoes', icon: 'bi-gear' }]),
-    ...(isSuperAdmin ? [{ label: 'Clientes', href: '/clientes', icon: 'bi-people' }] : []),
-    ...(isSuperAdmin ? [{ label: 'Inbox', href: '/inbox', icon: 'bi-inbox' }] : [])
+    ...(isScreenEnabled('consultas') ? [{ label: 'Consultas', href: '/consultas', icon: 'bi-search' }] : []),
+    ...((isAdmin || isSuperAdmin) && isScreenEnabled('consultas-config') ? [{ label: 'Consultas Config', href: '/consultas-config', icon: 'bi-sliders' }] : []),
+    ...((isAdmin || isSuperAdmin) && isScreenEnabled('logs') ? [{ label: 'Logs', href: '/logs', icon: 'bi-clipboard-data' }] : []),
+    ...(isScreenEnabled('mensagens') ? [{ label: 'Mensagens', href: '/mensagens', icon: 'bi-chat-dots' }] : []),
+    ...((isAdmin || isSuperAdmin) && isScreenEnabled('configuracoes') ? [{ label: 'Configurações', href: '/configuracoes', icon: 'bi-gear' }] : []),
+    ...((isAdmin || isSuperAdmin) && isScreenEnabled('clientes') ? [{ label: 'Clientes', href: '/clientes', icon: 'bi-people' }] : []),
+    ...(isSuperAdmin && isScreenEnabled('inbox') ? [{ label: 'Inbox', href: '/inbox', icon: 'bi-inbox' }] : [])
   ]
   function handleSwitchUser(){
-    window.location.href = '/login'
+    setConfirmSwitchUserOpen(true)
   }
   function handleLogout(){
     import('../api').then(m=> m.logout())
@@ -193,25 +240,38 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
     <aside className={compact ? 'sidebar' : 'sidebar expanded'}>
       <div className="sidebar-top">
         <div className="sidebar-logo">
-          <img src={compact ? "/img/logo-report2.png" : "/img/logo-report.png"} alt="Report Flex" />
+          <img 
+            src={compact ? "/img/logo_seta_transparente.png" : "/img/Jumperfour_logo_branco_adap.png"} 
+            alt="JumperFour" 
+            style={compact ? { height: '32px', width: 'auto' } : undefined}
+          />
         </div>
         <nav>
           {links.map(l=> {
             const isActive = location.pathname === l.href
             return (
-              <a
+              <Link
                 key={l.href}
-                href={l.href}
+                to={l.href}
                 className={`d-flex align-items-center gap-2${isActive ? ' active' : ''}`}
                 title={compact ? l.label : undefined}
               >
                 <i className={`bi ${l.icon}`} />
                 {!compact && <span>{l.label}</span>}
-              </a>
+              </Link>
             )
           })}
           {isNarrow && (
             <>
+              <button
+                type="button"
+                className="d-flex align-items-center gap-2 sidebar-nav-btn"
+                onClick={onToggle}
+                title={compact ? (expanded ? 'Recolher menu' : 'Expandir menu') : undefined}
+                style={{opacity:0.85}}
+              >
+                <i className="bi bi-list" /> {!compact && <span>{expanded ? 'Recolher menu' : 'Expandir menu'}</span>}
+              </button>
               <button
                 type="button"
                 className="d-flex align-items-center gap-2 sidebar-nav-btn"
@@ -251,8 +311,10 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
               </div>
               {!compact && (
                 <div style={{fontSize:12, lineHeight:1.3, color:'#ffffff'}}>
-                  {clientResp && <div><strong>{clientResp}</strong></div>}
-                  {clientName && <div style={{opacity:0.85}}>{clientName}</div>}
+                  {(userName || clientResp) && <div><strong>{userName || clientResp}</strong></div>}
+                  {(clientName || localStorage.getItem('rf_client_name')) && (
+                    <div style={{opacity:0.85}}>{clientName || localStorage.getItem('rf_client_name') || ''}</div>
+                  )}
                   {isClient && clientToken && (
                     <div style={{opacity:0.7, fontSize:11, display:'flex', alignItems:'center', gap:4}}>
                       <span>Token:</span>
@@ -275,6 +337,16 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
         )}
         {!isNarrow && (
           <div className="d-flex flex-column" style={{gap:6, marginTop:4}}>
+            <div style={{display:'flex', justifyContent:'flex-start'}}>
+              <button
+                className="btn btn-sm btn-link"
+                onClick={onToggle}
+                title={expanded ? 'Recolher menu' : 'Expandir menu'}
+                style={{padding:0, textDecoration:'none', color:'#ffffff', opacity:0.75}}
+              >
+                <i className="bi bi-list" />
+              </button>
+            </div>
             <button
               className="btn btn-outline-secondary d-flex align-items-center gap-2"
               onClick={handleSwitchUser}
@@ -293,12 +365,47 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
             </button>
           </div>
         )}
-        <div style={{marginTop:4}}>
-          <button className="btn btn-sm btn-light" onClick={onToggle} title={expanded ? 'Recolher' : 'Expandir'} style={{background:'rgb(0, 149, 66)', borderColor:'rgb(0, 149, 66)', color:'#ffffff'}}>
-            <i className="bi bi-list" />
-          </button>
-        </div>
       </div>
+      {confirmSwitchUserOpen && (
+        <div
+          style={{
+            position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center', zIndex: 2500
+          }}
+          onClick={(e)=> { if (e.target === e.currentTarget) setConfirmSwitchUserOpen(false) }}
+        >
+          <div className="card" style={{minWidth:320, maxWidth:420}}>
+            <div className="card-header d-flex justify-content-between align-items-center">
+              <span>Trocar de Usuário</span>
+              <button type="button" className="btn-close" aria-label="Close" onClick={()=> setConfirmSwitchUserOpen(false)} />
+            </div>
+            <div className="card-body">
+              <div style={{fontSize:14}}>
+                Deseja realmente sair e voltar para a tela de login?
+              </div>
+              {userName && (
+                <div className="text-muted" style={{marginTop:8, fontSize:12}}>
+                  Usuário atual: {userName}
+                </div>
+              )}
+            </div>
+            <div className="card-footer d-flex justify-content-end gap-2">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={()=> setConfirmSwitchUserOpen(false)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2"
+                onClick={() => {
+                  setConfirmSwitchUserOpen(false)
+                  handleLogout()
+                }}
+              >
+                <i className="bi bi-box-arrow-right" /> Sair
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {profileOpen && isClient && (
         <div style={{
           position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex: 2000
