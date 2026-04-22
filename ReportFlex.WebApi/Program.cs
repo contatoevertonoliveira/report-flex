@@ -54,6 +54,7 @@ builder.Services.AddAuthentication().AddJwtBearer(opt =>
         IssuerSigningKey = key
     };
 });
+var envPathPrimary = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, ".env"));
 var envPathRepoRoot = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 var envLock = new object();
 IEnumerable<string> CandidateEnvPaths()
@@ -119,9 +120,23 @@ void SaveEnv(IDictionary<string,string> values)
         var lines = existing.Select(kv => kv.Key + "=" + kv.Value).ToArray();
         try
         {
-            var dir = Path.GetDirectoryName(envPathRepoRoot);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllLines(envPathRepoRoot, lines);
+            var wrote = false;
+            try
+            {
+                var dir = Path.GetDirectoryName(envPathPrimary);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                File.WriteAllLines(envPathPrimary, lines);
+                wrote = true;
+            }
+            catch
+            {
+            }
+            if (!wrote)
+            {
+                var dir = Path.GetDirectoryName(envPathRepoRoot);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                File.WriteAllLines(envPathRepoRoot, lines);
+            }
         }
         catch
         {
@@ -708,6 +723,29 @@ static bool PasswordMeetsPolicy(string password)
     return hasUpper && hasLower && hasSpecial;
 }
 
+static bool IsLocalOrPrivate(System.Net.IPAddress? ip)
+{
+    if (ip == null) return false;
+    if (System.Net.IPAddress.IsLoopback(ip)) return true;
+    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+    {
+        var b = ip.GetAddressBytes();
+        if (b.Length == 4)
+        {
+            if (b[0] == 10) return true;
+            if (b[0] == 192 && b[1] == 168) return true;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+        }
+    }
+    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+    {
+        if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal) return true;
+        var s = ip.ToString();
+        if (s.StartsWith("fd", StringComparison.OrdinalIgnoreCase) || s.StartsWith("fc", StringComparison.OrdinalIgnoreCase)) return true;
+    }
+    return false;
+}
+
 static string GenerateTempPassword()
 {
     const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -735,6 +773,318 @@ static string GenerateTempPassword()
     var pwd = new string(chars.ToArray());
     return PasswordMeetsPolicy(pwd) ? pwd : (pwd + "Aa!");
 }
+
+app.MapGet("/api/setup/status", async (HttpContext ctx) =>
+{
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    try
+    {
+        var conn = GetConn("Logins");
+        if (string.IsNullOrWhiteSpace(conn)) return Results.Ok(new { configured = false, errorCode = "DB_SETUP_REQUIRED", reason = "EmptyConnection" });
+        using var cn = new SqlConnection(conn);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = @"
+SELECT COUNT(*) 
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ('Login','PortalUsers')";
+        var n = (int)(await cmd.ExecuteScalarAsync() ?? 0);
+        return Results.Ok(new { configured = n > 0, errorCode = n > 0 ? (string?)null : "DB_SETUP_REQUIRED", reason = n > 0 ? (string?)null : "MissingTables" });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new { configured = false, errorCode = "DB_SETUP_REQUIRED", reason = "ConnectionFailed", detail = ex.Message });
+    }
+}).AllowAnonymous();
+
+app.MapGet("/api/setup/sql/instances", async (HttpContext ctx) =>
+{
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    try
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return;
+            candidates.Add(s.Trim());
+        }
+        Add(".");
+        Add("(local)");
+        Add("localhost");
+        Add("127.0.0.1");
+        var machine = Environment.MachineName;
+        Add(machine);
+        Add(machine + "\\SQLEXPRESS");
+        Add(".\\SQLEXPRESS");
+        Add("localhost\\SQLEXPRESS");
+        var list = new List<Dictionary<string, object?>>();
+        foreach (var ds in candidates.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var b = new SqlConnectionStringBuilder
+                {
+                    DataSource = ds,
+                    InitialCatalog = "master",
+                    Encrypt = true,
+                    TrustServerCertificate = true,
+                    IntegratedSecurity = true,
+                    ConnectTimeout = 2
+                };
+                using var cn = new SqlConnection(b.ConnectionString);
+                await cn.OpenAsync();
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = "SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(50))";
+                var ver = (string?)await cmd.ExecuteScalarAsync();
+                list.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["dataSource"] = ds, ["version"] = ver });
+            }
+            catch
+            {
+            }
+        }
+        return Results.Ok(new { items = list });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).AllowAnonymous();
+
+app.MapGet("/api/setup/sql/databases", async (HttpContext ctx, string? dataSource) =>
+{
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(dataSource)) return Results.BadRequest(new { error = "Parâmetro 'dataSource' é obrigatório." });
+    try
+    {
+        var b = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            InitialCatalog = "master",
+            Encrypt = true,
+            TrustServerCertificate = true,
+            IntegratedSecurity = true,
+            ConnectTimeout = 4
+        };
+        using var cn = new SqlConnection(b.ConnectionString);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name";
+        using var r = await cmd.ExecuteReaderAsync();
+        var items = new List<string>();
+        while (await r.ReadAsync())
+        {
+            if (!r.IsDBNull(0)) items.Add(r.GetString(0));
+        }
+        return Results.Ok(new { items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).AllowAnonymous();
+
+app.MapGet("/api/setup/sql/tables", async (HttpContext ctx, string? dataSource, string? database) =>
+{
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(dataSource) || string.IsNullOrWhiteSpace(database))
+        return Results.BadRequest(new { error = "Parâmetros 'dataSource' e 'database' são obrigatórios." });
+    try
+    {
+        var b = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            InitialCatalog = database,
+            Encrypt = true,
+            TrustServerCertificate = true,
+            IntegratedSecurity = true,
+            ConnectTimeout = 4
+        };
+        using var cn = new SqlConnection(b.ConnectionString);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME";
+        using var r = await cmd.ExecuteReaderAsync();
+        var items = new List<string>();
+        while (await r.ReadAsync())
+        {
+            if (!r.IsDBNull(0)) items.Add(r.GetString(0));
+        }
+        return Results.Ok(new { items });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+}).AllowAnonymous();
+
+app.MapPost("/api/setup/apply", async (HttpContext ctx) =>
+{
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    Dictionary<string, System.Text.Json.JsonElement>? dto = null;
+    try { dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(); } catch { }
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+    var dataSource = (GetDtoString(dto, "dataSource") ?? "").Trim();
+    var cmsDb = (GetDtoString(dto, "cmsDb") ?? "").Trim();
+    var loginsDb = (GetDtoString(dto, "loginsDb") ?? "").Trim();
+    var emsDb = (GetDtoString(dto, "emsDb") ?? "").Trim();
+    var initialEmail = (GetDtoString(dto, "initialEmail") ?? "").Trim();
+    var initialPassword = GetDtoString(dto, "initialPassword") ?? "";
+    var initialName = (GetDtoString(dto, "initialName") ?? "").Trim();
+
+    if (string.IsNullOrWhiteSpace(dataSource) || string.IsNullOrWhiteSpace(cmsDb) || string.IsNullOrWhiteSpace(loginsDb))
+        return Results.BadRequest(new { error = "Informe dataSource, cmsDb e loginsDb." });
+
+    var cmsConn = new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = cmsDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
+    var loginsConn = new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = loginsDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
+    var emsConn = string.IsNullOrWhiteSpace(emsDb)
+        ? ""
+        : new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = emsDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
+
+    dbMode = "Real";
+    realOverrides["CMS"] = cmsConn;
+    realOverrides["Logins"] = loginsConn;
+    if (!string.IsNullOrWhiteSpace(emsConn)) realOverrides["EMS"] = emsConn;
+
+    SaveEnv(new Dictionary<string, string>
+    {
+        ["DB_MODE"] = "Real",
+        ["DB_CMS_CONN"] = cmsConn,
+        ["DB_LOGINS_CONN"] = loginsConn,
+        ["DB_EMS_CONN"] = emsConn
+    });
+
+    try
+    {
+        using var cn = new SqlConnection(loginsConn);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = @"
+IF OBJECT_ID('dbo.Login','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Login(
+        ID INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        NOME VARCHAR(100) NULL,
+        USUARIO VARCHAR(50) NULL,
+        SENHA VARCHAR(100) NULL,
+        NIVEL VARCHAR(50) NULL,
+        STATUS VARCHAR(20) NULL,
+        TOKEN VARCHAR(100) NULL,
+        EMAIL VARCHAR(200) NULL,
+        SENHA_HASH VARCHAR(400) NULL,
+        MUST_CHANGE_PWD BIT NOT NULL CONSTRAINT DF_Login_MustChangePwd DEFAULT(0),
+        PWD_UPDATED_AT DATETIME2(0) NULL,
+        LAST_LOGIN_AT DATETIME2(0) NULL
+    );
+END
+
+IF OBJECT_ID('dbo.ClientesPortal','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ClientesPortal(
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        NOME VARCHAR(200) NOT NULL,
+        ENDERECO VARCHAR(300) NULL,
+        FONE VARCHAR(50) NULL,
+        EMAIL VARCHAR(200) NULL,
+        SITE VARCHAR(200) NULL,
+        ATIVO INT NULL,
+        CAMINHOIMG VARCHAR(255) NULL,
+        RESPONSAVEL VARCHAR(100) NULL,
+        CLIENT_TOKEN VARCHAR(10) NULL
+    );
+END
+
+IF OBJECT_ID('dbo.MensagensPortal','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.MensagensPortal(
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        FromUsuario VARCHAR(100) NULL,
+        FromNome VARCHAR(200) NULL,
+        FromNivel VARCHAR(50) NULL,
+        ClientId INT NULL,
+        Assunto VARCHAR(200) NOT NULL,
+        Texto VARCHAR(MAX) NOT NULL,
+        CreatedAt DATETIME NOT NULL DEFAULT(GETDATE()),
+        Status VARCHAR(50) NULL
+    );
+END
+
+IF OBJECT_ID('dbo.ActivityLog','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ActivityLog(
+        Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        TsUtc DATETIME2(0) NOT NULL DEFAULT(SYSUTCDATETIME()),
+        Usuario VARCHAR(200) NULL,
+        Nome VARCHAR(200) NULL,
+        Nivel VARCHAR(50) NULL,
+        ClientId INT NULL,
+        Action VARCHAR(300) NOT NULL,
+        Path VARCHAR(300) NOT NULL,
+        QueryString VARCHAR(900) NULL,
+        StatusCode INT NULL,
+        DurationMs INT NULL,
+        Ip VARCHAR(80) NULL,
+        UserAgent VARCHAR(400) NULL
+    );
+    CREATE INDEX IX_ActivityLog_TsUtc ON dbo.ActivityLog(TsUtc DESC);
+    CREATE INDEX IX_ActivityLog_Usuario ON dbo.ActivityLog(Usuario);
+END
+
+IF OBJECT_ID('dbo.PortalUsers','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PortalUsers(
+        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        Email VARCHAR(200) NOT NULL,
+        Nome VARCHAR(200) NOT NULL,
+        Nivel VARCHAR(50) NOT NULL,
+        ClientId INT NULL,
+        PasswordHash VARCHAR(400) NULL,
+        MustChangePassword BIT NOT NULL CONSTRAINT DF_PortalUsers_MustChange DEFAULT(1),
+        IsActive BIT NOT NULL CONSTRAINT DF_PortalUsers_IsActive DEFAULT(1),
+        CreatedAtUtc DATETIME2(0) NOT NULL DEFAULT(SYSUTCDATETIME()),
+        LastLoginAtUtc DATETIME2(0) NULL,
+        PasswordUpdatedAtUtc DATETIME2(0) NULL
+    );
+    CREATE UNIQUE INDEX IX_PortalUsers_Email ON dbo.PortalUsers(Email);
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_PortalUsers_ClientId' AND object_id = OBJECT_ID('dbo.PortalUsers'))
+    CREATE INDEX IX_PortalUsers_ClientId ON dbo.PortalUsers(ClientId);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Login_Email' AND object_id = OBJECT_ID('dbo.Login'))
+    CREATE INDEX IX_Login_Email ON dbo.Login(EMAIL);
+";
+        await cmd.ExecuteNonQueryAsync();
+
+        var envEmail = Environment.GetEnvironmentVariable("RF_SUPERADMIN_EMAIL");
+        var envPwd = Environment.GetEnvironmentVariable("RF_SUPERADMIN_PASSWORD");
+        var envName = Environment.GetEnvironmentVariable("RF_SUPERADMIN_NAME");
+
+        var email = !string.IsNullOrWhiteSpace(envEmail) ? envEmail! : initialEmail;
+        var pwd = !string.IsNullOrWhiteSpace(envPwd) ? envPwd! : initialPassword;
+        var nome = !string.IsNullOrWhiteSpace(envName) ? envName! : initialName;
+        if (string.IsNullOrWhiteSpace(nome)) nome = "SUPERADMIN";
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pwd))
+            return Results.BadRequest(new { error = "Credenciais iniciais não informadas. Defina RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no ambiente, ou informe initialEmail/initialPassword." });
+
+        using var cmdUser = cn.CreateCommand();
+        cmdUser.CommandText = @"
+IF NOT EXISTS (SELECT 1 FROM dbo.PortalUsers WHERE Email=@e)
+BEGIN
+    INSERT INTO dbo.PortalUsers(Email,Nome,Nivel,ClientId,PasswordHash,MustChangePassword,IsActive)
+    VALUES(@e,@n,'SuperAdmin',NULL,@h,1,1);
+END";
+        cmdUser.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+        cmdUser.Parameters.Add(new SqlParameter("@n", SqlDbType.VarChar, 200) { Value = nome });
+        cmdUser.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = HashPassword(pwd) });
+        await cmdUser.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = "Falha ao aplicar configuração no SQL local.", detail = ex.Message });
+    }
+
+    return Results.Ok(new { ok = true, mode = dbMode });
+}).AllowAnonymous();
 
 app.MapGet("/api/admin/report-options", () =>
 {
@@ -4400,7 +4750,29 @@ app.MapPost("/api/login/signin", async (HttpContext ctx) =>
     if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password)) return Results.BadRequest(new { error = "Informe email e senha" });
 
     using var cn = new SqlConnection(GetConn("Logins"));
-    await cn.OpenAsync();
+    try
+    {
+        await cn.OpenAsync();
+    }
+    catch (Exception ex)
+    {
+        return Results.Conflict(new { error = "Banco não configurado. Configure o banco local para continuar.", errorCode = "DB_SETUP_REQUIRED", detail = ex.Message });
+    }
+
+    try
+    {
+        using var cmdChk = cn.CreateCommand();
+        cmdChk.CommandText = @"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.TABLES
+WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ('Login','PortalUsers')";
+        var n = (int)(await cmdChk.ExecuteScalarAsync() ?? 0);
+        if (n <= 0) return Results.Conflict(new { error = "Banco Logins não possui as tabelas necessárias. Configure o banco local para continuar.", errorCode = "DB_SETUP_REQUIRED" });
+    }
+    catch
+    {
+        return Results.Conflict(new { error = "Banco Logins não possui as tabelas necessárias. Configure o banco local para continuar.", errorCode = "DB_SETUP_REQUIRED" });
+    }
 
     try
     {
@@ -11928,6 +12300,23 @@ INNER JOIN Card c ON c.SbiID = e.SbiID
     if (await r.NextResultAsync() && await r.ReadAsync()) total = r.GetInt32(0);
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
+
+var spaIndexPath = Path.Combine(app.Environment.WebRootPath ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot"), "index.html");
+app.MapFallback(async ctx =>
+{
+    if (ctx.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    if (!File.Exists(spaIndexPath))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    ctx.Response.ContentType = "text/html; charset=utf-8";
+    await ctx.Response.SendFileAsync(spaIndexPath);
+});
 
 app.Run();
 

@@ -36,7 +36,7 @@ function formatBrDateTime(v: any): string {
 function csvValue(v: any): string {
   if (v == null) return ''
   const s = String(v)
-  const escaped = s.replaceAll('"', '""')
+  const escaped = s.split('"').join('""')
   if (escaped.includes(';') || escaped.includes('\n') || escaped.includes('\r')) return `"${escaped}"`
   return escaped
 }

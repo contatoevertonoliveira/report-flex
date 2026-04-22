@@ -2,6 +2,8 @@ import React from 'react'
 import { api, setToken } from '../api'
 import { useNavigate } from 'react-router-dom'
 
+const logoFullUrl = new URL('../../img/Jumperfour_logo_branco_adap.png', import.meta.url).href
+
 function meetsPolicy(pwd: string): boolean {
   if (!pwd || pwd.length < 8) return false
   let hasUpper = false
@@ -56,7 +58,7 @@ export function ChangePasswordPage() {
     <section className="login-layout">
       <div className="login-card">
         <div className="login-brand">
-          <img alt="Logo" src="/img/Jumperfour_logo_branco_adap.png" style={{maxWidth:'220px'}} />
+          <img alt="Logo" src={logoFullUrl} style={{maxWidth:'220px'}} />
         </div>
         <h5 style={{marginBottom:12}}>Alterar senha</h5>
         <form className="login-actions" onSubmit={handleSubmit}>

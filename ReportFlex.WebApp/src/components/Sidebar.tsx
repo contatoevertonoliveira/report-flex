@@ -2,6 +2,9 @@ import React from 'react'
 import { api } from '../api'
 import { useLocation, Link } from 'react-router-dom'
 
+const logoCompactUrl = new URL('../../img/logo_seta_transparente.png', import.meta.url).href
+const logoFullUrl = new URL('../../img/Jumperfour_logo_branco_adap.png', import.meta.url).href
+
 export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: ()=>void }) {
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
   const isSuperAdmin = level === 'SuperAdmin'
@@ -241,7 +244,7 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
       <div className="sidebar-top">
         <div className="sidebar-logo">
           <img 
-            src={compact ? "/img/logo_seta_transparente.png" : "/img/Jumperfour_logo_branco_adap.png"} 
+            src={compact ? logoCompactUrl : logoFullUrl} 
             alt="JumperFour" 
             style={compact ? { height: '32px', width: 'auto' } : undefined}
           />

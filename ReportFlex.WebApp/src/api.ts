@@ -52,12 +52,14 @@ export const api = {
   transitByCard: async (card: string) => withAuth(apiFetch('/api/cms/transit/by-card?card=' + encodeURIComponent(card), { headers: headers() })),
   cardByCpf: async (cpf: string) => withAuth(apiFetch('/api/cms/card/by-cpf?cpf=' + encodeURIComponent(cpf), { headers: headers() })),
   accessInfoByDocument: async (documento: string) => withAuth(apiFetch('/api/access/info/by-document?documento=' + encodeURIComponent(documento), { headers: headers() })),
-  accessByDocument: async (p: { documento: string, start: string, end: string, mode?: 'all'|'catracas'|'faciais', page?: number, pageSize?: number }) => {
-    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+  accessByDocument: async (p: { documento: string, start: string, end: string, mode?: 'all'|'catracas'|'faciais'|'catracas-faciais', page?: number, pageSize?: number }) => {
+    const mode = p.mode === 'catracas-faciais' ? 'all' : p.mode
+    const qs = new URLSearchParams(Object.entries({ ...p, mode }).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/access/by-document?' + qs, { headers: headers() }))
   },
-  accessByDocumentAll: async (p: { documento: string, mode?: 'all'|'catracas'|'faciais', page?: number, pageSize?: number }) => {
-    const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
+  accessByDocumentAll: async (p: { documento: string, mode?: 'all'|'catracas'|'faciais'|'catracas-faciais', page?: number, pageSize?: number }) => {
+    const mode = p.mode === 'catracas-faciais' ? 'all' : p.mode
+    const qs = new URLSearchParams(Object.entries({ ...p, mode }).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/access/by-document/all?' + qs, { headers: headers() }))
   },
   personByCardInfo: async (card: string) => withAuth(apiFetch('/api/cms/person/by-card-info?card=' + encodeURIComponent(card), { headers: headers() })),
@@ -71,7 +73,13 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/cms/transit/by-empresa?' + qs, { headers: headers() }))
   },
-  signin: async (email: string, senha: string) => (await apiFetch('/api/login/signin', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ email, senha }) })).json(),
+  signin: async (email: string, senha: string) => {
+    const r = await apiFetch('/api/login/signin', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ email, senha }) })
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    return { ...data, __status: r.status, __ok: r.ok }
+  },
   changePassword: async (p: { currentPassword: string, newPassword: string }) =>
     withAuth(apiFetch('/api/login/change-password', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   signinToken: async (token: string) => {
@@ -80,6 +88,30 @@ export const api = {
     return await r.json()
   },
   loginTokens: async () => (await apiFetch('/api/login/tokens')).json(),
+
+  setupStatus: async () => {
+    const r = await apiFetch('/api/setup/status')
+    return await r.json()
+  },
+  setupSqlInstances: async () => {
+    const r = await apiFetch('/api/setup/sql/instances')
+    return await r.json()
+  },
+  setupSqlDatabases: async (dataSource: string) => {
+    const r = await apiFetch('/api/setup/sql/databases?dataSource=' + encodeURIComponent(dataSource))
+    return await r.json()
+  },
+  setupSqlTables: async (dataSource: string, database: string) => {
+    const r = await apiFetch('/api/setup/sql/tables?dataSource=' + encodeURIComponent(dataSource) + '&database=' + encodeURIComponent(database))
+    return await r.json()
+  },
+  setupApply: async (p: { dataSource: string, cmsDb: string, loginsDb: string, emsDb?: string, initialEmail?: string, initialPassword?: string, initialName?: string }) => {
+    const r = await apiFetch('/api/setup/apply', { method:'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(p) })
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    return { ...data, __status: r.status, __ok: r.ok }
+  },
   adminActivityLog: async (p: { page?: number, pageSize?: number } = {}) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()
     const url = qs ? '/api/admin/activity-log?' + qs : '/api/admin/activity-log'

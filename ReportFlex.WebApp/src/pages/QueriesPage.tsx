@@ -905,12 +905,6 @@ export function QueriesPage(){
       exportDragHandlersRef.current = null
     }
     exportDragRef.current = null
-    if (exportFloatDragHandlersRef.current){
-      window.removeEventListener('mousemove', exportFloatDragHandlersRef.current.move)
-      window.removeEventListener('mouseup', exportFloatDragHandlersRef.current.up)
-      exportFloatDragHandlersRef.current = null
-    }
-    exportFloatDragRef.current = null
   }
 
   function resetOnFilterChange(){

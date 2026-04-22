@@ -46,7 +46,7 @@ main{flex:1; padding:16px; overflow:auto}
   content:'';
   position:absolute;
   inset:0;
-  background:url('/img/Jumperfour_logo_branco_adap.png') center/420px auto no-repeat;
+  background:url('../img/Jumperfour_logo_branco_adap.png') center/420px auto no-repeat;
   opacity:.06;
   filter:grayscale(1);
   pointer-events:none;

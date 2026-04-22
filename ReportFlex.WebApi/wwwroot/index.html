@@ -1,49 +1,19 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Report Flex Web</title>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css">
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    table { width:100%; border-collapse: collapse; }
-    th, td { border: 1px solid #ddd; padding: 8px; }
-    th { background:#f7f7f7; }
-    input { padding:8px; width: 240px; }
-    button { padding:8px 12px; margin-left:8px; }
-    .card { padding:12px; border:1px solid #ddd; border-radius:6px;}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Report Flex Web</h1>
-    <div>
-      <input id="token" placeholder="Token" />
-      <button id="btnLogin">Login</button>
-      <span id="loginInfo"></span>
-    </div>
-  </header>
-  <div class="grid">
-    <div class="card">
-      <h2>Clientes</h2>
-      <div id="clientes"></div>
-    </div>
-    <div class="card">
-      <h2>Prestadores</h2>
-      <div id="prestadores"></div>
-    </div>
-  </div>
-  <div class="card" style="margin-top:16px;">
-    <h2>Trânsito por Cartão</h2>
-    <input id="card" placeholder="Número do cartão" />
-    <button id="btnTransit">Consultar</button>
-    <div id="transit"></div>
-  </div>
-  <script type="module" src="/app.js"></script>
-</body>
-</html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Report Flex Web</title>
+    <link rel="icon" type="image/x-icon" href="/assets/favicon-DBExgePd.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <script type="module" crossorigin src="/assets/index-CDWlIrD-.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-iVnyJ4Gb.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+  </html>
