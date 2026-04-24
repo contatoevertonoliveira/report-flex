@@ -35,6 +35,22 @@ export function SettingsPage(){
   const [sqlTables, setSqlTables] = useState<Record<string, string[]>>({})
   const [sqlDiscoverErr, setSqlDiscoverErr] = useState<string | null>(null)
   const [sqlApplyLoading, setSqlApplyLoading] = useState(false)
+  const [setupModalOpen, setSetupModalOpen] = useState(false)
+  const [setupLoading, setSetupLoading] = useState(false)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  const [setupInstances, setSetupInstances] = useState<Array<{ dataSource: string, version?: string | null }>>([])
+  const [setupDataSource, setSetupDataSource] = useState('')
+  const [setupDatabases, setSetupDatabases] = useState<string[]>([])
+  const [setupCmsDb, setSetupCmsDb] = useState('')
+  const [setupLoginsDb, setSetupLoginsDb] = useState('')
+  const [setupEmsDb, setSetupEmsDb] = useState('')
+  const [setupCmsTables, setSetupCmsTables] = useState<string[]>([])
+  const [setupLoginsTables, setSetupLoginsTables] = useState<string[]>([])
+  const [setupEmsTables, setSetupEmsTables] = useState<string[]>([])
+  const [setupInitialEmail, setSetupInitialEmail] = useState('')
+  const [setupInitialPassword, setSetupInitialPassword] = useState('')
+  const [setupInitialName, setSetupInitialName] = useState('SUPERADMIN')
+  const [setupTest, setSetupTest] = useState<{ cms?: string, logins?: string, ems?: string } | null>(null)
   const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
   const [screensCfgLoading, setScreensCfgLoading] = useState(false)
   const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
@@ -164,6 +180,155 @@ export function SettingsPage(){
       setSqlTables(prev => ({ ...prev, [database]: [String(e?.message || 'Falha ao listar tabelas')] }))
     }finally{
       setSqlTablesLoading(prev => ({ ...prev, [database]: false }))
+    }
+  }
+
+  async function loadSetupInstances(){
+    setSetupError(null)
+    setSetupLoading(true)
+    try{
+      const res: any = await api.setupSqlInstances()
+      const items = Array.isArray(res?.items) ? res.items : []
+      setSetupInstances(items)
+      if (!setupDataSource && items.length){
+        const ds = String(items[0]?.dataSource || '').trim()
+        if (ds) setSetupDataSource(ds)
+      }
+    }catch(e:any){
+      setSetupInstances([])
+      setSetupError(e?.message || 'Falha ao listar instâncias SQL')
+    }finally{
+      setSetupLoading(false)
+    }
+  }
+
+  async function loadSetupDatabases(ds: string){
+    if (!ds) return
+    setSetupError(null)
+    setSetupLoading(true)
+    try{
+      const res: any = await api.setupSqlDatabases(ds)
+      const items = Array.isArray(res?.items) ? res.items.map((x:any)=> String(x)) : []
+      setSetupDatabases(items)
+      const pick = (preferred: string) => items.find((x: string)=> x.toLowerCase() === preferred.toLowerCase()) || ''
+      const cms = pick('CMS') || (items[0] || '')
+      const logins = pick('Logins') || pick('Login') || (items[0] || '')
+      const ems = pick('EMS') || pick('EMSEVENTS') || ''
+      if (!setupCmsDb) setSetupCmsDb(cms)
+      if (!setupLoginsDb) setSetupLoginsDb(logins)
+      if (!setupEmsDb) setSetupEmsDb(ems)
+    }catch(e:any){
+      setSetupDatabases([])
+      setSetupError(e?.message || 'Falha ao listar bancos')
+    }finally{
+      setSetupLoading(false)
+    }
+  }
+
+  async function loadSetupTables(database: string, set: (items: string[])=>void){
+    if (!setupDataSource || !database) { set([]); return }
+    try{
+      const res: any = await api.setupSqlTables(setupDataSource, database)
+      const items = Array.isArray(res?.items) ? res.items.map((x:any)=> String(x)) : []
+      set(items)
+    }catch(e:any){
+      set([])
+    }
+  }
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    loadSetupInstances()
+  },[setupModalOpen])
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    if (!setupDataSource) return
+    loadSetupDatabases(setupDataSource)
+  },[setupModalOpen, setupDataSource])
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    loadSetupTables(setupCmsDb, setSetupCmsTables)
+  },[setupModalOpen, setupDataSource, setupCmsDb])
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    loadSetupTables(setupLoginsDb, setSetupLoginsTables)
+  },[setupModalOpen, setupDataSource, setupLoginsDb])
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    if (!setupEmsDb) { setSetupEmsTables([]); return }
+    loadSetupTables(setupEmsDb, setSetupEmsTables)
+  },[setupModalOpen, setupDataSource, setupEmsDb])
+
+  async function testSetupConnections(){
+    setSetupError(null)
+    setSetupTest(null)
+    if (!setupDataSource || !setupCmsDb || !setupLoginsDb){
+      setSetupError('Selecione a instância e os bancos (CMS e Logins).')
+      return
+    }
+    setSetupLoading(true)
+    try{
+      const out: any = {}
+      try{ await api.setupSqlTables(setupDataSource, setupCmsDb); out.cms = 'OK' }catch(e:any){ out.cms = e?.message || 'Falha' }
+      try{ await api.setupSqlTables(setupDataSource, setupLoginsDb); out.logins = 'OK' }catch(e:any){ out.logins = e?.message || 'Falha' }
+      if (setupEmsDb){
+        try{ await api.setupSqlTables(setupDataSource, setupEmsDb); out.ems = 'OK' }catch(e:any){ out.ems = e?.message || 'Falha' }
+      }
+      setSetupTest(out)
+    }finally{
+      setSetupLoading(false)
+    }
+  }
+
+  async function applySetupFromSettings(){
+    setSetupError(null)
+    setSetupTest(null)
+    if (!setupDataSource || !setupCmsDb || !setupLoginsDb){
+      setSetupError('Selecione a instância e os bancos (CMS e Logins).')
+      return
+    }
+    setSetupLoading(true)
+    try{
+      const res: any = await api.setupApply({
+        dataSource: setupDataSource,
+        cmsDb: setupCmsDb,
+        loginsDb: setupLoginsDb,
+        emsDb: setupEmsDb || undefined,
+        initialEmail: (setupInitialEmail || '').trim() || undefined,
+        initialPassword: setupInitialPassword || undefined,
+        initialName: (setupInitialName || '').trim() || undefined
+      })
+      if (!res?.__ok){
+        setSetupError(String(res?.error || res?.detail || 'Falha ao aplicar configuração'))
+        return
+      }
+      setMsg(res?.createdFirstUser ? 'Conexão aplicada e SuperAdmin inicial criado (exigirá troca de senha no primeiro login).' : 'Conexão aplicada. Usuários já existiam, então nenhum SuperAdmin inicial foi criado.')
+      setErr(null)
+      setSetupModalOpen(false)
+      try{
+        const r = await api.getDbMode()
+        if (r?.mode === 'Demo' || r?.mode === 'Real'){ setMode(r.mode) }
+      }catch{}
+      try{
+        const c = await api.getConnections()
+        if (c?.CMS) setRealPath(c.CMS)
+        if (c?.EMS) setEmsPath(c.EMS)
+      }catch{}
+      try{
+        const info = await api.getDbInfo()
+        setDbInfo(info)
+        setDbInfoErr(null)
+      }catch{
+        setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
+      }
+    }catch(e:any){
+      setSetupError(e?.message || 'Falha ao aplicar configuração')
+    }finally{
+      setSetupLoading(false)
     }
   }
 
@@ -455,6 +620,28 @@ export function SettingsPage(){
     }
   }
 
+  const extractConnValue = (conn: string, key: 'Data Source'|'Server'|'Initial Catalog'|'Database') => {
+    if (!conn) return ''
+    const re = new RegExp(`(?:^|;)\\s*${key.replace(' ', '\\\\s+')}\\s*=\\s*([^;]+)`, 'i')
+    const m = conn.match(re)
+    return (m?.[1] || '').trim()
+  }
+
+  const summarizeDb = (key: 'CMS'|'Logins'|'EMS') => {
+    const db = dbInfo?.databases?.[key]
+    if (!db) return null
+    const conn = String(db.connection || '')
+    const dataSource = extractConnValue(conn, 'Data Source') || extractConnValue(conn, 'Server')
+    const catalog = extractConnValue(conn, 'Initial Catalog') || extractConnValue(conn, 'Database')
+    const tables = Array.isArray(db.tables) ? db.tables : []
+    const procedures = Array.isArray(db.procedures) ? db.procedures : []
+    return { key, conn, dataSource, catalog, tables, procedures }
+  }
+
+  const dbCms = summarizeDb('CMS')
+  const dbLogins = summarizeDb('Logins')
+  const dbEms = summarizeDb('EMS')
+
   return (
     <section>
       <h2>Configurações</h2>
@@ -473,336 +660,465 @@ export function SettingsPage(){
       {err && <div className="alert alert-danger d-flex align-items-center" style={{gap:8}}><i className="bi bi-exclamation-triangle" /> {err}</div>}
       {tab === 'Banco' && (
       <>
-      <div className="card">
-        <div className="card-header d-flex align-items-center" style={{gap:8}}>
-          <i className="bi bi-gear" /> Preferências do Banco de Dados
-        </div>
-        <div className="card-body d-flex flex-column" style={{gap:12}}>
-          <div className="d-flex align-items-center flex-wrap" style={{gap:12}}>
-            <div className="form-check">
-              <input className="form-check-input" type="radio" name="dbmode" id="dbReal" checked={mode==='Real'} onChange={()=> applyMode('Real')} />
-              <label className="form-check-label" htmlFor="dbReal">Banco Real</label>
+      <div style={{display:'flex', flexWrap:'wrap', gap:12, alignItems:'flex-start'}}>
+        <div style={{flex:'1 1 720px', minWidth:360}}>
+          <div className="card h-100">
+            <div className="card-header d-flex align-items-center" style={{gap:8}}>
+              <i className="bi bi-database-gear" /> Banco de Dados
             </div>
-            <div className="form-check">
-              <input className="form-check-input" type="radio" name="dbmode" id="dbDemo" checked={mode==='Demo'} onChange={()=> applyMode('Demo')} />
-              <label className="form-check-label" htmlFor="dbDemo">Banco Demo (Teste)</label>
-            </div>
-          </div>
-          {mode === 'Real' && (
-            <>
-              <div className="alert alert-info d-flex align-items-center" style={{gap:8}}>
-                <i className="bi bi-person-badge" />
-                <div>
-                  <div><strong>Identidade do servidor:</strong> {dbInfo?.identity || 'desconhecida'}</div>
-                  <div className="text-muted" style={{fontSize:12}}>Para Windows Authentication, este usuário deve ter permissão nas bases.</div>
-                </div>
-              </div>
-              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-                <div className="input-group" style={{minWidth:420}}>
-                  <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
-                  <input className="form-control" placeholder="Caminho/Connection String do SQL Server (Real)" value={realPath} onChange={e=> setRealPath(e.target.value)} />
-                </div>
-                <button className="btn btn-outline-success d-flex align-items-center" onClick={saveRealPath}>
-                  <i className="bi bi-save me-1" /> Salvar configuração
-                </button>
-                <button className="btn btn-outline-primary d-flex align-items-center" onClick={applyRecommended}>
-                  <i className="bi bi-plug me-1" /> Usar JP4REPORTDEV01 (Windows Auth)
-                </button>
-              </div>
-              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-                <div className="form-check form-switch">
-                  <input className="form-check-input" type="checkbox" id="switchSqlAuth" checked={useSqlAuth} onChange={()=> setUseSqlAuth(!useSqlAuth)} />
-                  <label className="form-check-label" htmlFor="switchSqlAuth">Usar Autenticação SQL (desativa Windows Auth)</label>
-                </div>
-                {useSqlAuth && (
-                  <>
-                    <div className="input-group" style={{minWidth:220}}>
-                      <span className="input-group-text"><i className="bi bi-person" /></span>
-                      <input className="form-control" placeholder="Usuário SQL" value={sqlUser} onChange={e=> setSqlUser(e.target.value)} />
+            <div className="card-body p-3">
+              <div className="row g-2 align-items-start">
+                <div className="col-12 col-lg-8">
+                  <div className="d-flex align-items-center flex-wrap" style={{gap:12}}>
+                    <div className="form-check">
+                      <input className="form-check-input" type="radio" name="dbmode" id="dbReal" checked={mode==='Real'} onChange={()=> applyMode('Real')} />
+                      <label className="form-check-label" htmlFor="dbReal">Banco Real</label>
                     </div>
-                    <div className="input-group" style={{minWidth:220}}>
-                      <span className="input-group-text"><i className="bi bi-key" /></span>
-                      <input className="form-control" type="password" placeholder="Senha SQL" value={sqlPwd} onChange={e=> setSqlPwd(e.target.value)} />
+                    <div className="form-check">
+                      <input className="form-check-input" type="radio" name="dbmode" id="dbDemo" checked={mode==='Demo'} onChange={()=> applyMode('Demo')} />
+                      <label className="form-check-label" htmlFor="dbDemo">Banco Demo</label>
                     </div>
-                  </>
-                )}
-              </div>
-              <div className="row mt-2">
-                <div className="col-md-6">
-                  <h6>Logins SQL do servidor</h6>
-                  <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                    {sqlLogins.slice(0,50).map(n=> <li key={n}>{n}</li>)}
-                  </ul>
-                </div>
-                <div className="col-md-6">
-                  <h6>Status de autenticação atual</h6>
-                  <div className="d-flex flex-column" style={{fontSize:12}}>
-                    <div>CMS: {authStatus?.CMS?.ok ? (`OK (${authStatus?.CMS?.user||''})`) : (`Falha: ${authStatus?.CMS?.error||''}`)}</div>
-                    <div>Logins: {authStatus?.Logins?.ok ? (`OK (${authStatus?.Logins?.user||''})`) : (`Falha: ${authStatus?.Logins?.error||''}`)}</div>
-                    <div>EMS: {authStatus?.EMS?.ok ? (`OK (${authStatus?.EMS?.user||''})`) : (`Falha: ${authStatus?.EMS?.error||''}`)}</div>
-                    <div>Modo do servidor: {authMode?.mode || 'desconhecido'}</div>
-                    <div>Teste login (master): {loginOnlyStatus?.ok ? (`OK (${loginOnlyStatus?.user||''})`) : (`Falha: ${loginOnlyStatus?.error||''}`)}</div>
+                  </div>
+                  <div className="text-muted" style={{fontSize:12, marginTop:4}}>
+                    Configure as conexões do SQL Server e valide a estrutura das bases.
                   </div>
                 </div>
-              </div>
-              <div className="border rounded p-3" style={{background:'#f8fafc'}}>
-                <div className="d-flex align-items-center" style={{gap:8, marginBottom:8}}>
-                  <i className="bi bi-hdd-network" />
-                  <strong>Assistente de Conexão</strong>
-                </div>
-                <div className="text-muted" style={{fontSize:12, marginBottom:10}}>
-                  Liste as instâncias SQL detectadas e escolha as bases para CMS / Logins / EMS. Depois aplique para o sistema usar as tabelas existentes.
-                </div>
-                <div className="d-flex flex-wrap align-items-end" style={{gap:12}}>
-                  <button
-                    type="button"
-                    className="btn btn-outline-secondary d-flex align-items-center"
-                    onClick={loadSqlInstances}
-                    disabled={sqlInstancesLoading}
-                  >
-                    {sqlInstancesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Buscando...</> : <><i className="bi bi-search me-1" /> Buscar instâncias</>}
+                <div className="col-12 col-lg-4 d-flex justify-content-lg-end">
+                  <button type="button" className="btn btn-outline-dark btn-sm d-flex align-items-center" onClick={()=> setSetupModalOpen(true)}>
+                    <i className="bi bi-plug me-2" /> Assistente
                   </button>
-                  <div style={{minWidth:320, flex:1}}>
-                    <label className="form-label" style={{fontSize:12, marginBottom:4}}>Instância SQL</label>
-                    <input
-                      className="form-control"
-                      list="sqlInstancesDatalist"
-                      placeholder="Ex: .\\SQLEXPRESS ou SERVIDOR\\INSTANCIA"
-                      value={sqlInstance}
-                      onChange={e=> { setSqlInstance(e.target.value); setSqlDatabases([]); setSqlTables({}); }}
-                    />
-                    <datalist id="sqlInstancesDatalist">
-                      {sqlInstances.map((it, idx) => (
-                        <option key={(it.dataSource || '') + '_' + idx} value={it.dataSource}>
-                          {it.dataSource}{it.version ? ` (v${it.version})` : ''}
-                        </option>
+                </div>
+              </div>
+
+              {mode === 'Demo' && (
+                <div className="alert alert-info mt-2 mb-0 d-flex align-items-center py-2" style={{gap:8}}>
+                  <i className="bi bi-info-circle" />
+                  <div>
+                    <div className="fw-semibold">Modo Demo</div>
+                    <div style={{fontSize:12}}>Recomendado apenas para testes.</div>
+                  </div>
+                </div>
+              )}
+
+              {mode === 'Real' && (
+                <>
+                  <hr className="my-2" />
+                  <div className="row g-2">
+                    <div className="col-12">
+                      <label className="form-label" style={{marginBottom:4}}>Conexão base (CMS e Logins)</label>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
+                        <input className="form-control" value={realPath} onChange={e=> setRealPath(e.target.value)} placeholder="Ex: Data Source=SERVIDOR;Integrated Security=True;Encrypt=True;TrustServerCertificate=True" />
+                      </div>
+                      <div className="text-muted" style={{fontSize:12, marginTop:4}}>
+                        Se não houver Initial Catalog, aplica CMS e Logins automaticamente.
+                      </div>
+                    </div>
+
+                    <div className="col-12">
+                      <label className="form-label" style={{marginBottom:4}}>Conexão EMS (opcional)</label>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text"><i className="bi bi-hdd-stack" /></span>
+                        <input className="form-control" value={emsPath} onChange={e=> setEmsPath(e.target.value)} placeholder="Ex: ...;Initial Catalog=EMSEVENTS;..." />
+                      </div>
+                    </div>
+
+                    <div className="col-12">
+                      <div className="form-check form-switch">
+                        <input className="form-check-input" type="checkbox" id="switchSqlAuth" checked={useSqlAuth} onChange={()=> setUseSqlAuth(!useSqlAuth)} />
+                        <label className="form-check-label" htmlFor="switchSqlAuth">Usar Autenticação SQL</label>
+                      </div>
+                      {useSqlAuth && (
+                        <div className="row g-2" style={{marginTop:6}}>
+                          <div className="col-12 col-md-6">
+                            <div className="input-group input-group-sm">
+                              <span className="input-group-text"><i className="bi bi-person" /></span>
+                              <input className="form-control" placeholder="Usuário SQL" value={sqlUser} onChange={e=> setSqlUser(e.target.value)} />
+                            </div>
+                          </div>
+                          <div className="col-12 col-md-6">
+                            <div className="input-group input-group-sm">
+                              <span className="input-group-text"><i className="bi bi-key" /></span>
+                              <input className="form-control" type="password" placeholder="Senha SQL" value={sqlPwd} onChange={e=> setSqlPwd(e.target.value)} />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="col-12 d-flex justify-content-end">
+                      <button className="btn btn-primary btn-sm d-flex align-items-center" onClick={saveRealPath}>
+                        <i className="bi bi-save me-2" /> Salvar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-2">
+                    <details className="border rounded p-2" style={{background:'#f8fafc'}}>
+                      <summary className="d-flex align-items-center" style={{gap:8, cursor:'pointer'}}>
+                        <i className="bi bi-magic" />
+                        <span className="fw-semibold">Assistente de conexão (instância e bases)</span>
+                      </summary>
+                      <div style={{marginTop:10}}>
+                        <div className="text-muted" style={{fontSize:12, marginBottom:8}}>
+                          Use quando quiser montar as conexões escolhendo a instância e os bancos.
+                        </div>
+                        <div className="d-flex flex-wrap align-items-end" style={{gap:10}}>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary btn-sm d-flex align-items-center"
+                        onClick={loadSqlInstances}
+                        disabled={sqlInstancesLoading}
+                      >
+                        {sqlInstancesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Buscando...</> : <><i className="bi bi-search me-1" /> Buscar instâncias</>}
+                      </button>
+                      <div style={{minWidth:260, flex:1}}>
+                        <label className="form-label" style={{fontSize:12, marginBottom:4}}>Instância SQL</label>
+                        <input
+                          className="form-control form-control-sm"
+                          list="sqlInstancesDatalist"
+                          placeholder="Ex: .\\SQLEXPRESS ou SERVIDOR\\INSTANCIA"
+                          value={sqlInstance}
+                          onChange={e=> { setSqlInstance(e.target.value); setSqlDatabases([]); setSqlTables({}); }}
+                        />
+                        <datalist id="sqlInstancesDatalist">
+                          {sqlInstances.map((it, idx) => (
+                            <option key={(it.dataSource || '') + '_' + idx} value={it.dataSource}>
+                              {it.dataSource}{it.version ? ` (v${it.version})` : ''}
+                            </option>
+                          ))}
+                        </datalist>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-outline-primary btn-sm d-flex align-items-center"
+                        onClick={loadSqlDatabases}
+                        disabled={!sqlInstance || sqlDatabasesLoading}
+                      >
+                        {sqlDatabasesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Carregando...</> : <><i className="bi bi-database me-1" /> Carregar bases</>}
+                      </button>
+                    </div>
+                    {sqlDiscoverErr && (
+                      <div className="alert alert-warning py-2 mt-2 mb-0">
+                        {sqlDiscoverErr}
+                      </div>
+                    )}
+                    {sqlDatabases.length > 0 && (
+                      <>
+                        <div className="row g-2" style={{marginTop:10}}>
+                          <div className="col-md-4">
+                            <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base CMS</label>
+                            <select className="form-select form-select-sm" value={sqlDbCms} onChange={e=> { setSqlDbCms(e.target.value); }}>
+                              {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                            </select>
+                            <div style={{marginTop:6}}>
+                              <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbCms)} disabled={!!sqlTablesLoading[sqlDbCms]}>
+                                {sqlTablesLoading[sqlDbCms] ? 'Carregando...' : 'Ver tabelas (informativo)'}
+                              </button>
+                            </div>
+                            {sqlTables[sqlDbCms] && (
+                              <div className="mt-2" style={{maxHeight:120, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'6px 8px', background:'#ffffff'}}>
+                                {sqlTables[sqlDbCms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="col-md-4">
+                            <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base Logins</label>
+                            <select className="form-select form-select-sm" value={sqlDbLogins} onChange={e=> { setSqlDbLogins(e.target.value); }}>
+                              {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                            </select>
+                            <div style={{marginTop:6}}>
+                              <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbLogins)} disabled={!!sqlTablesLoading[sqlDbLogins]}>
+                                {sqlTablesLoading[sqlDbLogins] ? 'Carregando...' : 'Ver tabelas (informativo)'}
+                              </button>
+                            </div>
+                            {sqlTables[sqlDbLogins] && (
+                              <div className="mt-2" style={{maxHeight:120, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'6px 8px', background:'#ffffff'}}>
+                                {sqlTables[sqlDbLogins].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="col-md-4">
+                            <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base EMS</label>
+                            <select className="form-select form-select-sm" value={sqlDbEms} onChange={e=> { setSqlDbEms(e.target.value); }}>
+                              {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
+                            </select>
+                            <div style={{marginTop:6}}>
+                              <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbEms)} disabled={!!sqlTablesLoading[sqlDbEms]}>
+                                {sqlTablesLoading[sqlDbEms] ? 'Carregando...' : 'Ver tabelas (informativo)'}
+                              </button>
+                            </div>
+                            {sqlTables[sqlDbEms] && (
+                              <div className="mt-2" style={{maxHeight:120, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'6px 8px', background:'#ffffff'}}>
+                                {sqlTables[sqlDbEms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="d-flex justify-content-end" style={{marginTop:10}}>
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm d-flex align-items-center"
+                            onClick={applySqlWizardConnections}
+                            disabled={sqlApplyLoading || !sqlInstance}
+                          >
+                            {sqlApplyLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Aplicando...</> : <><i className="bi bi-check2-circle me-1" /> Aplicar conexões</>}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                    </details>
+                  </div>
+
+                  <details className="border rounded p-2 mt-2">
+                    <summary className="d-flex align-items-center" style={{gap:8, cursor:'pointer'}}>
+                      <i className="bi bi-shield-check" />
+                      <span className="fw-semibold">Diagnóstico</span>
+                    </summary>
+                    <div style={{marginTop:10}}>
+                      <div className="alert alert-info d-flex align-items-center py-2" style={{gap:8, marginBottom:10}}>
+                        <i className="bi bi-person-badge" />
+                        <div>
+                          <div><strong>Identidade do servidor:</strong> {dbInfo?.identity || 'desconhecida'}</div>
+                          <div className="text-muted" style={{fontSize:12}}>Em Windows Authentication, este usuário precisa de permissão nas bases.</div>
+                        </div>
+                      </div>
+                      <div className="row g-2" style={{fontSize:12}}>
+                        <div className="col-12 col-md-4">CMS: {authStatus?.CMS?.ok ? (`OK (${authStatus?.CMS?.user||''})`) : (`Falha: ${authStatus?.CMS?.error||''}`)}</div>
+                        <div className="col-12 col-md-4">Logins: {authStatus?.Logins?.ok ? (`OK (${authStatus?.Logins?.user||''})`) : (`Falha: ${authStatus?.Logins?.error||''}`)}</div>
+                        <div className="col-12 col-md-4">EMS: {authStatus?.EMS?.ok ? (`OK (${authStatus?.EMS?.user||''})`) : (`Falha: ${authStatus?.EMS?.error||''}`)}</div>
+                        <div className="col-12 col-md-4">Modo do servidor: {authMode?.mode || 'desconhecido'}</div>
+                        <div className="col-12 col-md-8">
+                          Teste login (master): {loginOnlyStatus?.skipped ? (`N/A: ${loginOnlyStatus?.reason||''}`) : (loginOnlyStatus?.ok ? (`OK (${loginOnlyStatus?.user||''})`) : (`Falha: ${loginOnlyStatus?.error||''}`))}
+                        </div>
+                      </div>
+                    </div>
+                  </details>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div style={{flex:'0 1 520px', minWidth:320}}>
+          <div className="card h-100">
+            <div className="card-header d-flex align-items-center" style={{gap:8}}>
+              <i className="bi bi-activity" /> Status das Conexões
+            </div>
+            <div className="card-body p-3">
+              {!dbInfo && !dbInfoErr && (
+                <div className="text-muted" style={{fontSize:12}}>Carregando informações do banco...</div>
+              )}
+              {dbInfoErr && (
+                <div className="alert alert-warning d-flex align-items-center py-2" style={{gap:8, marginBottom:0}}>
+                  <i className="bi bi-exclamation-triangle" /> {dbInfoErr}
+                </div>
+              )}
+              {dbInfo && (
+                <>
+                  <div className="text-muted" style={{fontSize:12, marginBottom:8}}>
+                    Modo atual: <strong>{dbInfo.mode || mode}</strong>
+                  </div>
+
+                  {!!dbInfo.error && (
+                    <div className="alert alert-warning d-flex align-items-center py-2" style={{gap:8, marginBottom:10}}>
+                      <i className="bi bi-exclamation-triangle" /> {String(dbInfo.error)}
+                    </div>
+                  )}
+
+                  <div className="table-responsive">
+                    <table className="table table-sm table-dark table-striped table-hover align-middle mb-0">
+                      <thead>
+                        <tr>
+                          <th>Base</th>
+                          <th>Status</th>
+                          <th>Servidor</th>
+                          <th>Catalog</th>
+                          <th style={{width:110}}>Tabelas</th>
+                          <th style={{width:120}}>Procedures</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { label: 'CMS', db: dbCms },
+                          { label: 'Logins', db: dbLogins },
+                          { label: 'EMS', db: dbEms }
+                        ].map((it) => (
+                          <tr key={it.label}>
+                            <td className="fw-semibold">{it.label}</td>
+                            <td>
+                              {(() => {
+                                const st = (authStatus as any)?.[it.label]
+                                const ok = (typeof st?.ok === 'boolean') ? st.ok : !!it.db
+                                return ok ? <span className="badge text-bg-success">OK</span> : <span className="badge text-bg-danger">Falha</span>
+                              })()}
+                            </td>
+                            <td style={{fontSize:12}}>{it.db?.dataSource || '-'}</td>
+                            <td style={{fontSize:12}}>{it.db?.catalog || '-'}</td>
+                            <td style={{fontSize:12}}>{it.db ? it.db.tables.length : '-'}</td>
+                            <td style={{fontSize:12}}>{it.db ? it.db.procedures.length : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <details className="border rounded p-2 mt-2">
+                    <summary className="d-flex align-items-center justify-content-between" style={{cursor:'pointer'}}>
+                      <span className="fw-semibold">Detalhes</span>
+                      <span className="text-muted" style={{fontSize:12}}>Connection string e tabelas</span>
+                    </summary>
+                    <div className="row g-2" style={{marginTop:8}}>
+                      {[dbCms, dbLogins, dbEms].filter(Boolean).map((db: any) => (
+                        <div className="col-12 col-lg-4" key={db.key}>
+                          <div className="border rounded p-2">
+                            <div className="d-flex align-items-center justify-content-between">
+                              <div className="fw-semibold">{db.key}</div>
+                              <div className="text-muted" style={{fontSize:12}}>{db.tables.length} • {db.procedures.length}</div>
+                            </div>
+                            <div style={{marginTop:6}}>
+                              <div className="text-muted" style={{fontSize:12}}>Connection string:</div>
+                              <code style={{fontSize:12, wordBreak:'break-all'}}>{db.conn}</code>
+                              <div style={{marginTop:6}}>
+                                <div className="text-muted" style={{fontSize:12}}>Tabelas (20):</div>
+                                <div style={{maxHeight:110, overflowY:'auto', fontSize:12}}>
+                                  {db.tables.slice(0,20).map((t: string) => <div key={t}>{t}</div>)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       ))}
-                    </datalist>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-outline-primary d-flex align-items-center"
-                    onClick={loadSqlDatabases}
-                    disabled={!sqlInstance || sqlDatabasesLoading}
-                  >
-                    {sqlDatabasesLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Carregando...</> : <><i className="bi bi-database me-1" /> Carregar bases</>}
-                  </button>
-                </div>
-                {sqlDiscoverErr && (
-                  <div className="alert alert-warning py-2 mt-2 mb-0">
-                    {sqlDiscoverErr}
-                  </div>
-                )}
-                {sqlDatabases.length > 0 && (
-                  <div className="row" style={{marginTop:12, rowGap:12}}>
-                    <div className="col-md-4">
-                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base CMS</label>
-                      <select className="form-select" value={sqlDbCms} onChange={e=> { setSqlDbCms(e.target.value); }}>
-                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
-                      </select>
-                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
-                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbCms)} disabled={!!sqlTablesLoading[sqlDbCms]}>
-                          {sqlTablesLoading[sqlDbCms] ? 'Carregando...' : 'Ver tabelas'}
-                        </button>
-                      </div>
-                      {sqlTables[sqlDbCms] && (
-                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
-                          {sqlTables[sqlDbCms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
-                        </div>
-                      )}
                     </div>
-                    <div className="col-md-4">
-                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base Logins</label>
-                      <select className="form-select" value={sqlDbLogins} onChange={e=> { setSqlDbLogins(e.target.value); }}>
-                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
-                      </select>
-                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
-                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbLogins)} disabled={!!sqlTablesLoading[sqlDbLogins]}>
-                          {sqlTablesLoading[sqlDbLogins] ? 'Carregando...' : 'Ver tabelas'}
-                        </button>
-                      </div>
-                      {sqlTables[sqlDbLogins] && (
-                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
-                          {sqlTables[sqlDbLogins].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="col-md-4">
-                      <label className="form-label" style={{fontSize:12, marginBottom:4}}>Base EMS</label>
-                      <select className="form-select" value={sqlDbEms} onChange={e=> { setSqlDbEms(e.target.value); }}>
-                        {sqlDatabases.map(db => <option key={db} value={db}>{db}</option>)}
-                      </select>
-                      <div className="d-flex align-items-center" style={{gap:8, marginTop:8}}>
-                        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={()=> loadSqlTablesPreview(sqlDbEms)} disabled={!!sqlTablesLoading[sqlDbEms]}>
-                          {sqlTablesLoading[sqlDbEms] ? 'Carregando...' : 'Ver tabelas'}
-                        </button>
-                      </div>
-                      {sqlTables[sqlDbEms] && (
-                        <div className="mt-2" style={{maxHeight:160, overflowY:'auto', fontSize:12, border:'1px solid #e5e7eb', borderRadius:6, padding:'8px 10px', background:'#ffffff'}}>
-                          {sqlTables[sqlDbEms].slice(0, 30).map((t, i) => <div key={i}>{t}</div>)}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {sqlDatabases.length > 0 && (
-                  <div className="d-flex justify-content-end" style={{marginTop:12}}>
-                    <button
-                      type="button"
-                      className="btn btn-primary d-flex align-items-center"
-                      onClick={applySqlWizardConnections}
-                      disabled={sqlApplyLoading || !sqlInstance}
-                    >
-                      {sqlApplyLoading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Aplicando...</> : <><i className="bi bi-check2-circle me-1" /> Aplicar conexões</>}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-                <div className="input-group" style={{minWidth:420}}>
-                  <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
-                  <input className="form-control" placeholder="(opcional) Connection string específica para EMSEVENTS" value={emsPath} onChange={e=> setEmsPath(e.target.value)} />
-                </div>
-                <button className="btn btn-outline-success d-flex align-items-center" onClick={saveRealPath}>
-                  <i className="bi bi-save me-1" /> Salvar configuração
-                </button>
-              </div>
-            </>
-          )}
-          {mode === 'Demo' && (
-            <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-              <div className="input-group" style={{width:180}}>
-                <span className="input-group-text"><i className="bi bi-123" /></span>
-                <input type="number" min={1} max={1000} className="form-control" value={seedCount} onChange={e=> setSeedCount(Math.max(1, Math.min(1000, parseInt(e.target.value || '0', 10))))} />
-              </div>
-              <button className="btn btn-outline-primary d-flex align-items-center" onClick={seed} disabled={loading}>
-                {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Adicionando...</> : <><i className="bi bi-database-add me-1" /> Adicionar dados fictícios</>}
-              </button>
-              <div className="text-muted" style={{fontSize:12}}>Adiciona registros de teste nas principais tabelas</div>
+                  </details>
+                </>
+              )}
             </div>
-          )}
-          <div className="d-flex align-items-end flex-wrap" style={{gap:12}}>
-            <button className="btn btn-outline-secondary d-flex align-items-center" onClick={seedCompanies} disabled={loading}>
-              {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Gerando...</> : <><i className="bi bi-people-fill me-1" /> Gerar empresas/funcionários (últimos 30 dias)</>}
-            </button>
-            <div className="text-muted" style={{fontSize:12}}>Cria empresas solicitadas, 20 funcionários e acessos em dias úteis</div>
           </div>
         </div>
       </div>
-      <div className="card" style={{marginTop:16}}>
-        <div className="card-header d-flex align-items-center" style={{gap:8}}>
-          <i className="bi bi-database-gear" /> Banco de dados em uso
-        </div>
-        <div className="card-body">
-          {dbInfo && (
-            <>
-              <p className="text-muted" style={{fontSize:12, marginBottom:8}}>
-                Estas informações mostram qual modo está ativo e para quais bancos (Logins e CMS) as conexões estão apontando, incluindo uma lista resumida de tabelas encontradas em cada base.
-              </p>
-              <div className="mb-2">
-                <strong>Modo atual:</strong> {dbInfo.mode || mode}
+      {setupModalOpen && (
+        <>
+          <div className="modal-backdrop show" />
+          <div className="modal show" style={{ display: 'block' }} tabIndex={-1} role="dialog" aria-modal="true">
+            <div className="modal-dialog modal-lg modal-dialog-centered" role="document">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <h5 className="modal-title">Testar Configuração de Banco (Modo Instalação)</h5>
+                  <button type="button" className="btn-close" aria-label="Close" disabled={setupLoading} onClick={()=> setSetupModalOpen(false)} />
+                </div>
+                <div className="modal-body">
+                  <div className="alert alert-info py-2">
+                    Selecione instância e bancos. A lista de tabelas é apenas informativa. Ao confirmar, as conexões serão aplicadas e, se não existir nenhum usuário, será criado o primeiro SuperAdmin.
+                  </div>
+                  <div className="row g-3">
+                    <div className="col-12">
+                      <label className="form-label">Instância SQL</label>
+                      <div className="d-flex gap-2">
+                        <select className="form-select" value={setupDataSource} onChange={e=>{ setSetupDataSource(e.target.value); setSetupDatabases([]); setSetupTest(null) }} disabled={setupLoading}>
+                          {setupInstances.length === 0 && <option value="">(Nenhuma instância encontrada)</option>}
+                          {setupInstances.map((x, idx)=>(
+                            <option key={idx} value={x.dataSource}>{x.dataSource}{x.version ? ` (v${x.version})` : ''}</option>
+                          ))}
+                        </select>
+                        <button type="button" className="btn btn-outline-secondary" onClick={loadSetupInstances} disabled={setupLoading}>Atualizar</button>
+                      </div>
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <label className="form-label">Banco CMS</label>
+                      <select className="form-select" value={setupCmsDb} onChange={e=>{ setSetupCmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                        <option value="">Selecione...</option>
+                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <label className="form-label">Banco Logins</label>
+                      <select className="form-select" value={setupLoginsDb} onChange={e=>{ setSetupLoginsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                        <option value="">Selecione...</option>
+                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <label className="form-label">Banco EMS (opcional)</label>
+                      <select className="form-select" value={setupEmsDb} onChange={e=>{ setSetupEmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                        <option value="">(Não configurar agora)</option>
+                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <div className="col-12">
+                      <div className="alert alert-light py-2 mb-0">
+                        <div className="fw-semibold mb-2">Tabelas (informativo)</div>
+                        <div className="row g-2">
+                          <div className="col-12 col-md-4">
+                            <div className="fw-semibold">CMS: {setupCmsDb || '-'}</div>
+                            <div className="small text-muted">{setupCmsTables.length ? `${setupCmsTables.length} tabelas` : 'Sem leitura de tabelas'}</div>
+                            {setupCmsTables.length > 0 && (
+                              <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
+                                {setupCmsTables.map((t)=> <div key={t} className="small">{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="col-12 col-md-4">
+                            <div className="fw-semibold">Logins: {setupLoginsDb || '-'}</div>
+                            <div className="small text-muted">{setupLoginsTables.length ? `${setupLoginsTables.length} tabelas` : 'Sem leitura de tabelas'}</div>
+                            {setupLoginsTables.length > 0 && (
+                              <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
+                                {setupLoginsTables.map((t)=> <div key={t} className="small">{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="col-12 col-md-4">
+                            <div className="fw-semibold">EMS: {setupEmsDb || '(não configurado)'}</div>
+                            <div className="small text-muted">{setupEmsDb ? (setupEmsTables.length ? `${setupEmsTables.length} tabelas` : 'Sem leitura de tabelas') : 'Opcional'}</div>
+                            {setupEmsTables.length > 0 && (
+                              <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
+                                {setupEmsTables.map((t)=> <div key={t} className="small">{t}</div>)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-12">
+                      <div className="alert alert-secondary py-2 mb-0">
+                        Primeiro usuário: será SuperAdmin. Por padrão usa RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no servidor. Se não estiverem definidos, informe abaixo.
+                      </div>
+                    </div>
+                    <div className="col-12 col-md-5">
+                      <label className="form-label">Email inicial</label>
+                      <input className="form-control" value={setupInitialEmail} onChange={e=>setSetupInitialEmail(e.target.value)} disabled={setupLoading} placeholder="email@exemplo.com" />
+                    </div>
+                    <div className="col-12 col-md-4">
+                      <label className="form-label">Senha inicial</label>
+                      <input className="form-control" type="password" value={setupInitialPassword} onChange={e=>setSetupInitialPassword(e.target.value)} disabled={setupLoading} placeholder="Senha" />
+                    </div>
+                    <div className="col-12 col-md-3">
+                      <label className="form-label">Nome</label>
+                      <input className="form-control" value={setupInitialName} onChange={e=>setSetupInitialName(e.target.value)} disabled={setupLoading} placeholder="SUPERADMIN" />
+                    </div>
+                  </div>
+                  {setupTest && (
+                    <div className="alert alert-light py-2 mt-3 mb-0">
+                      <div>Teste CMS: {setupTest.cms || '-'}</div>
+                      <div>Teste Logins: {setupTest.logins || '-'}</div>
+                      <div>Teste EMS: {setupEmsDb ? (setupTest.ems || '-') : '(não configurado)'}</div>
+                    </div>
+                  )}
+                  {setupError && <div className="alert alert-danger py-2 mt-3 mb-0">{setupError}</div>}
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-outline-secondary" onClick={()=> setSetupModalOpen(false)} disabled={setupLoading}>Cancelar</button>
+                  <button type="button" className="btn btn-outline-primary" onClick={testSetupConnections} disabled={setupLoading}>Testar conexão</button>
+                  <button type="button" className="btn btn-dark" onClick={applySetupFromSettings} disabled={setupLoading}>
+                    {setupLoading ? 'Aplicando...' : 'Confirmar'}
+                  </button>
+                </div>
               </div>
-              <div className="row">
-                <div className="col-md-4">
-                  <h6>Base CMS</h6>
-                  {dbInfo.databases?.CMS ? (
-                    <>
-                      <div style={{wordBreak:'break-all'}}>
-                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
-                        <code style={{fontSize:12}}>{dbInfo.databases.CMS.connection}</code>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.CMS.tables || []).slice(0,20).map((t:string)=>(
-                            <li key={t}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.CMS.procedures || []).slice(0,20).map((p:string)=>(
-                            <li key={p}>{p}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base CMS com as configurações atuais.</div>
-                  )}
-                </div>
-                <div className="col-md-4">
-                  <h6>Base Logins</h6>
-                  {dbInfo.databases?.Logins ? (
-                    <>
-                      <div style={{wordBreak:'break-all'}}>
-                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
-                        <code style={{fontSize:12}}>{dbInfo.databases.Logins.connection}</code>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.Logins.tables || []).slice(0,20).map((t:string)=>(
-                            <li key={t}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.Logins.procedures || []).slice(0,20).map((p:string)=>(
-                            <li key={p}>{p}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base Logins com as configurações atuais.</div>
-                  )}
-                </div>
-                <div className="col-md-4">
-                  <h6>Base EMSEVENTS</h6>
-                  {dbInfo.databases?.EMS ? (
-                    <>
-                      <div style={{wordBreak:'break-all'}}>
-                        <span className="text-muted" style={{fontSize:12}}>Connection String efetiva:</span><br/>
-                        <code style={{fontSize:12}}>{dbInfo.databases.EMS.connection}</code>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Tabelas detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.EMS.tables || []).slice(0,20).map((t:string)=>(
-                            <li key={t}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="mt-2">
-                        <span className="text-muted" style={{fontSize:12}}>Procedures detectadas (primeiras 20):</span>
-                        <ul style={{maxHeight:160, overflowY:'auto', fontSize:12, paddingLeft:18}}>
-                          {(dbInfo.databases.EMS.procedures || []).slice(0,20).map((p:string)=>(
-                            <li key={p}>{p}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-muted" style={{fontSize:12}}>Não foi possível conectar na base EMSEvents com as configurações atuais.</div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-          {!dbInfo && !dbInfoErr && (
-            <div className="text-muted" style={{fontSize:12}}>Carregando informações do banco...</div>
-          )}
-          {dbInfoErr && (
-            <div className="alert alert-warning d-flex align-items-center mt-2" style={{gap:8}}>
-              <i className="bi bi-exclamation-triangle" /> {dbInfoErr}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
+      )}
       </>
       )}
       {tab === 'Telas' && (

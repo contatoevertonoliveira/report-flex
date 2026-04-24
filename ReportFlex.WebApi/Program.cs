@@ -17,7 +17,11 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls("http://*:5001");
+var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+if (string.IsNullOrWhiteSpace(aspnetcoreUrls))
+{
+    builder.WebHost.UseUrls("http://*:5001");
+}
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddRouting();
 builder.Services.AddEndpointsApiExplorer();
@@ -726,6 +730,10 @@ static bool PasswordMeetsPolicy(string password)
 static bool IsLocalOrPrivate(System.Net.IPAddress? ip)
 {
     if (ip == null) return false;
+    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && ip.IsIPv4MappedToIPv6)
+    {
+        try { ip = ip.MapToIPv4(); } catch { }
+    }
     if (System.Net.IPAddress.IsLoopback(ip)) return true;
     if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
     {
@@ -776,20 +784,64 @@ static string GenerateTempPassword()
 
 app.MapGet("/api/setup/status", async (HttpContext ctx) =>
 {
-    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     try
     {
         var conn = GetConn("Logins");
         if (string.IsNullOrWhiteSpace(conn)) return Results.Ok(new { configured = false, errorCode = "DB_SETUP_REQUIRED", reason = "EmptyConnection" });
         using var cn = new SqlConnection(conn);
         await cn.OpenAsync();
-        using var cmd = cn.CreateCommand();
-        cmd.CommandText = @"
+        int tableCount = 0;
+        try
+        {
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = @"
 SELECT COUNT(*) 
 FROM INFORMATION_SCHEMA.TABLES
 WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ('Login','PortalUsers')";
-        var n = (int)(await cmd.ExecuteScalarAsync() ?? 0);
-        return Results.Ok(new { configured = n > 0, errorCode = n > 0 ? (string?)null : "DB_SETUP_REQUIRED", reason = n > 0 ? (string?)null : "MissingTables" });
+            tableCount = (int)(await cmd.ExecuteScalarAsync() ?? 0);
+        }
+        catch
+        {
+            tableCount = 0;
+        }
+
+        int users = 0;
+        int superAdmins = 0;
+        if (tableCount > 0)
+        {
+            try
+            {
+                using var cmdUsers = cn.CreateCommand();
+                cmdUsers.CommandText = "SELECT COUNT(*) FROM dbo.PortalUsers";
+                users = (int)(await cmdUsers.ExecuteScalarAsync() ?? 0);
+            }
+            catch
+            {
+                users = 0;
+            }
+            try
+            {
+                using var cmdSa = cn.CreateCommand();
+                cmdSa.CommandText = "SELECT COUNT(*) FROM dbo.PortalUsers WHERE Nivel='SuperAdmin'";
+                superAdmins = (int)(await cmdSa.ExecuteScalarAsync() ?? 0);
+            }
+            catch
+            {
+                superAdmins = 0;
+            }
+        }
+
+        var configured = tableCount > 0;
+        return Results.Ok(new
+        {
+            configured,
+            errorCode = configured ? (string?)null : "DB_SETUP_REQUIRED",
+            reason = configured ? (string?)null : "MissingTables",
+            users,
+            superAdmins
+        });
     }
     catch (Exception ex)
     {
@@ -799,7 +851,8 @@ WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ('Login','PortalUsers')";
 
 app.MapGet("/api/setup/sql/instances", async (HttpContext ctx) =>
 {
-    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     try
     {
         var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -814,12 +867,46 @@ app.MapGet("/api/setup/sql/instances", async (HttpContext ctx) =>
         Add("127.0.0.1");
         var machine = Environment.MachineName;
         Add(machine);
-        Add(machine + "\\SQLEXPRESS");
-        Add(".\\SQLEXPRESS");
-        Add("localhost\\SQLEXPRESS");
+
+        try
+        {
+            foreach (var regPath in new[]
+                     {
+                         @"SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL",
+                         @"SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL"
+                     })
+            {
+                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(regPath);
+                if (key == null) continue;
+                foreach (var instanceName in key.GetValueNames() ?? Array.Empty<string>())
+                {
+                    if (string.IsNullOrWhiteSpace(instanceName)) continue;
+                    if (instanceName.Equals("MSSQLSERVER", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Add(machine);
+                        Add("localhost");
+                        Add(".");
+                        continue;
+                    }
+                    Add(machine + "\\" + instanceName);
+                    Add("localhost\\" + instanceName);
+                    Add(".\\" + instanceName);
+                }
+            }
+        }
+        catch
+        {
+        }
+
         var list = new List<Dictionary<string, object?>>();
         foreach (var ds in candidates.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
+            var item = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["dataSource"] = ds,
+                ["version"] = null,
+                ["integratedOk"] = false
+            };
             try
             {
                 var b = new SqlConnectionStringBuilder
@@ -836,11 +923,13 @@ app.MapGet("/api/setup/sql/instances", async (HttpContext ctx) =>
                 using var cmd = cn.CreateCommand();
                 cmd.CommandText = "SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(50))";
                 var ver = (string?)await cmd.ExecuteScalarAsync();
-                list.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["dataSource"] = ds, ["version"] = ver });
+                item["version"] = ver;
+                item["integratedOk"] = true;
             }
             catch
             {
             }
+            list.Add(item);
         }
         return Results.Ok(new { items = list });
     }
@@ -852,7 +941,8 @@ app.MapGet("/api/setup/sql/instances", async (HttpContext ctx) =>
 
 app.MapGet("/api/setup/sql/databases", async (HttpContext ctx, string? dataSource) =>
 {
-    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(dataSource)) return Results.BadRequest(new { error = "Parâmetro 'dataSource' é obrigatório." });
     try
     {
@@ -885,7 +975,8 @@ app.MapGet("/api/setup/sql/databases", async (HttpContext ctx, string? dataSourc
 
 app.MapGet("/api/setup/sql/tables", async (HttpContext ctx, string? dataSource, string? database) =>
 {
-    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (string.IsNullOrWhiteSpace(dataSource) || string.IsNullOrWhiteSpace(database))
         return Results.BadRequest(new { error = "Parâmetros 'dataSource' e 'database' são obrigatórios." });
     try
@@ -919,7 +1010,8 @@ app.MapGet("/api/setup/sql/tables", async (HttpContext ctx, string? dataSource, 
 
 app.MapPost("/api/setup/apply", async (HttpContext ctx) =>
 {
-    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress)) return Results.NotFound();
+    if (!IsLocalOrPrivate(ctx.Connection.RemoteIpAddress))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     Dictionary<string, System.Text.Json.JsonElement>? dto = null;
     try { dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, System.Text.Json.JsonElement>>(); } catch { }
     if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
@@ -953,6 +1045,8 @@ app.MapPost("/api/setup/apply", async (HttpContext ctx) =>
         ["DB_EMS_CONN"] = emsConn
     });
 
+    var createdFirstUser = false;
+    var existingUsers = 0;
     try
     {
         using var cn = new SqlConnection(loginsConn);
@@ -1055,35 +1149,48 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Login_Email' AND object_
 ";
         await cmd.ExecuteNonQueryAsync();
 
-        var envEmail = Environment.GetEnvironmentVariable("RF_SUPERADMIN_EMAIL");
-        var envPwd = Environment.GetEnvironmentVariable("RF_SUPERADMIN_PASSWORD");
-        var envName = Environment.GetEnvironmentVariable("RF_SUPERADMIN_NAME");
+        existingUsers = 0;
+        try
+        {
+            using var cmdCnt = cn.CreateCommand();
+            cmdCnt.CommandText = "SELECT COUNT(*) FROM dbo.PortalUsers";
+            existingUsers = (int)(await cmdCnt.ExecuteScalarAsync() ?? 0);
+        }
+        catch
+        {
+            existingUsers = 0;
+        }
 
-        var email = !string.IsNullOrWhiteSpace(envEmail) ? envEmail! : initialEmail;
-        var pwd = !string.IsNullOrWhiteSpace(envPwd) ? envPwd! : initialPassword;
-        var nome = !string.IsNullOrWhiteSpace(envName) ? envName! : initialName;
-        if (string.IsNullOrWhiteSpace(nome)) nome = "SUPERADMIN";
-        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pwd))
-            return Results.BadRequest(new { error = "Credenciais iniciais não informadas. Defina RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no ambiente, ou informe initialEmail/initialPassword." });
+        if (existingUsers <= 0)
+        {
+            var envEmail = Environment.GetEnvironmentVariable("RF_SUPERADMIN_EMAIL");
+            var envPwd = Environment.GetEnvironmentVariable("RF_SUPERADMIN_PASSWORD");
+            var envName = Environment.GetEnvironmentVariable("RF_SUPERADMIN_NAME");
 
-        using var cmdUser = cn.CreateCommand();
-        cmdUser.CommandText = @"
-IF NOT EXISTS (SELECT 1 FROM dbo.PortalUsers WHERE Email=@e)
-BEGIN
-    INSERT INTO dbo.PortalUsers(Email,Nome,Nivel,ClientId,PasswordHash,MustChangePassword,IsActive)
-    VALUES(@e,@n,'SuperAdmin',NULL,@h,1,1);
-END";
-        cmdUser.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
-        cmdUser.Parameters.Add(new SqlParameter("@n", SqlDbType.VarChar, 200) { Value = nome });
-        cmdUser.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = HashPassword(pwd) });
-        await cmdUser.ExecuteNonQueryAsync();
+            var email = !string.IsNullOrWhiteSpace(envEmail) ? envEmail! : initialEmail;
+            var pwd = !string.IsNullOrWhiteSpace(envPwd) ? envPwd! : initialPassword;
+            var nome = !string.IsNullOrWhiteSpace(envName) ? envName! : initialName;
+            if (string.IsNullOrWhiteSpace(nome)) nome = "SUPERADMIN";
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pwd))
+                return Results.BadRequest(new { error = "Credenciais iniciais não informadas. Defina RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no ambiente, ou informe initialEmail/initialPassword." });
+
+            using var cmdUser = cn.CreateCommand();
+            cmdUser.CommandText = @"
+INSERT INTO dbo.PortalUsers(Email,Nome,Nivel,ClientId,PasswordHash,MustChangePassword,IsActive)
+VALUES(@e,@n,'SuperAdmin',NULL,@h,1,1);";
+            cmdUser.Parameters.Add(new SqlParameter("@e", SqlDbType.VarChar, 200) { Value = email });
+            cmdUser.Parameters.Add(new SqlParameter("@n", SqlDbType.VarChar, 200) { Value = nome });
+            cmdUser.Parameters.Add(new SqlParameter("@h", SqlDbType.VarChar, 400) { Value = HashPassword(pwd) });
+            await cmdUser.ExecuteNonQueryAsync();
+            createdFirstUser = true;
+        }
     }
     catch (Exception ex)
     {
         return Results.BadRequest(new { error = "Falha ao aplicar configuração no SQL local.", detail = ex.Message });
     }
 
-    return Results.Ok(new { ok = true, mode = dbMode });
+    return Results.Ok(new { ok = true, mode = dbMode, createdFirstUser, users = existingUsers });
 }).AllowAnonymous();
 
 app.MapGet("/api/admin/report-options", () =>
@@ -1632,12 +1739,34 @@ app.MapGet("/api/admin/sql/test-login-only", async () =>
 {
     try
     {
+        if (string.IsNullOrWhiteSpace(sqlAuthUser) || string.IsNullOrWhiteSpace(sqlAuthPwd))
+        {
+            return Results.Ok(new { ok = false, skipped = true, reason = "Autenticação SQL não configurada (DB_SQL_USER/DB_SQL_PWD)." });
+        }
         var cmsConn = GetConn("CMS");
         var b = new SqlConnectionStringBuilder(cmsConn);
         var dataSource = b.DataSource;
         if (string.IsNullOrWhiteSpace(dataSource))
         {
             return Results.BadRequest(new { error = "Data Source não encontrado na conexão CMS." });
+        }
+        bool windowsOnly;
+        try
+        {
+            using var cnMode = new SqlConnection(cmsConn);
+            await cnMode.OpenAsync();
+            using var cmdMode = cnMode.CreateCommand();
+            cmdMode.CommandText = "SELECT CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS INT)";
+            var v = await cmdMode.ExecuteScalarAsync();
+            windowsOnly = (v is int i && i == 1);
+        }
+        catch (Exception ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+        if (windowsOnly)
+        {
+            return Results.Ok(new { ok = false, skipped = true, reason = "Servidor está em modo WindowsOnly. SQL Authentication não está habilitada." });
         }
         var testBuilder = new SqlConnectionStringBuilder
         {
@@ -1647,8 +1776,8 @@ app.MapGet("/api/admin/sql/test-login-only", async () =>
             TrustServerCertificate = true,
             IntegratedSecurity = false
         };
-        if (!string.IsNullOrWhiteSpace(sqlAuthUser)) testBuilder["User ID"] = sqlAuthUser!;
-        if (!string.IsNullOrWhiteSpace(sqlAuthPwd)) testBuilder["Password"] = sqlAuthPwd!;
+        testBuilder["User ID"] = sqlAuthUser!;
+        testBuilder["Password"] = sqlAuthPwd!;
         try
         {
             using var cn = new SqlConnection(testBuilder.ConnectionString);

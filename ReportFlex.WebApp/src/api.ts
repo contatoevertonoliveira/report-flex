@@ -91,19 +91,35 @@ export const api = {
 
   setupStatus: async () => {
     const r = await apiFetch('/api/setup/status')
-    return await r.json()
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    if (!r.ok) throw new Error(String(data?.error || data?.message || `HTTP ${r.status}`))
+    return data
   },
   setupSqlInstances: async () => {
     const r = await apiFetch('/api/setup/sql/instances')
-    return await r.json()
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    if (!r.ok) throw new Error(String(data?.error || data?.message || `HTTP ${r.status}`))
+    return data
   },
   setupSqlDatabases: async (dataSource: string) => {
     const r = await apiFetch('/api/setup/sql/databases?dataSource=' + encodeURIComponent(dataSource))
-    return await r.json()
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    if (!r.ok) throw new Error(String(data?.error || data?.message || `HTTP ${r.status}`))
+    return data
   },
   setupSqlTables: async (dataSource: string, database: string) => {
     const r = await apiFetch('/api/setup/sql/tables?dataSource=' + encodeURIComponent(dataSource) + '&database=' + encodeURIComponent(database))
-    return await r.json()
+    const raw = await r.text()
+    let data: any = null
+    try{ data = raw ? JSON.parse(raw) : {} }catch{ data = { error: raw || 'Falha' } }
+    if (!r.ok) throw new Error(String(data?.error || data?.message || `HTTP ${r.status}`))
+    return data
   },
   setupApply: async (p: { dataSource: string, cmsDb: string, loginsDb: string, emsDb?: string, initialEmail?: string, initialPassword?: string, initialName?: string }) => {
     const r = await apiFetch('/api/setup/apply', { method:'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(p) })
