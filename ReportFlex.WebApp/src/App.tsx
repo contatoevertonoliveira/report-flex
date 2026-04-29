@@ -40,6 +40,32 @@ export default function App() {
   const [toasts, setToasts] = React.useState<Array<{ id: number, type: 'success'|'error'|'info'|'warning', message: string }>>([])
 
   React.useEffect(() => {
+    const baseTitle = 'Jumperfour ReportFlex'
+    const brand = 'Jumperfour'
+    const path = (location.pathname || '/').replace(/\/+$/, '') || '/'
+    if (path === '/login' || path === '/' || path === '') {
+      document.title = baseTitle
+      return
+    }
+    const page =
+      path === '/consultas' ? 'Consultas'
+      : path === '/consultas-config' ? 'Config Consultas'
+      : path === '/logs' ? 'Logs'
+      : path === '/mensagens' ? 'Mensagens'
+      : path === '/inbox' ? 'Inbox'
+      : path === '/configuracoes' ? 'Configurações'
+      : path === '/clientes' ? 'Clientes'
+      : path === '/prestadores' ? 'Prestadores'
+      : path === '/transit' ? 'Trânsitos'
+      : path === '/employees' ? 'Funcionários'
+      : path === '/external' ? 'Externos'
+      : path === '/access' ? 'Acessos'
+      : path === '/alterar-senha' ? 'Alterar Senha'
+      : null
+    document.title = page ? `${brand} - ${page}` : baseTitle
+  }, [location.pathname])
+
+  React.useEffect(() => {
     const update = () => {
       if (localStorage.getItem('rf_token')) {
         localStorage.setItem('rf_last_activity', Date.now().toString())
