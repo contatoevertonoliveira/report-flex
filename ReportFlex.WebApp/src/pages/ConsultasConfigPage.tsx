@@ -43,7 +43,14 @@ export function ConsultasConfigPage() {
   async function handleSave(){
     setSaving(true)
     try{
-      await api.setQueriesConfig(cfg)
+      const saved = await api.setQueriesConfig(cfg)
+      setCfg(saved || cfg)
+      try{
+        const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+        localStorage.setItem('rf_queries_cfg', JSON.stringify(saved || cfg || {}))
+        localStorage.setItem('rf_queries_cfg_owner', owner)
+        localStorage.setItem('rf_queries_cfg_ts', String(Date.now()))
+      }catch{}
       toast('success', 'Configurações salvas. Abra a tela Consultas para ver.')
     }catch(err: any){
       toast('error', err.message || String(err))

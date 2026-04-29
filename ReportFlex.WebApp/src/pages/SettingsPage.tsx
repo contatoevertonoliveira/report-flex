@@ -68,6 +68,32 @@ export function SettingsPage(){
   useEffect(() => {
     (async () => {
       try{
+        try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          const ro = localStorage.getItem('rf_report_options')
+          const roOwner = localStorage.getItem('rf_report_options_owner')
+          if (ro && roOwner === owner){
+            const opts: any = JSON.parse(ro)
+            setReportOptions({
+              xlsx: !!opts.xlsx,
+              pdf: !!opts.pdf,
+              excel: !!opts.excel,
+              cover: !!opts.cover,
+              coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
+              reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
+              customQueries: !!opts.customQueries
+            })
+          }
+        }catch{}
+        try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          const sc = localStorage.getItem('rf_admin_screens_config')
+          const scOwner = localStorage.getItem('rf_admin_screens_config_owner')
+          if (sc && scOwner === owner){
+            const cached: any = JSON.parse(sc)
+            if (cached && typeof cached === 'object') setScreensCfg(cached || {})
+          }
+        }catch{}
         const r = await api.getDbMode()
         if (r?.mode === 'Demo' || r?.mode === 'Real'){ setMode(r.mode) }
         const c = await api.getConnections()
@@ -136,6 +162,12 @@ export function SettingsPage(){
             reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
             customQueries: !!opts.customQueries
           })
+          try{
+            const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+            localStorage.setItem('rf_report_options', JSON.stringify(opts || {}))
+            localStorage.setItem('rf_report_options_owner', owner)
+            localStorage.setItem('rf_report_options_ts', String(Date.now()))
+          }catch{}
         }catch{}
         try{
           setScreensCfgErr(null)
@@ -148,6 +180,12 @@ export function SettingsPage(){
             out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
           }
           setScreensCfg(out)
+          try{
+            const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+            localStorage.setItem('rf_admin_screens_config', JSON.stringify(out || {}))
+            localStorage.setItem('rf_admin_screens_config_owner', owner)
+            localStorage.setItem('rf_admin_screens_config_ts', String(Date.now()))
+          }catch{}
         }catch(e:any){
           setScreensCfgErr(e?.message || 'Falha ao carregar configuração de telas')
         }finally{
@@ -716,6 +754,12 @@ export function SettingsPage(){
         reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
         customQueries: !!r.customQueries
       })
+      try{
+        const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+        localStorage.setItem('rf_report_options', JSON.stringify(r || {}))
+        localStorage.setItem('rf_report_options_owner', owner)
+        localStorage.setItem('rf_report_options_ts', String(Date.now()))
+      }catch{}
       setMsg('Opções de formatos de relatórios salvas')
     }catch(e:any){
       setErr(e?.message || 'Falha ao salvar opções de relatórios')
@@ -751,6 +795,12 @@ export function SettingsPage(){
         out[k] = { enabled: !!it?.enabled, lockedBy: it?.lockedBy }
       }
       setScreensCfg(out)
+      try{
+        const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+        localStorage.setItem('rf_admin_screens_config', JSON.stringify(out || {}))
+        localStorage.setItem('rf_admin_screens_config_owner', owner)
+        localStorage.setItem('rf_admin_screens_config_ts', String(Date.now()))
+      }catch{}
     }catch(e:any){
       setScreensCfgErr(e?.message || 'Falha ao recarregar configuração de telas')
     }finally{
@@ -777,8 +827,15 @@ export function SettingsPage(){
         const simple: Record<string, boolean> = {}
         for (const k of Object.keys(out)) simple[k] = !!out[k].enabled
         localStorage.setItem('rf_screens_config', JSON.stringify(simple))
+        localStorage.setItem('rf_screens_config_owner', `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`)
         localStorage.setItem('rf_screens_config_ts', String(Date.now()))
         window.dispatchEvent(new Event('rf:screens-config'))
+      }catch{}
+      try{
+        const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+        localStorage.setItem('rf_admin_screens_config', JSON.stringify(out || {}))
+        localStorage.setItem('rf_admin_screens_config_owner', owner)
+        localStorage.setItem('rf_admin_screens_config_ts', String(Date.now()))
       }catch{}
       setMsg('Configuração de telas salva')
     }catch(e:any){
