@@ -423,6 +423,7 @@ export function QueriesPage(){
   const canUseDbTables = level !== 'Cliente'
 
   const cacheKey = 'rf_queries_cache_v1'
+  const resultsCacheKey = 'rf_queries_results_cache_v1'
   const exportHistoryKey = 'rf_export_history_v1'
   const doorSourcesCacheKey = 'rf_door_sources_cache_v1'
 
@@ -432,6 +433,87 @@ export function QueriesPage(){
     const dd = String(d.getDate()).padStart(2, '0')
     return `${d.getFullYear()}-${mm}-${dd}`
   }
+
+  type QueryResultsEntry = {
+    ts: number
+    data: any[]
+    resultTotal: number | null
+    lastPdfRequestUrl?: string | null
+    lastPdfSavedPath?: string | null
+    lastPdfFileName?: string
+    selectedCols?: string[]
+  }
+
+  const getResultsOwner = () => {
+    try{
+      const cid = localStorage.getItem('rf_client_id') || ''
+      const t = localStorage.getItem('rf_token') || ''
+      const suf = t ? t.slice(-16) : ''
+      return `${cid}|${suf}`
+    }catch{
+      return ''
+    }
+  }
+
+  const readResultsCache = () => {
+    try{
+      const raw = localStorage.getItem(resultsCacheKey)
+      const st = raw ? JSON.parse(raw) : null
+      const owner = getResultsOwner()
+      const day = todayKey()
+      if (!st || st.v !== 1 || st.owner !== owner || st.day !== day || typeof st.items !== 'object' || !st.items) {
+        return { v: 1, owner, day, items: {} as Record<string, QueryResultsEntry> }
+      }
+      return st as { v: 1, owner: string, day: string, items: Record<string, QueryResultsEntry> }
+    }catch{
+      const owner = getResultsOwner()
+      const day = todayKey()
+      return { v: 1, owner, day, items: {} as Record<string, QueryResultsEntry> }
+    }
+  }
+
+  const writeResultsCache = (st: { v: 1, owner: string, day: string, items: Record<string, QueryResultsEntry> }) => {
+    try{
+      localStorage.setItem(resultsCacheKey, JSON.stringify(st))
+    }catch{}
+  }
+
+  const loadResultsEntry = (key: string) => {
+    try{
+      const st = readResultsCache()
+      const it = st.items?.[key]
+      if (!it || !Array.isArray(it.data)) return null
+      return it as QueryResultsEntry
+    }catch{
+      return null
+    }
+  }
+
+  const saveResultsEntry = (key: string, entry: QueryResultsEntry) => {
+    try{
+      const st = readResultsCache()
+      st.items = st.items || {}
+      st.items[key] = entry
+      writeResultsCache(st)
+    }catch{}
+  }
+
+  const currentQueryKey = useMemo(() => {
+    if (mode === 'personalizadas') {
+      if (dataset === 'db-table') return `p:db-table:${dbTableDb}:${dbTableName || ''}`
+      return `p:${dataset}`
+    }
+    if (quickKind === 'door-critical') return `q:door:${doorMode}`
+    if (quickKind === 'cpf') return `q:cpf:${cpfObter}:${cpfSemPeriodo ? 'no-period' : 'period'}`
+    if (quickKind === 'matricula') return `q:matricula:${matriculaObter}`
+    if (quickKind === 'empresa') return `q:empresa:${empresaObter}`
+    if (quickKind === 'cracha') return `q:cracha:${crachaObter}`
+    if (quickKind === 'nivel') return `q:nivel:${nivelObter}`
+    if (quickKind === 'visitantes') return `q:visitantes:${visitantesObter}`
+    return `q:${quickKind}`
+  }, [mode, dataset, quickKind, doorMode, cpfObter, cpfSemPeriodo, matriculaObter, empresaObter, crachaObter, nivelObter, visitantesObter, dbTableDb, dbTableName])
+
+  const lastQueryKeyRef = React.useRef<string | null>(null)
   const formatTime = (ts: number) => {
     const d = new Date(ts)
     const hh = String(d.getHours()).padStart(2, '0')
@@ -553,14 +635,14 @@ export function QueriesPage(){
   React.useEffect(() => {
     try{
       if (!localStorage.getItem('rf_token')) {
-        sessionStorage.removeItem(cacheKey)
+        localStorage.removeItem(cacheKey)
+        localStorage.removeItem(resultsCacheKey)
         return
       }
-      const raw = sessionStorage.getItem(cacheKey)
+      const raw = localStorage.getItem(cacheKey)
       if (!raw) return
       const st = JSON.parse(raw)
-      if (!st || st.v !== 1) return
-      if (typeof st.lastPdfSavedPath === 'string' || typeof st.lastPdfRequestUrl === 'string') setHasCachedPdf(true)
+      if (!st || (st.v !== 1 && st.v !== 2)) return
       if (st.mode === 'prontas' || st.mode === 'personalizadas') setMode(st.mode)
       if (typeof st.quickKind === 'string') setQuickKind(st.quickKind)
       if (typeof st.dataset === 'string') setDataset(st.dataset)
@@ -569,8 +651,6 @@ export function QueriesPage(){
       if (typeof st.searchColumn === 'string') setSearchColumn(st.searchColumn)
       if (typeof st.currentPage === 'number' && st.currentPage > 0) setCurrentPage(st.currentPage)
       if (st.filters && typeof st.filters === 'object') setFilters(st.filters)
-      if (Array.isArray(st.data)) setData(st.data)
-      if (typeof st.resultTotal === 'number') setResultTotal(st.resultTotal)
       if (typeof st.lastSuccessfulRun === 'number' && st.lastSuccessfulRun > 0) setLastSuccessfulRun(st.lastSuccessfulRun)
       if (typeof st.doorMode === 'string') setDoorMode(st.doorMode)
       if (Array.isArray(st.doorSources)) setDoorSources(st.doorSources)
@@ -581,9 +661,6 @@ export function QueriesPage(){
       if (typeof st.doorSourceFilter === 'string') setDoorSourceFilter(st.doorSourceFilter)
       if (typeof st.doorName === 'string') setDoorName(st.doorName)
       if (typeof st.doorSite === 'string') setDoorSite(st.doorSite)
-      if (typeof st.lastPdfRequestUrl === 'string') setLastPdfRequestUrl(st.lastPdfRequestUrl)
-      if (typeof st.lastPdfSavedPath === 'string') setLastPdfSavedPath(st.lastPdfSavedPath)
-      if (typeof st.lastPdfFileName === 'string') setLastPdfFileName(st.lastPdfFileName)
       if (st.exportModal === true) setExportModal(true)
       if (typeof st.exportMinimized === 'boolean') setExportMinimized(st.exportMinimized)
       if (typeof st.exportMaximized === 'boolean') setExportMaximized(st.exportMaximized)
@@ -605,6 +682,40 @@ export function QueriesPage(){
   }, [])
 
   React.useEffect(() => {
+    if (!restoredCache) return
+    try{
+      if (!localStorage.getItem('rf_token')) return
+      if (lastQueryKeyRef.current === currentQueryKey) return
+      lastQueryKeyRef.current = currentQueryKey
+      const cached = loadResultsEntry(currentQueryKey)
+      if (cached) {
+        setError(null)
+        setData(Array.isArray(cached.data) ? cached.data : [])
+        setResultTotal(typeof cached.resultTotal === 'number' ? cached.resultTotal : null)
+        if (mode === 'personalizadas' && Array.isArray(cached.selectedCols)) setSelectedCols(cached.selectedCols)
+        if (typeof cached.lastPdfRequestUrl === 'string' || cached.lastPdfRequestUrl === null) setLastPdfRequestUrl(cached.lastPdfRequestUrl ?? null)
+        if (typeof cached.lastPdfSavedPath === 'string' || cached.lastPdfSavedPath === null) setLastPdfSavedPath(cached.lastPdfSavedPath ?? null)
+        if (typeof cached.lastPdfFileName === 'string') setLastPdfFileName(cached.lastPdfFileName)
+        setHasCachedPdf(!!(cached.lastPdfRequestUrl || cached.lastPdfSavedPath))
+      } else {
+        setError(null)
+        if (pdfUrl && pdfUrl.startsWith('blob:')) {
+          try { URL.revokeObjectURL(pdfUrl) } catch { }
+        }
+        setPdfUrl(null)
+        setPdfExportedRun(null)
+        setData([])
+        setResultTotal(null)
+        setCurrentPage(1)
+        setLastPdfRequestUrl(null)
+        setLastPdfSavedPath(null)
+        setLastPdfFileName('')
+        setHasCachedPdf(false)
+      }
+    }catch{}
+  }, [restoredCache, currentQueryKey])
+
+  React.useEffect(() => {
     if (restoredPdfOnceRef.current) return
     if (!restoredCache) return
     if (!hasCachedPdf) return
@@ -614,14 +725,15 @@ export function QueriesPage(){
   React.useEffect(() => {
     try{
       if (!localStorage.getItem('rf_token')) {
-        sessionStorage.removeItem(cacheKey)
+        localStorage.removeItem(cacheKey)
+        localStorage.removeItem(resultsCacheKey)
         return
       }
       if (!lastSuccessfulRun) return
       const dataPreview = Array.isArray(data) ? data.slice(0, maxPreview) : []
       const total = typeof resultTotal === 'number' ? resultTotal : (Array.isArray(data) ? data.length : 0)
       const snapshot = {
-        v: 1,
+        v: 2,
         ts: Date.now(),
         mode,
         quickKind,
@@ -631,8 +743,6 @@ export function QueriesPage(){
         searchColumn,
         currentPage,
         filters,
-        data: dataPreview,
-        resultTotal: total,
         lastSuccessfulRun,
         doorMode,
         doorSources,
@@ -643,9 +753,6 @@ export function QueriesPage(){
         doorSourceFilter,
         doorName,
         doorSite,
-        lastPdfRequestUrl,
-        lastPdfSavedPath,
-        lastPdfFileName,
         exportModal,
         exportMinimized,
         exportMaximized,
@@ -663,7 +770,16 @@ export function QueriesPage(){
         nivelObter,
         visitantesObter
       }
-      sessionStorage.setItem(cacheKey, JSON.stringify(snapshot))
+      localStorage.setItem(cacheKey, JSON.stringify(snapshot))
+      saveResultsEntry(currentQueryKey, {
+        ts: Date.now(),
+        data: dataPreview,
+        resultTotal: total,
+        lastPdfRequestUrl,
+        lastPdfSavedPath,
+        lastPdfFileName,
+        selectedCols: mode === 'personalizadas' ? selectedCols : undefined
+      })
     }catch{}
   }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal, exportMinimized, exportMaximized, exportUrl, exportProgress, exportJobId])
 
@@ -2040,7 +2156,9 @@ export function QueriesPage(){
       const cms = conns?.CMS ? applySql(conns.CMS) : ''
       const logins = conns?.Logins ? applySql(conns.Logins) : ''
       const ems = conns?.EMS ? applySql(conns.EMS) : ''
-      await api.setConnectionsRuntime({ CMS: cms, Logins: logins, EMS: ems })
+      const hwr = conns?.HWR ? applySql(conns.HWR) : ''
+      const clav = conns?.CLAV ? applySql(conns.CLAV) : ''
+      await api.setConnectionsRuntime({ CMS: cms, Logins: logins, EMS: ems, HWR: hwr, CLAV: clav })
       try { localStorage.setItem('rf_sql_user', sqlUser); localStorage.setItem('rf_sql_pwd', sqlPwd) } catch {}
       setSqlModal(false)
       setError(null)

@@ -17,11 +17,6 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 
 var builder = WebApplication.CreateBuilder(args);
-var aspnetcoreUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
-if (string.IsNullOrWhiteSpace(aspnetcoreUrls))
-{
-    builder.WebHost.UseUrls("http://*:5001");
-}
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 builder.Services.AddRouting();
 builder.Services.AddEndpointsApiExplorer();
@@ -78,6 +73,18 @@ IEnumerable<string> CandidateEnvPaths()
             dir = dir.Parent;
         }
     }
+    string? common = null;
+    try { common = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData); } catch { }
+    if (!string.IsNullOrWhiteSpace(common))
+    {
+        yield return Path.Combine(common, "ReportFlex", ".env");
+    }
+    string? local = null;
+    try { local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData); } catch { }
+    if (!string.IsNullOrWhiteSpace(local))
+    {
+        yield return Path.Combine(local, "ReportFlex", ".env");
+    }
 }
 
 Dictionary<string,string> LoadEnv()
@@ -102,7 +109,17 @@ Dictionary<string,string> LoadEnv()
                 {
                     val = val.Length >= 2 ? val.Substring(1, val.Length - 2) : "";
                 }
-                dict[key] = val;
+                if (dict.TryGetValue(key, out var existingVal))
+                {
+                    if (string.IsNullOrWhiteSpace(existingVal) && !string.IsNullOrWhiteSpace(val))
+                    {
+                        dict[key] = val;
+                    }
+                }
+                else
+                {
+                    dict[key] = val;
+                }
             }
         }
     }
@@ -122,29 +139,39 @@ void SaveEnv(IDictionary<string,string> values)
             existing[kv.Key] = kv.Value ?? "";
         }
         var lines = existing.Select(kv => kv.Key + "=" + kv.Value).ToArray();
-        try
+        var preferred = CandidateEnvPaths().Distinct(StringComparer.OrdinalIgnoreCase).FirstOrDefault(p => File.Exists(p)) ?? envPathPrimary;
+        var commonData = "";
+        try { commonData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData); } catch { }
+        var localData = "";
+        try { localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData); } catch { }
+        var targets = new List<string>
         {
-            var wrote = false;
+            preferred,
+            envPathPrimary,
+            envPathRepoRoot,
+            !string.IsNullOrWhiteSpace(commonData) ? Path.Combine(commonData, "ReportFlex", ".env") : "",
+            !string.IsNullOrWhiteSpace(localData) ? Path.Combine(localData, "ReportFlex", ".env") : ""
+        }
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.GetFullPath(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        Exception? lastEx = null;
+        foreach (var path in targets)
+        {
             try
             {
-                var dir = Path.GetDirectoryName(envPathPrimary);
+                var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllLines(envPathPrimary, lines);
-                wrote = true;
+                File.WriteAllLines(path, lines);
+                return;
             }
-            catch
+            catch (Exception ex)
             {
-            }
-            if (!wrote)
-            {
-                var dir = Path.GetDirectoryName(envPathRepoRoot);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllLines(envPathRepoRoot, lines);
+                lastEx = ex;
             }
         }
-        catch
-        {
-        }
+        throw new IOException("Falha ao gravar .env", lastEx);
     }
 }
 
@@ -271,7 +298,23 @@ VALUES(SYSUTCDATETIME(),@Usuario,@Nome,@Nivel,@ClientId,@Action,@Path,@Query,@St
     }
 });
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        var path = ctx.Context.Request.Path.Value ?? "";
+        if (path.Equals("/index.html", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+            return;
+        }
+        if (path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+            return;
+        }
+    }
+});
 ImagesStatic.MapLegacyImages(app);
 
 var exportJobs = new ConcurrentDictionary<string, ExportJob>();
@@ -564,6 +607,35 @@ string GetConn(string name)
             {
                 var b = new SqlConnectionStringBuilder(baseConn);
                 b.InitialCatalog = "EMSEVENTS";
+                var derived = NormalizeConn(b.ConnectionString);
+                derived = ApplySqlAuth(derived, sqlUser, sqlPwd);
+                return derived;
+            }
+        }
+        catch
+        {
+        }
+    }
+    if (name == "CLAV")
+    {
+        try
+        {
+            var explicitConn =
+                envData.GetValueOrDefault("DB_CLAV_CONN")
+                ?? builder.Configuration.GetConnectionString("CLAV")
+                ?? "";
+            if (!string.IsNullOrWhiteSpace(explicitConn))
+            {
+                var normalized = NormalizeConn(explicitConn);
+                normalized = ApplySqlAuth(normalized, sqlUser, sqlPwd);
+                return normalized;
+            }
+
+            var baseConn = envData.GetValueOrDefault("DB_CMS_CONN") ?? builder.Configuration.GetConnectionString("CMS") ?? "";
+            if (!string.IsNullOrWhiteSpace(baseConn))
+            {
+                var b = new SqlConnectionStringBuilder(baseConn);
+                b.InitialCatalog = "claviculario";
                 var derived = NormalizeConn(b.ConnectionString);
                 derived = ApplySqlAuth(derived, sqlUser, sqlPwd);
                 return derived;
@@ -1019,6 +1091,10 @@ app.MapPost("/api/setup/apply", async (HttpContext ctx) =>
     var cmsDb = (GetDtoString(dto, "cmsDb") ?? "").Trim();
     var loginsDb = (GetDtoString(dto, "loginsDb") ?? "").Trim();
     var emsDb = (GetDtoString(dto, "emsDb") ?? "").Trim();
+    var hwrDb = (GetDtoString(dto, "hwrDb") ?? "").Trim();
+    var clavDb = (GetDtoString(dto, "clavDb") ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(hwrDb)) hwrDb = "hwreportsview";
+    if (string.IsNullOrWhiteSpace(clavDb)) clavDb = "claviculario";
     var initialEmail = (GetDtoString(dto, "initialEmail") ?? "").Trim();
     var initialPassword = GetDtoString(dto, "initialPassword") ?? "";
     var initialName = (GetDtoString(dto, "initialName") ?? "").Trim();
@@ -1031,18 +1107,28 @@ app.MapPost("/api/setup/apply", async (HttpContext ctx) =>
     var emsConn = string.IsNullOrWhiteSpace(emsDb)
         ? ""
         : new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = emsDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
+    var hwrConn = string.IsNullOrWhiteSpace(hwrDb)
+        ? ""
+        : new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = hwrDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
+    var clavConn = string.IsNullOrWhiteSpace(clavDb)
+        ? ""
+        : new SqlConnectionStringBuilder { DataSource = dataSource, InitialCatalog = clavDb, IntegratedSecurity = true, Encrypt = true, TrustServerCertificate = true }.ConnectionString;
 
     dbMode = "Real";
     realOverrides["CMS"] = cmsConn;
     realOverrides["Logins"] = loginsConn;
     if (!string.IsNullOrWhiteSpace(emsConn)) realOverrides["EMS"] = emsConn;
+    if (!string.IsNullOrWhiteSpace(hwrConn)) realOverrides["HWR"] = hwrConn;
+    if (!string.IsNullOrWhiteSpace(clavConn)) realOverrides["CLAV"] = clavConn;
 
     SaveEnv(new Dictionary<string, string>
     {
         ["DB_MODE"] = "Real",
         ["DB_CMS_CONN"] = cmsConn,
         ["DB_LOGINS_CONN"] = loginsConn,
-        ["DB_EMS_CONN"] = emsConn
+        ["DB_EMS_CONN"] = emsConn,
+        ["DB_HWR_CONN"] = hwrConn,
+        ["DB_CLAV_CONN"] = clavConn
     });
 
     var createdFirstUser = false;
@@ -1342,10 +1428,17 @@ app.MapGet("/api/admin/queries-config", () =>
 
 app.MapPost("/api/admin/queries-config", async (HttpContext ctx) =>
 {
-    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, bool>>();
-    var json = System.Text.Json.JsonSerializer.Serialize(dto ?? new Dictionary<string, bool>());
-    SaveEnv(new Dictionary<string, string> { ["REPORT_QUERIES_CONFIG"] = json });
-    return Results.Ok(dto ?? new Dictionary<string, bool>());
+    try
+    {
+        var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, bool>>();
+        var json = System.Text.Json.JsonSerializer.Serialize(dto ?? new Dictionary<string, bool>());
+        SaveEnv(new Dictionary<string, string> { ["REPORT_QUERIES_CONFIG"] = json });
+        return Results.Ok(dto ?? new Dictionary<string, bool>());
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status500InternalServerError);
+    }
 }).RequireAuthorization("AdminsOnly");
 
 static int GetNivelRank(string? nivel)
@@ -1536,6 +1629,8 @@ app.MapGet("/api/admin/connections", () =>
     var cms = realOverrides.TryGetValue("CMS", out var c) ? c : null;
     var logins = realOverrides.TryGetValue("Logins", out var l) ? l : null;
     var ems = realOverrides.TryGetValue("EMS", out var e) ? e : null;
+    var hwr = realOverrides.TryGetValue("HWR", out var h) ? h : null;
+    var clav = realOverrides.TryGetValue("CLAV", out var cl) ? cl : null;
     
     // Se não estiver em realOverrides, tentar carregar do .env ou config
     if (string.IsNullOrWhiteSpace(cms))
@@ -1562,8 +1657,28 @@ app.MapGet("/api/admin/connections", () =>
             ems = System.Text.RegularExpressions.Regex.Replace(cms, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=EMSEVENTS", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
     }
+    if (string.IsNullOrWhiteSpace(hwr))
+    {
+        hwr = currentEnv.TryGetValue("DB_HWR_CONN", out var envHwr) && !string.IsNullOrWhiteSpace(envHwr)
+            ? envHwr
+            : builder.Configuration.GetConnectionString("HWR");
+        if (string.IsNullOrWhiteSpace(hwr) && !string.IsNullOrWhiteSpace(cms))
+        {
+            hwr = System.Text.RegularExpressions.Regex.Replace(cms, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=hwreportsview", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+    }
+    if (string.IsNullOrWhiteSpace(clav))
+    {
+        clav = currentEnv.TryGetValue("DB_CLAV_CONN", out var envClav) && !string.IsNullOrWhiteSpace(envClav)
+            ? envClav
+            : builder.Configuration.GetConnectionString("CLAV");
+        if (string.IsNullOrWhiteSpace(clav) && !string.IsNullOrWhiteSpace(cms))
+        {
+            clav = System.Text.RegularExpressions.Regex.Replace(cms, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=claviculario", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+    }
     
-    return Results.Ok(new { CMS = cms, Logins = logins, EMS = ems, mode = dbMode });
+    return Results.Ok(new { CMS = cms, Logins = logins, EMS = ems, HWR = hwr, CLAV = clav, mode = dbMode });
 }).RequireAuthorization("AdminsOnly");
 
 app.MapGet("/api/admin/db-info", async () =>
@@ -1573,10 +1688,20 @@ app.MapGet("/api/admin/db-info", async () =>
         var cmsConn = GetConn("CMS");
         var loginsConn = GetConn("Logins");
         var emsConn = GetConn("EMS");
+        var hwrConn = GetConn("HWR");
+        var clavConn = GetConn("CLAV");
         // if EMS connection isn't configured, try deriving it from CMS string
         if (string.IsNullOrWhiteSpace(emsConn) && !string.IsNullOrWhiteSpace(cmsConn))
         {
             emsConn = System.Text.RegularExpressions.Regex.Replace(cmsConn, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=EMSEVENTS", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        if (string.IsNullOrWhiteSpace(hwrConn) && !string.IsNullOrWhiteSpace(cmsConn))
+        {
+            hwrConn = System.Text.RegularExpressions.Regex.Replace(cmsConn, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=hwreportsview", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        if (string.IsNullOrWhiteSpace(clavConn) && !string.IsNullOrWhiteSpace(cmsConn))
+        {
+            clavConn = System.Text.RegularExpressions.Regex.Replace(cmsConn, "(Initial\\s+Catalog|Database)\\s*=\\s*[^;]+", "$1=claviculario", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
         var result = new Dictionary<string, object?>();
 
@@ -1665,6 +1790,78 @@ app.MapGet("/api/admin/db-info", async () =>
         catch
         {
             result["EMS"] = null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(hwrConn))
+        {
+            try
+            {
+                using var cnHwr = new SqlConnection(hwrConn);
+                await cnHwr.OpenAsync();
+                using var cmdHwr = cnHwr.CreateCommand();
+                cmdHwr.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME";
+                using var rHwr = await cmdHwr.ExecuteReaderAsync();
+                var tablesHwr = new List<string>();
+                while (await rHwr.ReadAsync())
+                {
+                    tablesHwr.Add(rHwr.GetString(0));
+                }
+                var procsHwr = new List<string>();
+                using (var cmdProcs = cnHwr.CreateCommand())
+                {
+                    cmdProcs.CommandText = "SELECT s.name + '.' + p.name FROM sys.procedures p INNER JOIN sys.schemas s ON s.schema_id = p.schema_id ORDER BY s.name, p.name";
+                    using var rProcs = await cmdProcs.ExecuteReaderAsync();
+                    while (await rProcs.ReadAsync())
+                    {
+                        procsHwr.Add(rProcs.GetString(0));
+                    }
+                }
+                result["HWR"] = new { connection = hwrConn, tables = tablesHwr, procedures = procsHwr };
+            }
+            catch
+            {
+                result["HWR"] = null;
+            }
+        }
+        else
+        {
+            result["HWR"] = null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(clavConn))
+        {
+            try
+            {
+                using var cnClav = new SqlConnection(clavConn);
+                await cnClav.OpenAsync();
+                using var cmdClav = cnClav.CreateCommand();
+                cmdClav.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME";
+                using var rClav = await cmdClav.ExecuteReaderAsync();
+                var tablesClav = new List<string>();
+                while (await rClav.ReadAsync())
+                {
+                    tablesClav.Add(rClav.GetString(0));
+                }
+                var procsClav = new List<string>();
+                using (var cmdProcs = cnClav.CreateCommand())
+                {
+                    cmdProcs.CommandText = "SELECT s.name + '.' + p.name FROM sys.procedures p INNER JOIN sys.schemas s ON s.schema_id = p.schema_id ORDER BY s.name, p.name";
+                    using var rProcs = await cmdProcs.ExecuteReaderAsync();
+                    while (await rProcs.ReadAsync())
+                    {
+                        procsClav.Add(rProcs.GetString(0));
+                    }
+                }
+                result["CLAV"] = new { connection = clavConn, tables = tablesClav, procedures = procsClav };
+            }
+            catch
+            {
+                result["CLAV"] = null;
+            }
+        }
+        else
+        {
+            result["CLAV"] = null;
         }
 
 #pragma warning disable CA1416
@@ -1826,6 +2023,8 @@ app.MapGet("/api/admin/sql/test-auth", async () =>
     result["CMS"] = await Test("CMS");
     result["Logins"] = await Test("Logins");
     result["EMS"] = await Test("EMS");
+    result["HWR"] = await Test("HWR");
+    result["CLAV"] = await Test("CLAV");
     return Results.Ok(result);
 }).RequireAuthorization();
 
@@ -1853,7 +2052,7 @@ app.MapGet("/api/admin/sql/instances", async () =>
 
         try
         {
-            foreach (var key in new[] { "CMS", "Logins", "EMS" })
+            foreach (var key in new[] { "CMS", "Logins", "EMS", "HWR", "CLAV" })
             {
                 var conn = GetConn(key);
                 if (string.IsNullOrWhiteSpace(conn)) continue;
@@ -2056,11 +2255,21 @@ app.MapPost("/api/admin/connections", async (HttpContext ctx) =>
         realOverrides["EMS"] = ems;
         changed["DB_EMS_CONN"] = ems;
     }
+    if (dto.TryGetValue("HWR", out var hwr) && !string.IsNullOrWhiteSpace(hwr))
+    {
+        realOverrides["HWR"] = hwr;
+        changed["DB_HWR_CONN"] = hwr;
+    }
+    if (dto.TryGetValue("CLAV", out var clav) && !string.IsNullOrWhiteSpace(clav))
+    {
+        realOverrides["CLAV"] = clav;
+        changed["DB_CLAV_CONN"] = clav;
+    }
     if (changed.Count > 0)
     {
         SaveEnv(changed);
     }
-    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS") });
+    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS"), HWR = realOverrides.GetValueOrDefault("HWR"), CLAV = realOverrides.GetValueOrDefault("CLAV") });
 }).RequireAuthorization("AdminsOnly");
 
 app.MapPost("/api/admin/connections/runtime", async (HttpContext ctx) =>
@@ -2070,7 +2279,9 @@ app.MapPost("/api/admin/connections/runtime", async (HttpContext ctx) =>
     if (dto.TryGetValue("CMS", out var cms) && !string.IsNullOrWhiteSpace(cms)) realOverrides["CMS"] = cms;
     if (dto.TryGetValue("Logins", out var logins) && !string.IsNullOrWhiteSpace(logins)) realOverrides["Logins"] = logins;
     if (dto.TryGetValue("EMS", out var ems) && !string.IsNullOrWhiteSpace(ems)) realOverrides["EMS"] = ems;
-    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS") });
+    if (dto.TryGetValue("HWR", out var hwr) && !string.IsNullOrWhiteSpace(hwr)) realOverrides["HWR"] = hwr;
+    if (dto.TryGetValue("CLAV", out var clav) && !string.IsNullOrWhiteSpace(clav)) realOverrides["CLAV"] = clav;
+    return Results.Ok(new { CMS = realOverrides.GetValueOrDefault("CMS"), Logins = realOverrides.GetValueOrDefault("Logins"), EMS = realOverrides.GetValueOrDefault("EMS"), HWR = realOverrides.GetValueOrDefault("HWR"), CLAV = realOverrides.GetValueOrDefault("CLAV") });
 }).RequireAuthorization("AdminsOnly");
 
 app.MapPost("/api/admin/sql-auth/runtime", async (HttpContext ctx) =>
@@ -2914,11 +3125,7 @@ app.MapGet("/api/reports/eventos-claviculario", async (HttpContext http, string 
     var connStr = GetConn("CLAV");
     if (string.IsNullOrWhiteSpace(connStr))
     {
-        connStr = GetConn("HWR");
-    }
-    if (string.IsNullOrWhiteSpace(connStr))
-    {
-        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV ou ConnectionStrings:HWR não configurada para executar Eventos_Claviculario.", statusCode: 500);
+        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV não configurada para executar Eventos_Claviculario.", statusCode: 500);
     }
 
     using var cn = new SqlConnection(connStr);
@@ -2948,7 +3155,16 @@ app.MapGet("/api/reports/eventos-claviculario", async (HttpContext http, string 
     cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
-    cmd.CommandText = @"
+    var src = await ResolveClavicularioSourceAsync(cn, http.RequestAborted);
+    if (string.IsNullOrWhiteSpace(src))
+    {
+        return Results.Problem(
+            title: "Fonte de dados não encontrada",
+            detail: "Não foi possível localizar uma tabela/view com as colunas esperadas para Eventos_Claviculario no banco configurado em CLAV. Verifique se a conexão aponta para o banco correto.",
+            statusCode: 500
+        );
+    }
+    cmd.CommandText = $@"
 SELECT
     DataHora,
     responsavelNome,
@@ -2956,7 +3172,7 @@ SELECT
     codigoChave,
     chaveDescricao,
     descricao
-FROM [dbo].[eventos]
+FROM {src}
 WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
@@ -2967,7 +3183,7 @@ ORDER BY DataHora
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 
 SELECT COUNT(1)
-FROM [dbo].[eventos]
+FROM {src}
 WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
@@ -2986,11 +3202,11 @@ WHERE
     }
     catch (SqlException ex) when (ex.Number == 2812)
     {
-        return Results.Problem(title: "Procedure não encontrada", detail: "Não foi possível localizar dbo.jp4_sp_Eventos_Claviculario no banco configurado em HWR.", statusCode: 500);
+        return Results.Problem(title: "Procedure não encontrada", detail: "Não foi possível localizar dbo.jp4_sp_Eventos_Claviculario no banco configurado em CLAV.", statusCode: 500);
     }
     catch (SqlException ex) when (ex.Number == 229)
     {
-        return Results.Problem(title: "Sem permissão", detail: "Sem permissão para executar dbo.jp4_sp_Eventos_Claviculario no banco configurado em HWR.", statusCode: 500);
+        return Results.Problem(title: "Sem permissão", detail: "Sem permissão para executar dbo.jp4_sp_Eventos_Claviculario no banco configurado em CLAV.", statusCode: 500);
     }
     catch (SqlException ex) when (ex.Number == 208)
     {
@@ -2998,7 +3214,7 @@ WHERE
     }
     catch (SqlException ex)
     {
-        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}). Verifique permissões para executar dbo.jp4_sp_Eventos_Claviculario e a conexão HWR.", statusCode: 500);
+        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}). Verifique permissões para executar dbo.jp4_sp_Eventos_Claviculario e a conexão CLAV.", statusCode: 500);
     }
     using var _r = r;
     var items = new List<object>();
@@ -3019,6 +3235,36 @@ WHERE
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
+static async Task<string?> ResolveClavicularioSourceAsync(SqlConnection cn, CancellationToken ct)
+{
+    var sql = @"
+SELECT TOP 1
+    QUOTENAME(s.name) + '.' + QUOTENAME(o.name) AS FullName
+FROM sys.objects o
+INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
+WHERE
+    o.type IN ('U','V')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'DataHora')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'responsavelNome')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'responsavelCartao')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'codigoChave')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'chaveDescricao')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'descricao')
+ORDER BY
+    CASE
+        WHEN o.name = 'eventos' THEN 0
+        WHEN o.name LIKE '%evento%' THEN 1
+        ELSE 2
+    END,
+    o.name;";
+
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 15;
+    cmd.CommandText = sql;
+    var obj = (string?)await cmd.ExecuteScalarAsync(ct);
+    return string.IsNullOrWhiteSpace(obj) ? null : obj;
+}
+
 app.MapGet("/api/reports/eventos-claviculario/export", async (HttpContext http, string start, string end, string? nome, string? matricula, string? chave, string? dc, string format = "csv") =>
 {
     var startDt = ParseDateTimeAny(start);
@@ -3037,11 +3283,7 @@ app.MapGet("/api/reports/eventos-claviculario/export", async (HttpContext http, 
     var connStr = GetConn("CLAV");
     if (string.IsNullOrWhiteSpace(connStr))
     {
-        connStr = GetConn("HWR");
-    }
-    if (string.IsNullOrWhiteSpace(connStr))
-    {
-        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV ou ConnectionStrings:HWR não configurada para executar Eventos_Claviculario.", statusCode: 500);
+        return Results.Problem(title: "Conexão não configurada", detail: "ConnectionStrings:CLAV não configurada para executar Eventos_Claviculario.", statusCode: 500);
     }
 
     using var cn = new SqlConnection(connStr);
@@ -3070,7 +3312,16 @@ app.MapGet("/api/reports/eventos-claviculario/export", async (HttpContext http, 
     cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = (object?)matricula ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@chave", SqlDbType.VarChar) { Value = (object?)chave ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
-    cmd.CommandText = @"
+    var src = await ResolveClavicularioSourceAsync(cn, http.RequestAborted);
+    if (string.IsNullOrWhiteSpace(src))
+    {
+        return Results.Problem(
+            title: "Fonte de dados não encontrada",
+            detail: "Não foi possível localizar uma tabela/view com as colunas esperadas para Eventos_Claviculario no banco configurado em CLAV. Verifique se a conexão aponta para o banco correto.",
+            statusCode: 500
+        );
+    }
+    cmd.CommandText = $@"
 SELECT TOP 20000
     DataHora,
     responsavelNome,
@@ -3078,7 +3329,7 @@ SELECT TOP 20000
     codigoChave,
     chaveDescricao,
     descricao
-FROM [dbo].[eventos]
+FROM {src}
 WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
@@ -3540,6 +3791,18 @@ static int GetDoorProcTimeoutSeconds()
     return 900;
 }
 
+static string ResolveAssetRoot(string contentRootPath)
+{
+    try
+    {
+        if (Directory.Exists(Path.Combine(contentRootPath, "img"))) return contentRootPath;
+        var parent = Directory.GetParent(contentRootPath)?.FullName;
+        if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(Path.Combine(parent, "img"))) return parent;
+    }
+    catch { }
+    return contentRootPath;
+}
+
 static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
 {
     try
@@ -3597,7 +3860,7 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var jumperLogoRepo = Path.Combine(repoRoot, "img", "logoJumper.jpg");
         var jumperLogoWww = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "img", "logoJumper.jpg");
         if (System.IO.File.Exists(jumperLogoRepo)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoRepo);
@@ -3786,7 +4049,7 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -6838,7 +7101,7 @@ byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, s
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var jumperLogoRepo = Path.Combine(repoRoot, "img", "logoJumper.jpg");
         var jumperLogoWww = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "img", "logoJumper.jpg");
         if (System.IO.File.Exists(jumperLogoRepo)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoRepo);
@@ -7091,7 +7354,7 @@ byte[] BuildVisitorsPdf(string clientName, byte[]? clientLogo, string title, Dat
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -7366,7 +7629,7 @@ byte[] BuildCardByCpfPdf(string clientName, byte[]? clientLogo, string title, IR
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -7581,7 +7844,7 @@ byte[] BuildCompanyInfoPdf(string clientName, byte[]? clientLogo, string title, 
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -7814,7 +8077,7 @@ byte[] BuildCardInfoPdf(string clientName, byte[]? clientLogo, string title, IRe
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -8053,7 +8316,7 @@ byte[] BuildMatriculaInfoPdf(string clientName, byte[]? clientLogo, string title
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -8247,7 +8510,7 @@ byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IR
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -8477,7 +8740,7 @@ byte[] BuildAccessAggPdf(string clientName, byte[]? clientLogo, string title, IR
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -8693,7 +8956,7 @@ byte[] BuildPopulationPdf(string clientName, byte[]? clientLogo, string title, D
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -8917,7 +9180,7 @@ byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title,
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
@@ -9153,7 +9416,7 @@ byte[] BuildTransitPdf(string clientName, byte[]? clientLogo, string title, Date
     byte[]? jumperBrand = null;
     try
     {
-        var repoRoot = Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath;
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");

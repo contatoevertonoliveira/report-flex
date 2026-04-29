@@ -103,8 +103,8 @@ export function LoginPage() {
   },[showSetup, dataSource, emsDb])
 
   async function applySetup(){
-    if (!dataSource || !cmsDb || !loginsDb){
-      setSetupError('Selecione a instância e os bancos (CMS e Logins).')
+    if (!dataSource || !cmsDb || !loginsDb || !emsDb){
+      setSetupError('Selecione a instância e os bancos (CMS, Logins e EMS).')
       return
     }
     setSetupError(null)
@@ -114,7 +114,7 @@ export function LoginPage() {
         dataSource,
         cmsDb,
         loginsDb,
-        emsDb: emsDb || undefined,
+        emsDb,
         initialEmail: (initialEmail || '').trim() || undefined,
         initialPassword: initialPassword || undefined,
         initialName: (initialName || '').trim() || undefined
@@ -279,9 +279,9 @@ export function LoginPage() {
                       </select>
                     </div>
                     <div className="col-12 col-md-4">
-                      <label className="form-label">Banco EMS (opcional)</label>
+                      <label className="form-label">Banco EMS</label>
                       <select className="form-select" value={emsDb} onChange={e=>setEmsDb(e.target.value)} disabled={setupLoading || databases.length === 0}>
-                        <option value="">(Não configurar agora)</option>
+                        <option value="">Selecione...</option>
                         {databases.map((d)=> <option key={d} value={d}>{d}</option>)}
                       </select>
                     </div>
@@ -308,8 +308,8 @@ export function LoginPage() {
                             )}
                           </div>
                           <div className="col-12 col-md-4">
-                            <div className="fw-semibold">EMS: {emsDb || '(não configurado)'}</div>
-                            <div className="small text-muted">{emsDb ? (emsTables.length ? `${emsTables.length} tabelas` : 'Sem leitura de tabelas') : 'Opcional'}</div>
+                            <div className="fw-semibold">EMS: {emsDb || '-'}</div>
+                            <div className="small text-muted">{emsTables.length ? `${emsTables.length} tabelas` : 'Sem leitura de tabelas'}</div>
                             {emsTables.length > 0 && (
                               <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
                                 {emsTables.map((t)=> <div key={t} className="small">{t}</div>)}

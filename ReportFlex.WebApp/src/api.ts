@@ -14,6 +14,9 @@ function clearSessionCaches(){
   try{
     sessionStorage.removeItem('rf_queries_cache_v1')
   }catch{}
+  try{
+    localStorage.removeItem('rf_queries_cache_v1')
+  }catch{}
 }
 
 export function setToken(t: string){
@@ -121,7 +124,7 @@ export const api = {
     if (!r.ok) throw new Error(String(data?.error || data?.message || `HTTP ${r.status}`))
     return data
   },
-  setupApply: async (p: { dataSource: string, cmsDb: string, loginsDb: string, emsDb?: string, initialEmail?: string, initialPassword?: string, initialName?: string }) => {
+  setupApply: async (p: { dataSource: string, cmsDb: string, loginsDb: string, emsDb?: string, hwrDb?: string, clavDb?: string, initialEmail?: string, initialPassword?: string, initialName?: string }) => {
     const r = await apiFetch('/api/setup/apply', { method:'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(p) })
     const raw = await r.text()
     let data: any = null
@@ -249,8 +252,10 @@ export const api = {
   setDbMode: async (mode: 'Real'|'Demo') => withAuth(apiFetch('/api/admin/db-mode', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify({ mode }) })),
   seedDemo: async (count: number, scope: 'all'|'cms'|'logins' = 'all') => withAuth(apiFetch(`/api/dev/seed?count=${count}&scope=${scope}`, { method:'POST', headers: headers() })),
   getConnections: async () => withAuth(apiFetch('/api/admin/connections', { headers: headers() })),
-  setConnections: async (p: { CMS?: string, Logins?: string, EMS?: string }) => withAuth(apiFetch('/api/admin/connections', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
-  setConnectionsRuntime: async (p: { CMS?: string, Logins?: string, EMS?: string }) => withAuth(apiFetch('/api/admin/connections/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setConnections: async (p: { CMS?: string, Logins?: string, EMS?: string, HWR?: string, CLAV?: string }) =>
+    withAuth(apiFetch('/api/admin/connections', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  setConnectionsRuntime: async (p: { CMS?: string, Logins?: string, EMS?: string, HWR?: string, CLAV?: string }) =>
+    withAuth(apiFetch('/api/admin/connections/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   setSqlAuthRuntime: async (p: { user: string, pwd: string }) => withAuth(apiFetch('/api/admin/sql-auth/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   setSqlAuth: async (p: { user: string, pwd: string }) => withAuth(apiFetch('/api/admin/sql-auth', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
 
@@ -353,7 +358,9 @@ async function withAuth(p: Promise<Response>){
   let msg = raw
   try {
     const data = raw ? JSON.parse(raw) : null
-    msg = (data && (data.error || data.message)) ? (data.error || data.message) : (raw || `HTTP ${r.status}`)
+    msg = (data && (data.error || data.message || data.detail || data.title))
+      ? (data.error || data.message || data.detail || data.title)
+      : (raw || `HTTP ${r.status}`)
   } catch {
     msg = raw || `HTTP ${r.status}`
   }

@@ -8,8 +8,11 @@ export function SettingsPage(){
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [seedCount, setSeedCount] = useState(100)
-  const [realPath, setRealPath] = useState('')
+  const [cmsPath, setCmsPath] = useState('')
+  const [loginsPath, setLoginsPath] = useState('')
   const [emsPath, setEmsPath] = useState('')
+  const [hwrPath, setHwrPath] = useState('')
+  const [clavPath, setClavPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
   const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape', customQueries: boolean }>({
@@ -44,13 +47,17 @@ export function SettingsPage(){
   const [setupCmsDb, setSetupCmsDb] = useState('')
   const [setupLoginsDb, setSetupLoginsDb] = useState('')
   const [setupEmsDb, setSetupEmsDb] = useState('')
+  const [setupHwrDb, setSetupHwrDb] = useState('')
+  const [setupClavDb, setSetupClavDb] = useState('')
   const [setupCmsTables, setSetupCmsTables] = useState<string[]>([])
   const [setupLoginsTables, setSetupLoginsTables] = useState<string[]>([])
   const [setupEmsTables, setSetupEmsTables] = useState<string[]>([])
+  const [setupHwrTables, setSetupHwrTables] = useState<string[]>([])
+  const [setupClavTables, setSetupClavTables] = useState<string[]>([])
   const [setupInitialEmail, setSetupInitialEmail] = useState('')
   const [setupInitialPassword, setSetupInitialPassword] = useState('')
   const [setupInitialName, setSetupInitialName] = useState('SUPERADMIN')
-  const [setupTest, setSetupTest] = useState<{ cms?: string, logins?: string, ems?: string } | null>(null)
+  const [setupTest, setSetupTest] = useState<{ cms?: string, logins?: string, ems?: string, hwr?: string, clav?: string } | null>(null)
   const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
   const [screensCfgLoading, setScreensCfgLoading] = useState(false)
   const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
@@ -65,16 +72,34 @@ export function SettingsPage(){
         if (r?.mode === 'Demo' || r?.mode === 'Real'){ setMode(r.mode) }
         const c = await api.getConnections()
         if (c?.CMS){
-          setRealPath(c.CMS)
+          setCmsPath(c.CMS)
+        }
+        if (c?.Logins){
+          setLoginsPath(c.Logins)
         }
         if (c?.EMS){
           setEmsPath(c.EMS)
         }
+        if (c?.HWR){
+          setHwrPath(c.HWR)
+        }
+        if (c?.CLAV){
+          setClavPath(c.CLAV)
+        }
         if (!c?.CMS) {
-          setRealPath('Data Source=JP4REPORTDEV01;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+          setCmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=CMS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+        }
+        if (!c?.Logins) {
+          setLoginsPath('Data Source=JP4REPORTDEV01;Initial Catalog=logins;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
         }
         if (!c?.EMS) {
-          setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+          setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=EMS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+        }
+        if (!c?.HWR) {
+          setHwrPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+        }
+        if (!c?.CLAV) {
+          setClavPath('Data Source=JP4REPORTDEV01;Initial Catalog=claviculario;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
         }
         setDbInfoErr(null)
         try{
@@ -213,10 +238,14 @@ export function SettingsPage(){
       const pick = (preferred: string) => items.find((x: string)=> x.toLowerCase() === preferred.toLowerCase()) || ''
       const cms = pick('CMS') || (items[0] || '')
       const logins = pick('Logins') || pick('Login') || (items[0] || '')
-      const ems = pick('EMS') || pick('EMSEVENTS') || ''
+      const ems = pick('EMS') || pick('EMSEVENTS') || (items[0] || '')
+      const hwr = pick('hwreportsview') || pick('HWR') || pick('HWRREPORTS') || (items[0] || '')
+      const clav = pick('claviculario') || pick('CLAV') || (items[0] || '')
       if (!setupCmsDb) setSetupCmsDb(cms)
       if (!setupLoginsDb) setSetupLoginsDb(logins)
       if (!setupEmsDb) setSetupEmsDb(ems)
+      if (!setupHwrDb) setSetupHwrDb(hwr)
+      if (!setupClavDb) setSetupClavDb(clav)
     }catch(e:any){
       setSetupDatabases([])
       setSetupError(e?.message || 'Falha ao listar bancos')
@@ -263,11 +292,23 @@ export function SettingsPage(){
     loadSetupTables(setupEmsDb, setSetupEmsTables)
   },[setupModalOpen, setupDataSource, setupEmsDb])
 
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    if (!setupHwrDb) { setSetupHwrTables([]); return }
+    loadSetupTables(setupHwrDb, setSetupHwrTables)
+  },[setupModalOpen, setupDataSource, setupHwrDb])
+
+  useEffect(()=>{
+    if (!setupModalOpen) return
+    if (!setupClavDb) { setSetupClavTables([]); return }
+    loadSetupTables(setupClavDb, setSetupClavTables)
+  },[setupModalOpen, setupDataSource, setupClavDb])
+
   async function testSetupConnections(){
     setSetupError(null)
     setSetupTest(null)
-    if (!setupDataSource || !setupCmsDb || !setupLoginsDb){
-      setSetupError('Selecione a instância e os bancos (CMS e Logins).')
+    if (!setupDataSource || !setupCmsDb || !setupLoginsDb || !setupEmsDb || !setupHwrDb || !setupClavDb){
+      setSetupError('Selecione a instância e os bancos (CMS, Logins, EMS, HWR e CLAV).')
       return
     }
     setSetupLoading(true)
@@ -275,9 +316,9 @@ export function SettingsPage(){
       const out: any = {}
       try{ await api.setupSqlTables(setupDataSource, setupCmsDb); out.cms = 'OK' }catch(e:any){ out.cms = e?.message || 'Falha' }
       try{ await api.setupSqlTables(setupDataSource, setupLoginsDb); out.logins = 'OK' }catch(e:any){ out.logins = e?.message || 'Falha' }
-      if (setupEmsDb){
-        try{ await api.setupSqlTables(setupDataSource, setupEmsDb); out.ems = 'OK' }catch(e:any){ out.ems = e?.message || 'Falha' }
-      }
+      try{ await api.setupSqlTables(setupDataSource, setupEmsDb); out.ems = 'OK' }catch(e:any){ out.ems = e?.message || 'Falha' }
+      try{ await api.setupSqlTables(setupDataSource, setupHwrDb); out.hwr = 'OK' }catch(e:any){ out.hwr = e?.message || 'Falha' }
+      try{ await api.setupSqlTables(setupDataSource, setupClavDb); out.clav = 'OK' }catch(e:any){ out.clav = e?.message || 'Falha' }
       setSetupTest(out)
     }finally{
       setSetupLoading(false)
@@ -287,8 +328,8 @@ export function SettingsPage(){
   async function applySetupFromSettings(){
     setSetupError(null)
     setSetupTest(null)
-    if (!setupDataSource || !setupCmsDb || !setupLoginsDb){
-      setSetupError('Selecione a instância e os bancos (CMS e Logins).')
+    if (!setupDataSource || !setupCmsDb || !setupLoginsDb || !setupEmsDb || !setupHwrDb || !setupClavDb){
+      setSetupError('Selecione a instância e os bancos (CMS, Logins, EMS, HWR e CLAV).')
       return
     }
     setSetupLoading(true)
@@ -297,7 +338,9 @@ export function SettingsPage(){
         dataSource: setupDataSource,
         cmsDb: setupCmsDb,
         loginsDb: setupLoginsDb,
-        emsDb: setupEmsDb || undefined,
+        emsDb: setupEmsDb,
+        hwrDb: setupHwrDb,
+        clavDb: setupClavDb,
         initialEmail: (setupInitialEmail || '').trim() || undefined,
         initialPassword: setupInitialPassword || undefined,
         initialName: (setupInitialName || '').trim() || undefined
@@ -313,18 +356,53 @@ export function SettingsPage(){
         const r = await api.getDbMode()
         if (r?.mode === 'Demo' || r?.mode === 'Real'){ setMode(r.mode) }
       }catch{}
+      let conns: any | null = null
+      let info: any | null = null
+      let st: any | null = null
       try{
-        const c = await api.getConnections()
-        if (c?.CMS) setRealPath(c.CMS)
-        if (c?.EMS) setEmsPath(c.EMS)
+        conns = await api.getConnections()
+        if (conns?.CMS) setCmsPath(conns.CMS)
+        if (conns?.Logins) setLoginsPath(conns.Logins)
+        if (conns?.EMS) setEmsPath(conns.EMS)
+        if (conns?.HWR) setHwrPath(conns.HWR)
+        if (conns?.CLAV) setClavPath(conns.CLAV)
       }catch{}
       try{
-        const info = await api.getDbInfo()
+        info = await api.getDbInfo()
         setDbInfo(info)
         setDbInfoErr(null)
       }catch{
         setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
       }
+      try{
+        st = await api.testSqlAuth()
+        setAuthStatus(st)
+      }catch{}
+      try{
+        const keys = ['CMS','Logins','EMS','HWR','CLAV'] as const
+        const configured: Record<typeof keys[number], boolean> = {
+          CMS: !!String(conns?.CMS || '').trim(),
+          Logins: !!String(conns?.Logins || '').trim(),
+          EMS: !!String(conns?.EMS || '').trim(),
+          HWR: !!String(conns?.HWR || '').trim(),
+          CLAV: !!String(conns?.CLAV || '').trim()
+        }
+        const isOk = (k: typeof keys[number]) => {
+          const aok = st?.[k]?.ok
+          if (typeof aok === 'boolean') return aok
+          return !!info?.databases?.[k]
+        }
+        const failed = keys.filter(k => configured[k] && !isOk(k))
+        if (failed.length === 0) {
+          setMsg('Conexões salvas e testadas: tudo OK.')
+        } else {
+          const failedDetails = failed.map(k => {
+            const e = st?.[k]?.error
+            return e ? `${k} (${String(e)})` : k
+          }).join(', ')
+          setErr('Conexão salva, mas falhou o teste em: ' + failedDetails)
+        }
+      }catch{}
     }catch(e:any){
       setSetupError(e?.message || 'Falha ao aplicar configuração')
     }finally{
@@ -355,20 +433,55 @@ export function SettingsPage(){
       const cms = buildConnFromWizard(sqlDbCms)
       const logins = buildConnFromWizard(sqlDbLogins)
       const ems = buildConnFromWizard(sqlDbEms)
-      const r: any = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems })
-      if (r?.CMS) setRealPath(r.CMS)
+      const findDb = (wanted: string) => sqlDatabases.find(x => String(x).toLowerCase() === wanted.toLowerCase())
+      const hwrDb = findDb('hwreportsview')
+      const clavDb = findDb('claviculario') || findDb('CLAV') || findDb('clav') || findDb('Clav')
+      const hwr = hwrDb ? buildConnFromWizard(hwrDb) : ''
+      const clav = clavDb ? buildConnFromWizard(clavDb) : ''
+      const r: any = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems, HWR: hwr || undefined, CLAV: clav || undefined })
+      if (r?.CMS) setCmsPath(r.CMS)
+      if (r?.Logins) setLoginsPath(r.Logins)
       if (r?.EMS) setEmsPath(r.EMS)
+      if (r?.HWR) setHwrPath(r.HWR)
+      if (r?.CLAV) setClavPath(r.CLAV)
       setMsg('Configuração de conexão salva')
+      let info: any | null = null
+      let st: any | null = null
       try{
-        const info = await api.getDbInfo()
+        info = await api.getDbInfo()
         setDbInfo(info)
         setDbInfoErr(null)
       }catch{
         setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
       }
       try{
-        const st = await api.testSqlAuth()
+        st = await api.testSqlAuth()
         setAuthStatus(st)
+      }catch{}
+      try{
+        const keys = ['CMS','Logins','EMS','HWR','CLAV'] as const
+        const configured: Record<typeof keys[number], boolean> = {
+          CMS: !!cms.trim(),
+          Logins: !!logins.trim(),
+          EMS: !!ems.trim(),
+          HWR: !!hwr.trim(),
+          CLAV: !!clav.trim()
+        }
+        const isOk = (k: typeof keys[number]) => {
+          const aok = st?.[k]?.ok
+          if (typeof aok === 'boolean') return aok
+          return !!info?.databases?.[k]
+        }
+        const failed = keys.filter(k => configured[k] && !isOk(k))
+        if (failed.length === 0) {
+          setMsg('Conexões salvas e testadas: tudo OK.')
+        } else {
+          const failedDetails = failed.map(k => {
+            const e = st?.[k]?.error
+            return e ? `${k} (${String(e)})` : k
+          }).join(', ')
+          setErr('Conexão salva, mas falhou o teste em: ' + failedDetails)
+        }
       }catch{}
       try{
         const md = await api.getSqlAuthMode()
@@ -388,9 +501,12 @@ export function SettingsPage(){
   async function applyRecommended(){
     setErr(null); setMsg(null); setDbInfoErr(null)
     try{
-      setRealPath('Data Source=JP4REPORTDEV01;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+      setCmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=CMS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+      setLoginsPath('Data Source=JP4REPORTDEV01;Initial Catalog=Logins;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
       setEmsPath('Data Source=JP4REPORTDEV01;Initial Catalog=EMSEVENTS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
-      await saveRealPath()
+      setHwrPath('Data Source=JP4REPORTDEV01;Initial Catalog=hwreportsview;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
+      setClavPath('')
+      await saveConnections()
     }catch{
       setErr('Falha ao aplicar configuração recomendada')
     }
@@ -409,10 +525,19 @@ export function SettingsPage(){
         try {
           const c = await api.getConnections()
           if (c?.CMS) {
-            setRealPath(c.CMS)
+            setCmsPath(c.CMS)
+          }
+          if (c?.Logins) {
+            setLoginsPath(c.Logins)
           }
           if (c?.EMS) {
             setEmsPath(c.EMS)
+          }
+          if (c?.HWR) {
+            setHwrPath(c.HWR)
+          }
+          if (c?.CLAV) {
+            setClavPath(c.CLAV)
           }
         } catch {
           // Ignorar erro ao carregar conexões
@@ -469,23 +594,14 @@ export function SettingsPage(){
     }
   }
 
-  async function saveRealPath(){
+  async function saveConnections(){
     setErr(null); setMsg(null); setDbInfoErr(null)
     try{
-      let cms = realPath
-      let logins = realPath
+      let cms = cmsPath
+      let logins = loginsPath
       let ems = emsPath
-      const hasCatalog = /Initial\s+Catalog\s*=/i.test(realPath) || /Database\s*=/i.test(realPath)
-      if (!hasCatalog){
-        const base = realPath.endsWith(';') ? realPath : realPath + ';'
-        cms = base + 'Initial Catalog=CMS'
-        logins = base + 'Initial Catalog=Logins'
-        if (!ems) ems = base + 'Initial Catalog=hwreportsview'
-      }else{
-        cms = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*Logins/i, '$1=CMS')
-        logins = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*CMS/i, '$1=Logins')
-        if (!ems) ems = realPath.replace(/(Initial\s+Catalog|Database)\s*=\s*[^;]+/i, '$1=hwreportsview')
-      }
+      let hwr = hwrPath
+      let clav = clavPath
       const ensureTls = (s: string) => {
         const up = s.trim().replace(/;+\s*$/,'')
         const hasEnc = /Encrypt\s*=\s*True/i.test(up)
@@ -506,29 +622,83 @@ export function SettingsPage(){
         if (sqlPwd) out += `;Password=${sqlPwd}`
         return out
       }
+      const ensureCatalog = (s: string, catalog: string) => {
+        let out = s.trim().replace(/;+\s*$/,'')
+        if (/(Initial\s*Catalog|Database)\s*=\s*[^;]*/i.test(out)) {
+          out = out.replace(/(Initial\s*Catalog|Database)\s*=\s*[^;]*/i, `$1=${catalog}`)
+          return out
+        }
+        return out ? (out + `;Initial Catalog=${catalog}`) : `Initial Catalog=${catalog}`
+      }
+      if (!clav || !clav.trim()){
+        const base = String(cms || '').trim()
+        clav = base ? ensureCatalog(base, 'claviculario') : 'Data Source=JP4REPORTDEV01;Initial Catalog=claviculario;Integrated Security=True;Encrypt=True;TrustServerCertificate=True'
+      }
       if (useSqlAuth && sqlUser){
         await api.setSqlAuth({ user: sqlUser, pwd: sqlPwd })
       }
       cms = ensureTls(useSqlAuth ? applySqlAuth(cms) : cms)
       logins = ensureTls(useSqlAuth ? applySqlAuth(logins) : logins)
       ems = ensureTls(useSqlAuth ? applySqlAuth(ems) : ems)
-      const r = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems })
+      hwr = hwr ? ensureTls(useSqlAuth ? applySqlAuth(hwr) : hwr) : ''
+      clav = ensureTls(useSqlAuth ? applySqlAuth(clav) : clav)
+      const r = await api.setConnections({ CMS: cms, Logins: logins, EMS: ems, HWR: hwr || undefined, CLAV: clav })
       if (r?.CMS){
-        setRealPath(r.CMS)
+        setCmsPath(r.CMS)
+      }
+      if (r?.Logins){
+        setLoginsPath(r.Logins)
       }
       if (r?.EMS){
         setEmsPath(r.EMS)
       }
+      if (r?.HWR){
+        setHwrPath(r.HWR)
+      }
+      if (r?.CLAV){
+        setClavPath(r.CLAV)
+      }
       setMsg('Configuração de conexão salva')
+      let info: any | null = null
+      let st: any | null = null
       try{
-        const info = await api.getDbInfo()
+        info = await api.getDbInfo()
         setDbInfo(info)
         setDbInfoErr(null)
       }catch{
         setDbInfoErr('Não foi possível carregar informações detalhadas do banco.')
       }
-    }catch{
-      setErr('Falha ao salvar configuração')
+      try{
+        st = await api.testSqlAuth()
+        setAuthStatus(st)
+      }catch{}
+      try{
+        const keys = ['CMS','Logins','EMS','HWR','CLAV'] as const
+        const configured: Record<typeof keys[number], boolean> = {
+          CMS: !!cms.trim(),
+          Logins: !!logins.trim(),
+          EMS: !!ems.trim(),
+          HWR: !!hwr.trim(),
+          CLAV: !!clav.trim()
+        }
+        const isOk = (k: typeof keys[number]) => {
+          const aok = st?.[k]?.ok
+          if (typeof aok === 'boolean') return aok
+          return !!info?.databases?.[k]
+        }
+        const failed = keys.filter(k => configured[k] && !isOk(k))
+        if (failed.length === 0) {
+          setMsg('Conexões salvas e testadas: tudo OK.')
+        } else {
+          const failedDetails = failed.map(k => {
+            const e = st?.[k]?.error
+            return e ? `${k} (${String(e)})` : k
+          }).join(', ')
+          setErr('Conexão salva, mas falhou o teste em: ' + failedDetails)
+        }
+      }catch{}
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao salvar configuração')
     }
   }
 
@@ -627,7 +797,7 @@ export function SettingsPage(){
     return (m?.[1] || '').trim()
   }
 
-  const summarizeDb = (key: 'CMS'|'Logins'|'EMS') => {
+  const summarizeDb = (key: 'CMS'|'Logins'|'EMS'|'HWR'|'CLAV') => {
     const db = dbInfo?.databases?.[key]
     if (!db) return null
     const conn = String(db.connection || '')
@@ -641,6 +811,8 @@ export function SettingsPage(){
   const dbCms = summarizeDb('CMS')
   const dbLogins = summarizeDb('Logins')
   const dbEms = summarizeDb('EMS')
+  const dbHwr = summarizeDb('HWR')
+  const dbClav = summarizeDb('CLAV')
 
   return (
     <section>
@@ -667,27 +839,23 @@ export function SettingsPage(){
               <i className="bi bi-database-gear" /> Banco de Dados
             </div>
             <div className="card-body p-3">
-              <div className="row g-2 align-items-start">
-                <div className="col-12 col-lg-8">
-                  <div className="d-flex align-items-center flex-wrap" style={{gap:12}}>
-                    <div className="form-check">
-                      <input className="form-check-input" type="radio" name="dbmode" id="dbReal" checked={mode==='Real'} onChange={()=> applyMode('Real')} />
-                      <label className="form-check-label" htmlFor="dbReal">Banco Real</label>
-                    </div>
-                    <div className="form-check">
-                      <input className="form-check-input" type="radio" name="dbmode" id="dbDemo" checked={mode==='Demo'} onChange={()=> applyMode('Demo')} />
-                      <label className="form-check-label" htmlFor="dbDemo">Banco Demo</label>
-                    </div>
+              <div className="d-flex flex-wrap align-items-end" style={{gap:12}}>
+                <div className="d-flex align-items-center flex-wrap" style={{gap:12}}>
+                  <div className="form-check">
+                    <input className="form-check-input" type="radio" name="dbmode" id="dbReal" checked={mode==='Real'} onChange={()=> applyMode('Real')} />
+                    <label className="form-check-label" htmlFor="dbReal">Banco Real</label>
                   </div>
-                  <div className="text-muted" style={{fontSize:12, marginTop:4}}>
-                    Configure as conexões do SQL Server e valide a estrutura das bases.
+                  <div className="form-check">
+                    <input className="form-check-input" type="radio" name="dbmode" id="dbDemo" checked={mode==='Demo'} onChange={()=> applyMode('Demo')} />
+                    <label className="form-check-label" htmlFor="dbDemo">Banco Demo</label>
                   </div>
                 </div>
-                <div className="col-12 col-lg-4 d-flex justify-content-lg-end">
-                  <button type="button" className="btn btn-outline-dark btn-sm d-flex align-items-center" onClick={()=> setSetupModalOpen(true)}>
-                    <i className="bi bi-plug me-2" /> Assistente
-                  </button>
-                </div>
+                <button type="button" className="btn btn-outline-dark btn-sm d-flex align-items-center" onClick={()=> setSetupModalOpen(true)}>
+                  <i className="bi bi-plug me-2" /> Assistente
+                </button>
+              </div>
+              <div className="text-muted" style={{fontSize:12, marginTop:4}}>
+                Configure as conexões do SQL Server e valide a estrutura das bases.
               </div>
 
               {mode === 'Demo' && (
@@ -705,21 +873,42 @@ export function SettingsPage(){
                   <hr className="my-2" />
                   <div className="row g-2">
                     <div className="col-12">
-                      <label className="form-label" style={{marginBottom:4}}>Conexão base (CMS e Logins)</label>
+                      <label className="form-label" style={{marginBottom:4}}>Conexão CMS</label>
                       <div className="input-group input-group-sm">
                         <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
-                        <input className="form-control" value={realPath} onChange={e=> setRealPath(e.target.value)} placeholder="Ex: Data Source=SERVIDOR;Integrated Security=True;Encrypt=True;TrustServerCertificate=True" />
-                      </div>
-                      <div className="text-muted" style={{fontSize:12, marginTop:4}}>
-                        Se não houver Initial Catalog, aplica CMS e Logins automaticamente.
+                        <input className="form-control" value={cmsPath} onChange={e=> setCmsPath(e.target.value)} placeholder="Ex: Data Source=SERVIDOR;Initial Catalog=CMS;Integrated Security=True;Encrypt=True;TrustServerCertificate=True" />
                       </div>
                     </div>
 
                     <div className="col-12">
-                      <label className="form-label" style={{marginBottom:4}}>Conexão EMS (opcional)</label>
+                      <label className="form-label" style={{marginBottom:4}}>Conexão Logins</label>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text"><i className="bi bi-hdd-network" /></span>
+                        <input className="form-control" value={loginsPath} onChange={e=> setLoginsPath(e.target.value)} placeholder="Ex: Data Source=SERVIDOR;Initial Catalog=Logins;Integrated Security=True;Encrypt=True;TrustServerCertificate=True" />
+                      </div>
+                    </div>
+
+                    <div className="col-12">
+                      <label className="form-label" style={{marginBottom:4}}>Conexão EMS</label>
                       <div className="input-group input-group-sm">
                         <span className="input-group-text"><i className="bi bi-hdd-stack" /></span>
                         <input className="form-control" value={emsPath} onChange={e=> setEmsPath(e.target.value)} placeholder="Ex: ...;Initial Catalog=EMSEVENTS;..." />
+                      </div>
+                    </div>
+
+                    <div className="col-12">
+                      <label className="form-label" style={{marginBottom:4}}>Conexão HWR</label>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text"><i className="bi bi-hdd-stack" /></span>
+                        <input className="form-control" value={hwrPath} onChange={e=> setHwrPath(e.target.value)} placeholder="Ex: ...;Initial Catalog=hwreportsview;..." />
+                      </div>
+                    </div>
+
+                    <div className="col-12">
+                      <label className="form-label" style={{marginBottom:4}}>Conexão CLAV (Claviculário)</label>
+                      <div className="input-group input-group-sm">
+                        <span className="input-group-text"><i className="bi bi-hdd-stack" /></span>
+                        <input className="form-control" value={clavPath} onChange={e=> setClavPath(e.target.value)} placeholder="Ex: Data Source=SERVIDOR;Initial Catalog=claviculario;Integrated Security=True;Encrypt=True;TrustServerCertificate=True" />
                       </div>
                     </div>
 
@@ -747,7 +936,7 @@ export function SettingsPage(){
                     </div>
 
                     <div className="col-12 d-flex justify-content-end">
-                      <button className="btn btn-primary btn-sm d-flex align-items-center" onClick={saveRealPath}>
+                      <button className="btn btn-primary btn-sm d-flex align-items-center" onClick={saveConnections}>
                         <i className="bi bi-save me-2" /> Salvar
                       </button>
                     </div>
@@ -888,6 +1077,8 @@ export function SettingsPage(){
                         <div className="col-12 col-md-4">CMS: {authStatus?.CMS?.ok ? (`OK (${authStatus?.CMS?.user||''})`) : (`Falha: ${authStatus?.CMS?.error||''}`)}</div>
                         <div className="col-12 col-md-4">Logins: {authStatus?.Logins?.ok ? (`OK (${authStatus?.Logins?.user||''})`) : (`Falha: ${authStatus?.Logins?.error||''}`)}</div>
                         <div className="col-12 col-md-4">EMS: {authStatus?.EMS?.ok ? (`OK (${authStatus?.EMS?.user||''})`) : (`Falha: ${authStatus?.EMS?.error||''}`)}</div>
+                        <div className="col-12 col-md-4">HWR: {authStatus?.HWR?.ok ? (`OK (${authStatus?.HWR?.user||''})`) : (`Falha: ${authStatus?.HWR?.error||''}`)}</div>
+                        <div className="col-12 col-md-4">CLAV: {authStatus?.CLAV?.ok ? (`OK (${authStatus?.CLAV?.user||''})`) : (`Falha: ${authStatus?.CLAV?.error||''}`)}</div>
                         <div className="col-12 col-md-4">Modo do servidor: {authMode?.mode || 'desconhecido'}</div>
                         <div className="col-12 col-md-8">
                           Teste login (master): {loginOnlyStatus?.skipped ? (`N/A: ${loginOnlyStatus?.reason||''}`) : (loginOnlyStatus?.ok ? (`OK (${loginOnlyStatus?.user||''})`) : (`Falha: ${loginOnlyStatus?.error||''}`))}
@@ -943,7 +1134,9 @@ export function SettingsPage(){
                         {[
                           { label: 'CMS', db: dbCms },
                           { label: 'Logins', db: dbLogins },
-                          { label: 'EMS', db: dbEms }
+                          { label: 'EMS', db: dbEms },
+                          { label: 'HWR', db: dbHwr },
+                          { label: 'CLAV', db: dbClav }
                         ].map((it) => (
                           <tr key={it.label}>
                             <td className="fw-semibold">{it.label}</td>
@@ -1002,110 +1195,158 @@ export function SettingsPage(){
         <>
           <div className="modal-backdrop show" />
           <div className="modal show" style={{ display: 'block' }} tabIndex={-1} role="dialog" aria-modal="true">
-            <div className="modal-dialog modal-lg modal-dialog-centered" role="document">
+            <div className="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable" role="document">
               <div className="modal-content">
                 <div className="modal-header">
                   <h5 className="modal-title">Testar Configuração de Banco (Modo Instalação)</h5>
                   <button type="button" className="btn-close" aria-label="Close" disabled={setupLoading} onClick={()=> setSetupModalOpen(false)} />
                 </div>
                 <div className="modal-body">
-                  <div className="alert alert-info py-2">
+                  <div className="alert alert-info py-2 mb-2">
                     Selecione instância e bancos. A lista de tabelas é apenas informativa. Ao confirmar, as conexões serão aplicadas e, se não existir nenhum usuário, será criado o primeiro SuperAdmin.
                   </div>
-                  <div className="row g-3">
-                    <div className="col-12">
-                      <label className="form-label">Instância SQL</label>
-                      <div className="d-flex gap-2">
-                        <select className="form-select" value={setupDataSource} onChange={e=>{ setSetupDataSource(e.target.value); setSetupDatabases([]); setSetupTest(null) }} disabled={setupLoading}>
-                          {setupInstances.length === 0 && <option value="">(Nenhuma instância encontrada)</option>}
-                          {setupInstances.map((x, idx)=>(
-                            <option key={idx} value={x.dataSource}>{x.dataSource}{x.version ? ` (v${x.version})` : ''}</option>
-                          ))}
-                        </select>
-                        <button type="button" className="btn btn-outline-secondary" onClick={loadSetupInstances} disabled={setupLoading}>Atualizar</button>
+                  <div style={{display:'flex', flexWrap:'wrap', gap:12, alignItems:'flex-start'}}>
+                    <div style={{flex:'1 1 520px', minWidth:320}}>
+                      <div className="row g-2">
+                        <div className="col-12">
+                          <label className="form-label" style={{marginBottom:4}}>Instância SQL</label>
+                          <div className="d-flex gap-2">
+                            <select className="form-select form-select-sm" value={setupDataSource} onChange={e=>{ setSetupDataSource(e.target.value); setSetupDatabases([]); setSetupTest(null) }} disabled={setupLoading}>
+                              {setupInstances.length === 0 && <option value="">(Nenhuma instância encontrada)</option>}
+                              {setupInstances.map((x, idx)=>(
+                                <option key={idx} value={x.dataSource}>{x.dataSource}{x.version ? ` (v${x.version})` : ''}</option>
+                              ))}
+                            </select>
+                            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadSetupInstances} disabled={setupLoading}>Atualizar</button>
+                          </div>
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Banco CMS</label>
+                          <select className="form-select form-select-sm" value={setupCmsDb} onChange={e=>{ setSetupCmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                            <option value="">Selecione...</option>
+                            {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Banco Logins</label>
+                          <select className="form-select form-select-sm" value={setupLoginsDb} onChange={e=>{ setSetupLoginsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                            <option value="">Selecione...</option>
+                            {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-12">
+                          <label className="form-label" style={{marginBottom:4}}>Banco EMS</label>
+                          <select className="form-select form-select-sm" value={setupEmsDb} onChange={e=>{ setSetupEmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                            <option value="">Selecione...</option>
+                            {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Banco HWR</label>
+                          <select className="form-select form-select-sm" value={setupHwrDb} onChange={e=>{ setSetupHwrDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                            <option value="">Selecione...</option>
+                            {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Banco CLAV</label>
+                          <select className="form-select form-select-sm" value={setupClavDb} onChange={e=>{ setSetupClavDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
+                            <option value="">Selecione...</option>
+                            {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-12">
+                          <div className="alert alert-secondary py-2 mb-0" style={{fontSize:12}}>
+                            Primeiro usuário: será SuperAdmin. Por padrão usa RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no servidor. Se não estiverem definidos, informe abaixo.
+                          </div>
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Email inicial</label>
+                          <input className="form-control form-control-sm" value={setupInitialEmail} onChange={e=>setSetupInitialEmail(e.target.value)} disabled={setupLoading} placeholder="email@exemplo.com" />
+                        </div>
+                        <div className="col-12 col-sm-6">
+                          <label className="form-label" style={{marginBottom:4}}>Senha inicial</label>
+                          <input className="form-control form-control-sm" type="password" value={setupInitialPassword} onChange={e=>setSetupInitialPassword(e.target.value)} disabled={setupLoading} placeholder="Senha" />
+                        </div>
+                        <div className="col-12">
+                          <label className="form-label" style={{marginBottom:4}}>Nome</label>
+                          <input className="form-control form-control-sm" value={setupInitialName} onChange={e=>setSetupInitialName(e.target.value)} disabled={setupLoading} placeholder="SUPERADMIN" />
+                        </div>
                       </div>
                     </div>
-                    <div className="col-12 col-md-4">
-                      <label className="form-label">Banco CMS</label>
-                      <select className="form-select" value={setupCmsDb} onChange={e=>{ setSetupCmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
-                        <option value="">Selecione...</option>
-                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
-                      </select>
-                    </div>
-                    <div className="col-12 col-md-4">
-                      <label className="form-label">Banco Logins</label>
-                      <select className="form-select" value={setupLoginsDb} onChange={e=>{ setSetupLoginsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
-                        <option value="">Selecione...</option>
-                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
-                      </select>
-                    </div>
-                    <div className="col-12 col-md-4">
-                      <label className="form-label">Banco EMS (opcional)</label>
-                      <select className="form-select" value={setupEmsDb} onChange={e=>{ setSetupEmsDb(e.target.value); setSetupTest(null) }} disabled={setupLoading || setupDatabases.length === 0}>
-                        <option value="">(Não configurar agora)</option>
-                        {setupDatabases.map((d)=> <option key={d} value={d}>{d}</option>)}
-                      </select>
-                    </div>
-                    <div className="col-12">
-                      <div className="alert alert-light py-2 mb-0">
-                        <div className="fw-semibold mb-2">Tabelas (informativo)</div>
-                        <div className="row g-2">
-                          <div className="col-12 col-md-4">
-                            <div className="fw-semibold">CMS: {setupCmsDb || '-'}</div>
-                            <div className="small text-muted">{setupCmsTables.length ? `${setupCmsTables.length} tabelas` : 'Sem leitura de tabelas'}</div>
-                            {setupCmsTables.length > 0 && (
+
+                    <div style={{flex:'1 1 520px', minWidth:320}}>
+                      <div className="alert alert-light py-2 mb-2">
+                        <div className="fw-semibold">Tabelas (informativo)</div>
+                        <div className="text-muted" style={{fontSize:12}}>
+                          CMS: {setupCmsTables.length ? `${setupCmsTables.length}` : '0'} • Logins: {setupLoginsTables.length ? `${setupLoginsTables.length}` : '0'} • EMS: {setupEmsTables.length ? `${setupEmsTables.length}` : '0'} • HWR: {setupHwrTables.length ? `${setupHwrTables.length}` : '0'} • CLAV: {setupClavTables.length ? `${setupClavTables.length}` : '0'}
+                        </div>
+                        <div style={{display:'flex', gap:8, flexWrap:'wrap', marginTop:8}}>
+                          <div style={{flex:'1 1 180px', minWidth:180}}>
+                            <div className="fw-semibold" style={{fontSize:12}}>CMS: {setupCmsDb || '-'}</div>
+                            {setupCmsTables.length > 0 ? (
                               <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
                                 {setupCmsTables.map((t)=> <div key={t} className="small">{t}</div>)}
                               </div>
+                            ) : (
+                              <div className="text-muted" style={{fontSize:12}}>Sem leitura de tabelas</div>
                             )}
                           </div>
-                          <div className="col-12 col-md-4">
-                            <div className="fw-semibold">Logins: {setupLoginsDb || '-'}</div>
-                            <div className="small text-muted">{setupLoginsTables.length ? `${setupLoginsTables.length} tabelas` : 'Sem leitura de tabelas'}</div>
-                            {setupLoginsTables.length > 0 && (
+                          <div style={{flex:'1 1 180px', minWidth:180}}>
+                            <div className="fw-semibold" style={{fontSize:12}}>Logins: {setupLoginsDb || '-'}</div>
+                            {setupLoginsTables.length > 0 ? (
                               <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
                                 {setupLoginsTables.map((t)=> <div key={t} className="small">{t}</div>)}
                               </div>
+                            ) : (
+                              <div className="text-muted" style={{fontSize:12}}>Sem leitura de tabelas</div>
                             )}
                           </div>
-                          <div className="col-12 col-md-4">
-                            <div className="fw-semibold">EMS: {setupEmsDb || '(não configurado)'}</div>
-                            <div className="small text-muted">{setupEmsDb ? (setupEmsTables.length ? `${setupEmsTables.length} tabelas` : 'Sem leitura de tabelas') : 'Opcional'}</div>
-                            {setupEmsTables.length > 0 && (
+                          <div style={{flex:'1 1 180px', minWidth:180}}>
+                            <div className="fw-semibold" style={{fontSize:12}}>EMS: {setupEmsDb || '-'}</div>
+                            {setupEmsTables.length > 0 ? (
                               <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
                                 {setupEmsTables.map((t)=> <div key={t} className="small">{t}</div>)}
                               </div>
+                            ) : (
+                              <div className="text-muted" style={{fontSize:12}}>Sem leitura de tabelas</div>
+                            )}
+                          </div>
+                          <div style={{flex:'1 1 180px', minWidth:180}}>
+                            <div className="fw-semibold" style={{fontSize:12}}>HWR: {setupHwrDb || '-'}</div>
+                            {setupHwrTables.length > 0 ? (
+                              <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
+                                {setupHwrTables.map((t)=> <div key={t} className="small">{t}</div>)}
+                              </div>
+                            ) : (
+                              <div className="text-muted" style={{fontSize:12}}>Sem leitura de tabelas</div>
+                            )}
+                          </div>
+                          <div style={{flex:'1 1 180px', minWidth:180}}>
+                            <div className="fw-semibold" style={{fontSize:12}}>CLAV: {setupClavDb || '-'}</div>
+                            {setupClavTables.length > 0 ? (
+                              <div className="border rounded p-2 mt-1" style={{ maxHeight: 140, overflow: 'auto' }}>
+                                {setupClavTables.map((t)=> <div key={t} className="small">{t}</div>)}
+                              </div>
+                            ) : (
+                              <div className="text-muted" style={{fontSize:12}}>Sem leitura de tabelas</div>
                             )}
                           </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="col-12">
-                      <div className="alert alert-secondary py-2 mb-0">
-                        Primeiro usuário: será SuperAdmin. Por padrão usa RF_SUPERADMIN_EMAIL e RF_SUPERADMIN_PASSWORD no servidor. Se não estiverem definidos, informe abaixo.
-                      </div>
-                    </div>
-                    <div className="col-12 col-md-5">
-                      <label className="form-label">Email inicial</label>
-                      <input className="form-control" value={setupInitialEmail} onChange={e=>setSetupInitialEmail(e.target.value)} disabled={setupLoading} placeholder="email@exemplo.com" />
-                    </div>
-                    <div className="col-12 col-md-4">
-                      <label className="form-label">Senha inicial</label>
-                      <input className="form-control" type="password" value={setupInitialPassword} onChange={e=>setSetupInitialPassword(e.target.value)} disabled={setupLoading} placeholder="Senha" />
-                    </div>
-                    <div className="col-12 col-md-3">
-                      <label className="form-label">Nome</label>
-                      <input className="form-control" value={setupInitialName} onChange={e=>setSetupInitialName(e.target.value)} disabled={setupLoading} placeholder="SUPERADMIN" />
+
+                      {setupTest && (
+                        <div className="alert alert-light py-2 mb-2">
+                          <div style={{fontSize:12}}>Teste CMS: {setupTest.cms || '-'}</div>
+                          <div style={{fontSize:12}}>Teste Logins: {setupTest.logins || '-'}</div>
+                          <div style={{fontSize:12}}>Teste EMS: {setupTest.ems || '-'}</div>
+                          <div style={{fontSize:12}}>Teste HWR: {setupTest.hwr || '-'}</div>
+                          <div style={{fontSize:12}}>Teste CLAV: {setupTest.clav || '-'}</div>
+                        </div>
+                      )}
+                      {setupError && <div className="alert alert-danger py-2 mb-0">{setupError}</div>}
                     </div>
                   </div>
-                  {setupTest && (
-                    <div className="alert alert-light py-2 mt-3 mb-0">
-                      <div>Teste CMS: {setupTest.cms || '-'}</div>
-                      <div>Teste Logins: {setupTest.logins || '-'}</div>
-                      <div>Teste EMS: {setupEmsDb ? (setupTest.ems || '-') : '(não configurado)'}</div>
-                    </div>
-                  )}
-                  {setupError && <div className="alert alert-danger py-2 mt-3 mb-0">{setupError}</div>}
                 </div>
                 <div className="modal-footer">
                   <button type="button" className="btn btn-outline-secondary" onClick={()=> setSetupModalOpen(false)} disabled={setupLoading}>Cancelar</button>
