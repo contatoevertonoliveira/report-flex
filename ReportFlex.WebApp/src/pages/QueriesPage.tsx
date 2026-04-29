@@ -416,6 +416,10 @@ export function QueriesPage(){
   const [doorSelectedSources, setDoorSelectedSources] = useState<string[]>([])
   const [doorPickSource, setDoorPickSource] = useState<string>('')
   const [doorSourceFilter, setDoorSourceFilter] = useState<string>('')
+  const [doorPickerOpen, setDoorPickerOpen] = useState(false)
+  const [doorPickerAll, setDoorPickerAll] = useState(true)
+  const [doorPickerFilter, setDoorPickerFilter] = useState('')
+  const [doorPickerSelected, setDoorPickerSelected] = useState<string[]>([])
   const [doorName, setDoorName] = useState('')
   const [doorSite, setDoorSite] = useState('')
 
@@ -1038,6 +1042,28 @@ export function QueriesPage(){
     return Array.from(new Set(keys))
   }, [filteredDoorSourcesGrouped])
 
+  const doorPickerFilteredGroups = useMemo(() => {
+    const tokens = normalizeDoorSearch(doorPickerFilter || '').split(' ').filter(Boolean)
+    if (tokens.length === 0) return doorSourcesGrouped
+    const groups = []
+    for (const g of doorSourcesGrouped) {
+      const items = g.items.filter(it => {
+        const hay = normalizeDoorSearch(`${it.label} ${it.key} ${doorShortKey(it.key)}`)
+        return tokens.every(t => hay.includes(t))
+      })
+      if (items.length) groups.push({ label: g.label, items })
+    }
+    return groups
+  }, [doorPickerFilter, doorSourcesGrouped])
+
+  const doorPickerFilteredKeys = useMemo(() => {
+    const keys: string[] = []
+    for (const g of doorPickerFilteredGroups) {
+      for (const it of g.items) keys.push(it.key)
+    }
+    return Array.from(new Set(keys))
+  }, [doorPickerFilteredGroups])
+
   function resetData(){
     setData([])
     setError(null)
@@ -1071,6 +1097,26 @@ export function QueriesPage(){
     setSearchTerm('')
     setSearchColumn('*')
     setCurrentPage(1)
+  }
+
+  function openDoorPicker(){
+    setDoorPickerAll(doorAllSources)
+    setDoorPickerSelected(doorAllSources ? [] : (doorSelectedSources || []))
+    setDoorPickerFilter('')
+    setDoorPickerOpen(true)
+  }
+
+  function confirmDoorPicker(){
+    setDoorAllSources(doorPickerAll)
+    if (doorPickerAll){
+      setDoorSelectedSources([])
+      setDoorPickSource('')
+    } else {
+      setDoorSelectedSources(Array.from(new Set(doorPickerSelected || [])))
+      setDoorPickSource('')
+    }
+    setDoorPickerOpen(false)
+    resetOnFilterChange()
   }
 
   function mapQuickToDataset(k: QuickKind): Dataset{
@@ -1382,8 +1428,9 @@ export function QueriesPage(){
               return rangeIso({ ...filters, start: sRaw, end: eRaw })
             })()
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
-        const src = doorAllSources ? undefined : doorSelectedSources.join(';')
-        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
+        const effectiveAllSources = doorAllSources || (doorAllData && doorSelectedSources.length === 0)
+        const src = effectiveAllSources ? undefined : doorSelectedSources.join(';')
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
           const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
@@ -1646,8 +1693,9 @@ export function QueriesPage(){
       }else if (mode === 'prontas' && quickKind === 'door-critical'){
         const r0 = doorAllData ? { startIso: '1900-01-01T00:00:00', endIso: '2100-01-01T00:00:00' } : rangeIso(filters)
         if(!r0) return
-        const src = doorAllSources ? undefined : (doorSelectedSources.length ? doorSelectedSources.join(';') : undefined)
-        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !doorAllSources && !src) return
+        const effectiveAllSources = doorAllSources || (doorAllData && doorSelectedSources.length === 0)
+        const src = effectiveAllSources ? undefined : (doorSelectedSources.length ? doorSelectedSources.join(';') : undefined)
+        if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src) return
         const daysRange = Math.abs((new Date(r0.endIso).getTime() - new Date(r0.startIso).getTime()) / 86400000)
         if (doorMode === 'critical'){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
@@ -2358,6 +2406,135 @@ export function QueriesPage(){
   return (
     <section className="queries">
       <h2>Consultas</h2>
+      {doorPickerOpen && (
+        <div className="modal-backdrop show" style={{display:'block', zIndex: 1060}}></div>
+      )}
+      {doorPickerOpen && (
+        <div className="modal show" style={{display:'block', zIndex: 1070}}>
+          <div className="modal-dialog modal-dialog-centered modal-lg">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Selecionar Portas</h5>
+                <button type="button" className="btn-close" onClick={() => setDoorPickerOpen(false)}></button>
+              </div>
+              <div className="modal-body">
+                {doorMode === 'general-by-site' ? (
+                  <div className="text-muted">
+                    Nesta opção o filtro é pelo texto do Acesso (DC), não por lista de portas (TAG).
+                  </div>
+                ) : (
+                  <>
+                    <div className="d-flex align-items-center justify-content-between mb-2" style={{gap:12}}>
+                      <div className="form-check form-switch d-flex align-items-center gap-2" style={{paddingLeft:0}}>
+                        <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorPickerAll} onChange={e => {
+                          const v = e.target.checked
+                          setDoorPickerAll(v)
+                          if (v) setDoorPickerSelected([])
+                        }} />
+                        <label className="form-check-label">Todas as portas</label>
+                      </div>
+                      <span className="badge text-bg-secondary" style={{fontSize:11}}>
+                        {doorPickerFilter.trim() ? `Portas: ${doorPickerFilteredKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
+                      </span>
+                    </div>
+                    {!doorPickerAll && (
+                      <div className="input-group mb-2">
+                        <span className="input-group-text"><i className="bi bi-search" /></span>
+                        <input className="form-control" placeholder="Buscar porta..." value={doorPickerFilter} onChange={e => setDoorPickerFilter(e.target.value)} />
+                        <button
+                          className="btn btn-outline-secondary"
+                          type="button"
+                          disabled={!doorPickerFilter.trim() || doorPickerFilteredKeys.length === 0}
+                          onClick={() => {
+                            if (!doorPickerFilter.trim()) return
+                            setDoorPickerSelected(doorPickerFilteredKeys)
+                          }}
+                          title="Seleciona todas as portas visíveis no filtro"
+                        >
+                          Selecionar filtradas
+                        </button>
+                        {doorPickerFilter && (
+                          <button className="btn btn-outline-secondary" type="button" onClick={() => setDoorPickerFilter('')}>Limpar</button>
+                        )}
+                        {doorPickerSelected.length > 0 && (
+                          <button className="btn btn-outline-secondary" type="button" onClick={() => setDoorPickerSelected([])}>
+                            Limpar seleção
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {!doorPickerAll && (
+                      <div className="row g-3">
+                        <div className="col-12 col-lg-7">
+                          <div style={{maxHeight:'48vh', overflow:'auto', border:'1px solid #e5e7eb', borderRadius:8}}>
+                            {doorPickerFilteredGroups.length === 0 && (
+                              <div className="text-muted p-3">Nenhuma porta encontrada</div>
+                            )}
+                            {doorPickerFilteredGroups.map(g => (
+                              <div key={g.label} style={{padding:'10px 12px'}}>
+                                <div style={{fontSize:12, fontWeight:600, color:'#374151', marginBottom:8}}>{g.label}</div>
+                                <div className="d-flex flex-wrap gap-1">
+                                  {g.items.map(it => {
+                                    const selected = doorPickerSelected.includes(it.key)
+                                    return (
+                                      <button
+                                        key={it.key}
+                                        type="button"
+                                        className={selected ? "btn btn-sm btn-primary" : "btn btn-sm btn-outline-secondary"}
+                                        title={it.label}
+                                        onClick={() => {
+                                          setDoorPickerSelected(prev => prev.includes(it.key) ? prev.filter(x => x !== it.key) : [...prev, it.key])
+                                        }}
+                                      >
+                                        {doorShortKey(it.key)}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="col-12 col-lg-5">
+                          <div style={{minHeight:120, border:'1px solid #e5e7eb', borderRadius:8, padding:12}}>
+                            {doorPickerSelected.length === 0 ? (
+                              <div className="text-muted" style={{fontSize:12}}>Nenhuma porta selecionada</div>
+                            ) : (
+                              <div className="d-flex flex-wrap gap-1">
+                                {doorPickerSelected.map(k => (
+                                  <span
+                                    key={k}
+                                    className="badge rounded-pill text-bg-secondary"
+                                    title={doorSourceLabelByKey.get(k) || k}
+                                    style={{cursor:'pointer'}}
+                                    onClick={() => setDoorPickerSelected(prev => prev.filter(x => x !== k))}
+                                  >
+                                    {doorShortKey(k)}
+                                    <span style={{marginLeft:6}}>×</span>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-muted mt-2" style={{fontSize:12}}>
+                            Clique em uma porta para adicionar/remover.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-outline-secondary" onClick={() => setDoorPickerOpen(false)}>Cancelar</button>
+                <button className="btn btn-primary" onClick={confirmDoorPicker} disabled={doorMode !== 'general-by-site' && !doorPickerAll && doorPickerSelected.length === 0}>
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {exportModal && (
         !exportMinimized ? <div className="modal-backdrop show" style={{display:'block'}}></div> : null
       )}
@@ -2761,16 +2938,22 @@ export function QueriesPage(){
                   <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> {
                     const v = e.target.checked
                     setDoorAllData(v)
-                    if (v && (doorMode === 'general' || doorMode === 'general-by-name')) setDoorAllSources(false)
+                    if (v && doorSelectedSources.length === 0) setDoorAllSources(true)
                   }} />
                   <label className="form-check-label">Todos os dados</label>
                 </div>
                 <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:220, paddingLeft:0, flexShrink:0, marginLeft:8}}>
                   <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
                   <label className="form-check-label">Todas as portas</label>
-                  <span className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"} style={{fontSize:11}}>
+                  <button
+                    type="button"
+                    className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"}
+                    style={{fontSize:11, cursor: (doorMode === 'general-by-site' || doorSourcesLoading) ? 'default' : 'pointer', border: 'none'}}
+                    onClick={() => { if (doorMode !== 'general-by-site' && !doorSourcesLoading) openDoorPicker() }}
+                    title={doorMode === 'general-by-site' ? 'Filtro por lista de portas não disponível nesta opção' : 'Selecionar portas'}
+                  >
                     {doorSourcesLoading ? "Carregando..." : doorSourceFilter.trim() ? `Portas: ${filteredDoorKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
-                  </span>
+                  </button>
                 </div>
                 {doorAllData && doorAllSources && (doorMode === 'general' || doorMode === 'general-by-name') && (
                   <div className="text-muted" style={{fontSize:12, marginLeft:8}}>

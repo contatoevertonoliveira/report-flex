@@ -3505,7 +3505,7 @@ app.MapGet("/api/reports/door-critical", async (string start, string end, string
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        using var cn = new SqlConnection(GetConn("EMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         // call the proc; it already contains the complicated union logic
@@ -3613,7 +3613,7 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
     // exports same data in csv/xlsx/pdf just like the other report endpoints
-    using var cn = new SqlConnection(GetConn("EMS"));
+    using var cn = new SqlConnection(GetConn("HWR"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
@@ -4418,7 +4418,7 @@ app.MapGet("/api/reports/door-sources", async (int? daysBack) =>
     try
     {
         var days = daysBack ?? 3650;
-        var list = await GetDoorTagSourcesByDaysAsync(GetConn("EMS"), days);
+        var list = await GetDoorTagSourcesByDaysAsync(GetConn("HWR"), days);
         return Results.Ok(new
         {
             success = true,
@@ -4454,7 +4454,7 @@ app.MapGet("/api/reports/door-critical/sources", async (int? daysBack, string? s
             endDt = DateTime.Now;
             startDt = endDt.AddDays(-days);
         }
-        using var cn = new SqlConnection(GetConn("EMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
@@ -4666,7 +4666,7 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
                 ? "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList"
                 : "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
 
-            using var cn = new SqlConnection(GetConn("EMS"));
+            using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync(job.Cts!.Token);
             using var cmd = cn.CreateCommand();
             cmd.CommandText = proc;
@@ -4739,7 +4739,7 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         var endDt = ParseDate(end);
         if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
             return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
-        using var cn = new SqlConnection(GetConn("EMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
         var explicitSrc = sourceList;
@@ -4747,7 +4747,7 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         var src = explicitSrc;
         if (string.IsNullOrWhiteSpace(src))
         {
-            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
             src = BuildSourceListCsv(tags.Select(x => x.Key));
         }
         var (rows, err) = ExecDoorProc(cn, proc, new[]
@@ -4775,7 +4775,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    using var cn = new SqlConnection(GetConn("EMS"));
+    using var cn = new SqlConnection(GetConn("HWR"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
     var explicitSrc = sourceList;
@@ -4783,7 +4783,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     var src = explicitSrc;
     if (string.IsNullOrWhiteSpace(src))
     {
-        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
         src = BuildSourceListCsv(tags.Select(x => x.Key));
     }
     var (rows, err) = ExecDoorProc(cn, proc, new[]
@@ -4865,7 +4865,7 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
         var endDt = ParseDate(end);
         if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
             return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
-        using var cn = new SqlConnection(GetConn("EMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
         var explicitSrc = sourceList;
@@ -4873,7 +4873,7 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
         var src = explicitSrc;
         if (string.IsNullOrWhiteSpace(src))
         {
-            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
             src = BuildSourceListCsv(tags.Select(x => x.Key));
         }
         var (rows, err) = ExecDoorProc(cn, proc, new[]
@@ -4902,7 +4902,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    using var cn = new SqlConnection(GetConn("EMS"));
+    using var cn = new SqlConnection(GetConn("HWR"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
     var explicitSrc = sourceList;
@@ -4910,7 +4910,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     var src = explicitSrc;
     if (string.IsNullOrWhiteSpace(src))
     {
-        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("EMS"), startDt, endDt);
+        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
         src = BuildSourceListCsv(tags.Select(x => x.Key));
     }
     var (rows, err) = ExecDoorProc(cn, proc, new[]
@@ -4987,7 +4987,7 @@ app.MapGet("/api/reports/door-general/by-site", async (string start, string end,
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        using var cn = new SqlConnection(GetConn("EMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
         var (rows, err) = ExecDoorProc(cn, proc, new[]
@@ -5015,7 +5015,7 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    using var cn = new SqlConnection(GetConn("EMS"));
+    using var cn = new SqlConnection(GetConn("HWR"));
     await cn.OpenAsync();
     var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
     var (rows, err) = ExecDoorProc(cn, proc, new[]
