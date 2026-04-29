@@ -17,6 +17,15 @@ function clearSessionCaches(){
   try{
     localStorage.removeItem('rf_queries_cache_v1')
   }catch{}
+  try{ localStorage.removeItem('rf_screens_config') }catch{}
+  try{ localStorage.removeItem('rf_screens_config_owner') }catch{}
+  try{ localStorage.removeItem('rf_screens_config_ts') }catch{}
+  try{ localStorage.removeItem('rf_queries_cfg') }catch{}
+  try{ localStorage.removeItem('rf_queries_cfg_owner') }catch{}
+  try{ localStorage.removeItem('rf_queries_cfg_ts') }catch{}
+  try{ localStorage.removeItem('rf_report_options') }catch{}
+  try{ localStorage.removeItem('rf_report_options_owner') }catch{}
+  try{ localStorage.removeItem('rf_report_options_ts') }catch{}
 }
 
 export function setToken(t: string){

@@ -98,6 +98,9 @@ export function RequireAdminOrSuper({ children }: { children: React.ReactNode })
 
 function getScreensCfg(): Record<string, boolean> {
   try{
+    const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+    const rawOwner = localStorage.getItem('rf_screens_config_owner')
+    if (rawOwner && rawOwner !== owner) return {}
     const raw = localStorage.getItem('rf_screens_config')
     const obj = raw ? JSON.parse(raw) : null
     if (!obj || typeof obj !== 'object') return {}

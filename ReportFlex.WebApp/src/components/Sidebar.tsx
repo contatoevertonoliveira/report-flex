@@ -25,6 +25,9 @@ export function Sidebar({ expanded, onToggle }: { expanded: boolean, onToggle: (
   const [confirmSwitchUserOpen, setConfirmSwitchUserOpen] = React.useState(false)
   const screensCfg = React.useMemo(() => {
     try{
+      const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+      const rawOwner = localStorage.getItem('rf_screens_config_owner')
+      if (rawOwner && rawOwner !== owner) return {}
       const raw = localStorage.getItem('rf_screens_config')
       const obj = raw ? JSON.parse(raw) : null
       return obj && typeof obj === 'object' ? obj : {}

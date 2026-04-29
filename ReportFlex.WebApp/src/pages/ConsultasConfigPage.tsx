@@ -11,9 +11,26 @@ export function ConsultasConfigPage() {
   const [loading, setLoading] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   React.useEffect(() => {
+    try{
+      const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+      const raw = localStorage.getItem('rf_queries_cfg')
+      const rawOwner = localStorage.getItem('rf_queries_cfg_owner')
+      if (raw && rawOwner === owner) {
+        const cached: any = JSON.parse(raw)
+        if (cached && typeof cached === 'object') setCfg(cached || {})
+      }
+    }catch{}
     setLoading(true)
     api.getQueriesConfig()
-      .then(data => setCfg(data || {}))
+      .then(data => {
+        setCfg(data || {})
+        try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          localStorage.setItem('rf_queries_cfg', JSON.stringify(data || {}))
+          localStorage.setItem('rf_queries_cfg_owner', owner)
+          localStorage.setItem('rf_queries_cfg_ts', String(Date.now()))
+        }catch{}
+      })
       .catch(err => toast('error', err.message || String(err)))
       .finally(()=> setLoading(false))
   }, [])

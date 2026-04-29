@@ -544,6 +544,26 @@ export function QueriesPage(){
 
   React.useEffect(() => {
     let mounted = true
+    try{
+      const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+      const raw = localStorage.getItem('rf_report_options')
+      const rawOwner = localStorage.getItem('rf_report_options_owner')
+      if (raw && rawOwner === owner) {
+        const opts: any = JSON.parse(raw)
+        setReportOptions({
+          csv: !!opts.csv,
+          xlsx: !!opts.xlsx,
+          excel: !!opts.excel,
+          pdf: !!opts.pdf,
+          txt: !!opts.txt,
+          word: !!opts.word,
+          customQueries: !!opts.customQueries
+        })
+        if (opts.customQueries === false) {
+          setMode('prontas')
+        }
+      }
+    }catch{}
     ;(async () => {
       try{
         const opts = await api.getReportOptions()
@@ -557,6 +577,12 @@ export function QueriesPage(){
           word: !!opts.word,
           customQueries: !!opts.customQueries
         })
+        try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          localStorage.setItem('rf_report_options', JSON.stringify(opts || {}))
+          localStorage.setItem('rf_report_options_owner', owner)
+          localStorage.setItem('rf_report_options_ts', String(Date.now()))
+        }catch{}
         if (opts.customQueries === false) {
           setMode('prontas')
         }
@@ -565,8 +591,25 @@ export function QueriesPage(){
     return () => { mounted = false }
   }, [])
   React.useEffect(() => {
+    try{
+      const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+      const raw = localStorage.getItem('rf_queries_cfg')
+      const rawOwner = localStorage.getItem('rf_queries_cfg_owner')
+      if (raw && rawOwner === owner) {
+        const cfg: any = JSON.parse(raw)
+        if (cfg && typeof cfg === 'object') setQueriesCfg(cfg || {})
+      }
+    }catch{}
     api.getQueriesConfig()
-      .then(c => setQueriesCfg(c || {}))
+      .then(c => {
+        setQueriesCfg(c || {})
+        try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          localStorage.setItem('rf_queries_cfg', JSON.stringify(c || {}))
+          localStorage.setItem('rf_queries_cfg_owner', owner)
+          localStorage.setItem('rf_queries_cfg_ts', String(Date.now()))
+        }catch{}
+      })
       .catch(()=> setQueriesCfg({}))
   }, [])
 

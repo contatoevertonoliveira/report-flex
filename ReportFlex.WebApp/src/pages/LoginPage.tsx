@@ -170,6 +170,35 @@ export function LoginPage() {
         }
         localStorage.setItem('rf_last_activity', Date.now().toString())
         try{
+          const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
+          const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+          const prefetch = Promise.allSettled([
+            api.getScreensConfig().then(cfg => {
+              if (cfg && typeof cfg === 'object') {
+                localStorage.setItem('rf_screens_config', JSON.stringify(cfg))
+                localStorage.setItem('rf_screens_config_owner', owner)
+                localStorage.setItem('rf_screens_config_ts', String(Date.now()))
+                window.dispatchEvent(new Event('rf:screens-config'))
+              }
+            }),
+            api.getQueriesConfig().then(cfg => {
+              if (cfg && typeof cfg === 'object') {
+                localStorage.setItem('rf_queries_cfg', JSON.stringify(cfg))
+                localStorage.setItem('rf_queries_cfg_owner', owner)
+                localStorage.setItem('rf_queries_cfg_ts', String(Date.now()))
+              }
+            }),
+            api.getReportOptions().then(opts => {
+              if (opts && typeof opts === 'object') {
+                localStorage.setItem('rf_report_options', JSON.stringify(opts))
+                localStorage.setItem('rf_report_options_owner', owner)
+                localStorage.setItem('rf_report_options_ts', String(Date.now()))
+              }
+            })
+          ])
+          await Promise.race([prefetch, wait(600)])
+        }catch{}
+        try{
           const u = localStorage.getItem('rf_sql_user') || ''
           const p = localStorage.getItem('rf_sql_pwd') || ''
           if (u && p){
