@@ -23,3 +23,7 @@ test_*.sql
 test_*.ps1
 SQL/_mapping/
 SQL/hwreportsview/
+
+_publish/
+_deploy/
+img/

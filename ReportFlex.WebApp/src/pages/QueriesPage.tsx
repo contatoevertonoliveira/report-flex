@@ -1251,16 +1251,23 @@ export function QueriesPage(){
           const r = await api.employeesSearch({ matricula, empresa, page, pageSize: ps, sort: 'CardNumber', dir: 'asc' })
           return r
         })
-        setData(collected.map((x:any) => ({
-          CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
-          Name: x?.Name ?? x?.name ?? null,
-          Identifier: x?.Identifier ?? x?.identifier ?? null,
-          StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
-          Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
-          Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
-          UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
-          Empresa: x?.Empresa ?? x?.empresa ?? null
-        })))
+        setData(collected.map((x:any) => {
+          const first = (x?.Name ?? x?.name ?? '') as string
+          const surname = (x?.Surname ?? x?.surname ?? '') as string
+          const full =
+            (x?.FullName ?? x?.fullName ?? x?.NameFull ?? x?.nameFull ?? x?.NomeCompleto ?? x?.nomeCompleto ?? null) as (string | null)
+          const name = (full ?? [first, surname].filter(Boolean).join(' ').trim()) || null
+          return {
+            CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
+            Name: name,
+            Identifier: x?.Identifier ?? x?.identifier ?? null,
+            StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
+            Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
+            Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
+            UltimoAcesso: formatBrDateTime(x?.UltimoAcesso ?? x?.ultimoAcesso ?? null),
+            Empresa: x?.Empresa ?? x?.empresa ?? null
+          }
+        }))
       }else if (quickKind === 'external'){
         const { matricula, empresa } = filters as any
         const collected = await collectUpTo(maxPreview, async (page, ps) => {
@@ -1432,12 +1439,14 @@ export function QueriesPage(){
         const src = effectiveAllSources ? undefined : doorSelectedSources.join(';')
         if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
-          const res = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src })
-          const list = (res as any)?.data ?? res
-          const rows = Array.isArray(list) ? list : []
-          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          const collected = await collectUpTo(maxPreview, async (page, ps) => {
+            const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
+            const items = (r as any)?.items ?? []
+            return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
+          })
+          const mapped = collected.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
           setResultTotal(mapped.length)
-          setData(mapped.slice(0, maxPreview))
+          setData(mapped)
         }else if (doorMode === 'general'){
           const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
@@ -2326,7 +2335,24 @@ export function QueriesPage(){
   }, [mode, quickColumns, datasetColumns])
 
   const filteredData = useMemo(()=>{
-    if (mode === 'prontas' && quickKind === 'employees') return data
+    if (mode === 'prontas' && quickKind === 'employees'){
+      const list = Array.isArray(data) ? [...data] : []
+      list.sort((a: any, b: any) => {
+        const aCard = (a?.CardNumber ?? a?.cardNumber ?? '') as any
+        const bCard = (b?.CardNumber ?? b?.cardNumber ?? '') as any
+        const aHas = aCard != null && String(aCard).trim() !== ''
+        const bHas = bCard != null && String(bCard).trim() !== ''
+        if (aHas !== bHas) return aHas ? -1 : 1
+        const aS = aHas ? String(aCard).trim() : ''
+        const bS = bHas ? String(bCard).trim() : ''
+        const c = aS.localeCompare(bS, 'pt-BR', { numeric: true, sensitivity: 'base' })
+        if (c !== 0) return c
+        const aN = String(a?.Name ?? a?.name ?? '').trim()
+        const bN = String(b?.Name ?? b?.name ?? '').trim()
+        return aN.localeCompare(bN, 'pt-BR', { sensitivity: 'base' })
+      })
+      return list
+    }
     const term = (searchTerm || '').toLowerCase().trim()
     if (!term) return data
     const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]

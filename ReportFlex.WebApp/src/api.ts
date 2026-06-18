@@ -5,10 +5,14 @@ const API_BASE = (() => {
     if (override && /^https?:\/\//i.test(override)) return override.replace(/\/+$/,'')
   }catch{}
   try{
-    const origin = window.location.origin || ''
-    if (origin.includes('localhost:5001') || origin.includes('127.0.0.1:5001')) return ''
+    const loc = window.location
+    const host = (loc.hostname || '').toLowerCase()
+    const port = String(loc.port || '')
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1'
+    const devPorts = new Set(['5173', '4173', '3000'])
+    if (isLocalHost && devPorts.has(port)) return 'http://localhost:5001'
   }catch{}
-  return 'http://localhost:5001'
+  return ''
 })()
 function clearSessionCaches(){
   try{
@@ -201,7 +205,7 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/transit/aggregated?' + qs, { headers: headers() }))
   },
-  reportsDoorCritical: async (p: { start: string, end: string, sourceList?: string }) => {
+  reportsDoorCritical: async (p: { start: string, end: string, sourceList?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
   },
