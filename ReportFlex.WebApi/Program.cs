@@ -3643,46 +3643,76 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
-    // exports same data in csv/xlsx/pdf just like the other report endpoints
-    using var cn = new SqlConnection(GetConn("HWR"));
-    await cn.OpenAsync();
-    using var cmd = cn.CreateCommand();
-    cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
-    cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
-    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
-    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+    var cacheKey = DoorCriticalCacheKey(startDt, endDt, null);
 
+    // Try cache first
     List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
-    try
+    lock (doorCriticalCacheLock)
     {
-        using var r = await cmd.ExecuteReaderAsync();
-        rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
-        while (await r.ReadAsync())
+        if (doorCriticalCache.TryGetValue(cacheKey, out var cached) && cached != null && cached.Count > 0)
         {
-            rows.Add((
-                r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
-                r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
-                r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : r.GetString(3),
-                r.IsDBNull(4) ? null : r.GetString(4),
-                r.IsDBNull(5) ? null : r.GetString(5),
-                r.IsDBNull(6) ? null : r.GetString(6),
-                r.IsDBNull(7) ? null : r.GetString(7),
-                r.IsDBNull(8) ? null : r.GetString(8),
-                r.IsDBNull(9) ? null : r.GetString(9),
-                r.IsDBNull(10) ? null : r.GetString(10),
-                r.IsDBNull(11) ? null : r.GetString(11),
-                r.IsDBNull(12) ? null : r.GetString(12)
-            ));
+            rows = cached.Select(x => (
+                EventID: (long)x.EventID,
+                TimeOrder: (DateTime?)x.TimeOrder,
+                DataHora: (string?)x.DataHora,
+                TAG: (string?)x.TAG,
+                Acesso: (string?)x.Acesso,
+                Evento: (string?)x.Evento,
+                NomeCompleto: (string?)x.NomeCompleto,
+                DocumentoMatricula: (string?)x.DocumentoMatricula,
+                Cartao: (string?)x.Cartao,
+                Tipo: (string?)x.Tipo,
+                Empresa: (string?)x.Empresa,
+                StatusAcesso: (string?)x.StatusAcesso,
+                DetalheStatusAcesso: (string?)x.DetalheStatusAcesso
+            )).ToList();
+        }
+        else
+        {
+            rows = null!;
         }
     }
-    catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+
+    // Fallback: run SP if no cache
+    if (rows == null)
     {
-        using var cn2 = new SqlConnection(GetConn("CMS"));
-        await cn2.OpenAsync();
-        using var cmd2 = cn2.CreateCommand();
-        cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
-        cmd2.CommandText = @"
+        using var cn = new SqlConnection(GetConn("HWR"));
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
+        cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
+        cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+        cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+        try
+        {
+            using var r = await cmd.ExecuteReaderAsync();
+            rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
+            while (await r.ReadAsync())
+            {
+                rows.Add((
+                    r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+                    r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                    r.IsDBNull(2) ? null : r.GetString(2),
+                    r.IsDBNull(3) ? null : r.GetString(3),
+                    r.IsDBNull(4) ? null : r.GetString(4),
+                    r.IsDBNull(5) ? null : r.GetString(5),
+                    r.IsDBNull(6) ? null : r.GetString(6),
+                    r.IsDBNull(7) ? null : r.GetString(7),
+                    r.IsDBNull(8) ? null : r.GetString(8),
+                    r.IsDBNull(9) ? null : r.GetString(9),
+                    r.IsDBNull(10) ? null : r.GetString(10),
+                    r.IsDBNull(11) ? null : r.GetString(11),
+                    r.IsDBNull(12) ? null : r.GetString(12)
+                ));
+            }
+        }
+        catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+        {
+            using var cn2 = new SqlConnection(GetConn("CMS"));
+            await cn2.OpenAsync();
+            using var cmd2 = cn2.CreateCommand();
+            cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
+            cmd2.CommandText = @"
 SELECT
     ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
     t.TRANSIT_DATE AS TimeOrder,
@@ -3706,27 +3736,28 @@ LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 ";
-        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
-        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
-        using var r2 = await cmd2.ExecuteReaderAsync();
-        rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
-        while (await r2.ReadAsync())
-        {
-            rows.Add((
-                r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
-                r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
-                r2.IsDBNull(2) ? null : r2.GetString(2),
-                r2.IsDBNull(3) ? null : r2.GetString(3),
-                r2.IsDBNull(4) ? null : r2.GetString(4),
-                r2.IsDBNull(5) ? null : r2.GetString(5),
-                r2.IsDBNull(6) ? null : r2.GetString(6),
-                r2.IsDBNull(7) ? null : r2.GetString(7),
-                r2.IsDBNull(8) ? null : r2.GetString(8),
-                r2.IsDBNull(9) ? null : r2.GetString(9),
-                r2.IsDBNull(10) ? null : r2.GetString(10),
-                r2.IsDBNull(11) ? null : r2.GetString(11),
-                r2.IsDBNull(12) ? null : r2.GetString(12)
-            ));
+            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+            using var r2 = await cmd2.ExecuteReaderAsync();
+            rows = new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>();
+            while (await r2.ReadAsync())
+            {
+                rows.Add((
+                    r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
+                    r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
+                    r2.IsDBNull(2) ? null : r2.GetString(2),
+                    r2.IsDBNull(3) ? null : r2.GetString(3),
+                    r2.IsDBNull(4) ? null : r2.GetString(4),
+                    r2.IsDBNull(5) ? null : r2.GetString(5),
+                    r2.IsDBNull(6) ? null : r2.GetString(6),
+                    r2.IsDBNull(7) ? null : r2.GetString(7),
+                    r2.IsDBNull(8) ? null : r2.GetString(8),
+                    r2.IsDBNull(9) ? null : r2.GetString(9),
+                    r2.IsDBNull(10) ? null : r2.GetString(10),
+                    r2.IsDBNull(11) ? null : r2.GetString(11),
+                    r2.IsDBNull(12) ? null : r2.GetString(12)
+                ));
+            }
         }
     }
     // optional in-memory filter by TAG (critical does not accept SourceList)
