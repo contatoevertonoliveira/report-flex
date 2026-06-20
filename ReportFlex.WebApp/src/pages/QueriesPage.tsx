@@ -1478,12 +1478,44 @@ export function QueriesPage(){
             setExportStage('done')
           }
         }else if (doorMode === 'general'){
-          const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
-          const list = (res as any)?.data ?? res
-          const rows = Array.isArray(list) ? list : []
-          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          const { collected, total } = await (async () => {
+            let lastTotal: number | null = null
+            const batch = await collectUpTo(maxPreview, async (page, ps) => {
+              const r = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
+              const items = (r as any)?.items ?? []
+              if (typeof (r as any)?.total === 'number') lastTotal = (r as any).total
+              return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
+            })
+            return { collected: batch, total: lastTotal }
+          })()
+          const mapped = collected.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
           setResultTotal(mapped.length)
-          setData(mapped.slice(0, maxPreview))
+          setData(mapped)
+          // Continue loading remaining pages in background
+          if (total != null && total > maxPreview) {
+            setExportStage('loading-background')
+            setExportProgress(90)
+            const remaining = total - maxPreview
+            const extraPages = Math.ceil(remaining / 200)
+            let allExtra: any[] = []
+            for (let i = 0; i < extraPages; i++) {
+              const pg = Math.floor(maxPreview / 200) + 1 + i
+              try {
+                const r = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src, page: pg, pageSize: 200 })
+                const items = (r as any)?.items ?? []
+                if (Array.isArray(items)) allExtra.push(...items)
+              } catch { break }
+            }
+            if (allExtra.length > 0) {
+              const extraMapped = allExtra.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+              setData(prev => [...prev, ...extraMapped])
+              setResultTotal(total)
+            }
+            setExportStage('done')
+            setExportProgress(100)
+          } else {
+            setExportStage('done')
+          }
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
           const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src })

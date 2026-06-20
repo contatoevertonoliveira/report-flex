@@ -4831,37 +4831,86 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
     return Results.Ok(new { success = true, id = jobId });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general", async (string start, string end, string? sourceList) =>
+// door general cache
+var doorGeneralCache = new Dictionary<string, List<dynamic>>(StringComparer.OrdinalIgnoreCase);
+var doorGeneralCacheLock = new object();
+string DoorGeneralCacheKey(DateTime start, DateTime end, string? sourceList) =>
+    $"{start:O}|{end:O}|{sourceList ?? ""}";
+
+app.MapGet("/api/reports/door-general", async (string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
 {
     try
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
-            return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
-        using var cn = new SqlConnection(GetConn("HWR"));
-        await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
-        var explicitSrc = sourceList;
-        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
-        var src = explicitSrc;
-        if (string.IsNullOrWhiteSpace(src))
+        var offset = (page - 1) * pageSize;
+        var cacheKey = DoorGeneralCacheKey(startDt, endDt, sourceList);
+
+        List<dynamic>? allItems;
+
+        // Check cache for existing data
+        lock (doorGeneralCacheLock)
         {
-            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-            src = BuildSourceListCsv(tags.Select(x => x.Key));
+            if (doorGeneralCache.TryGetValue(cacheKey, out var cached) && cached != null && cached.Count > 0)
+            {
+                allItems = cached;
+            }
+            else
+            {
+                allItems = null;
+            }
         }
-        var (rows, err) = ExecDoorProc(cn, proc, new[]
+
+        // First request: execute SP and cache
+        if (allItems == null)
         {
-            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
-        });
-        if (err != null) return Results.BadRequest(new { success = false, error = err });
-        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
-            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
-            NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
-            StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
-        }) });
+            if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
+                return Results.BadRequest(new { success = false, error = "Período muito grande. Selecione portas (TAG) ou use Exportação (CSV)." });
+
+            using var cn = new SqlConnection(GetConn("HWR"));
+            await cn.OpenAsync();
+            var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
+            var explicitSrc = sourceList;
+            var src = explicitSrc;
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
+                src = BuildSourceListCsv(tags.Select(x => x.Key));
+            }
+            var (rows, err) = ExecDoorProc(cn, proc, new[]
+            {
+                new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+                new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+                new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
+            });
+            if (err != null) return Results.BadRequest(new { success = false, error = err });
+
+            allItems = rows.Select(x => (dynamic)new
+            {
+                EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso,
+                Evento = x.Evento, NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula,
+                Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa, StatusAcesso = x.StatusAcesso,
+                DetalheStatusAcesso = x.DetalheStatusAcesso
+            }).ToList();
+
+            // Cache with 10min TTL
+            lock (doorGeneralCacheLock)
+            {
+                doorGeneralCache[cacheKey] = allItems;
+                _ = Task.Run(async () => { await Task.Delay(TimeSpan.FromMinutes(10)); lock (doorGeneralCacheLock) doorGeneralCache.Remove(cacheKey); });
+            }
+        }
+
+        var total = allItems.Count;
+        var items = allItems.Skip(offset).Take(pageSize).Select(x => new
+        {
+            EventID = (long)x.EventID, TimeOrder = (DateTime?)x.TimeOrder, DataHora = (string?)x.DataHora,
+            TAG = (string?)x.TAG, Acesso = (string?)x.Acesso, Evento = (string?)x.Evento,
+            NomeCompleto = (string?)x.NomeCompleto, DocumentoMatricula = (string?)x.DocumentoMatricula,
+            Cartao = (string?)x.Cartao, Tipo = (string?)x.Tipo, Empresa = (string?)x.Empresa,
+            StatusAcesso = (string?)x.StatusAcesso, DetalheStatusAcesso = (string?)x.DetalheStatusAcesso
+        }).ToList();
+        return Results.Ok(new { success = true, total, count = items.Count, items, page, pageSize });
     }
     catch (Exception ex)
     {
@@ -4875,24 +4924,48 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    using var cn = new SqlConnection(GetConn("HWR"));
-    await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
-    var explicitSrc = sourceList;
-    var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
-    var src = explicitSrc;
-    if (string.IsNullOrWhiteSpace(src))
+    var cacheKey = DoorGeneralCacheKey(startDt, endDt, sourceList);
+
+    List<dynamic>? cachedRows = null;
+    lock (doorGeneralCacheLock)
     {
-        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-        src = BuildSourceListCsv(tags.Select(x => x.Key));
+        if (doorGeneralCache.TryGetValue(cacheKey, out var c) && c != null && c.Count > 0)
+            cachedRows = c;
     }
-    var (rows, err) = ExecDoorProc(cn, proc, new[]
+
+    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
+    if (cachedRows != null)
     {
-        new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
-    });
-    if (err != null) return Results.BadRequest(new { error = err });
+        rows = cachedRows.Select(x => (
+            EventID: (long)x.EventID, TimeOrder: (DateTime?)x.TimeOrder, DataHora: (string?)x.DataHora,
+            TAG: (string?)x.TAG, Acesso: (string?)x.Acesso, Evento: (string?)x.Evento,
+            NomeCompleto: (string?)x.NomeCompleto, DocumentoMatricula: (string?)x.DocumentoMatricula,
+            Cartao: (string?)x.Cartao, Tipo: (string?)x.Tipo, Empresa: (string?)x.Empresa,
+            StatusAcesso: (string?)x.StatusAcesso, DetalheStatusAcesso: (string?)x.DetalheStatusAcesso
+        )).ToList();
+    }
+    else
+    {
+        using var cn = new SqlConnection(GetConn("HWR"));
+        await cn.OpenAsync();
+        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
+        var explicitSrc = sourceList;
+        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
+        var src = explicitSrc;
+        if (string.IsNullOrWhiteSpace(src))
+        {
+            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
+            src = BuildSourceListCsv(tags.Select(x => x.Key));
+        }
+        var (rowsResult, err) = ExecDoorProc(cn, proc, new[]
+        {
+            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
+        });
+        if (err != null) return Results.BadRequest(new { error = err });
+        rows = rowsResult;
+    }
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -4923,7 +4996,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
         var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(src), reportPortrait);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(sourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), reportPortrait);
         var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
@@ -4946,7 +5019,7 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = BuildPortasCriteria(src);
+        var criteria = "Escopo: Eventos Gerais\n" + BuildPortasCriteria(sourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s))));
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }

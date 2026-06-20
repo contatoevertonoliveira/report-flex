@@ -209,7 +209,7 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-critical?' + qs, { headers: headers() }))
   },
-  reportsDoorGeneral: async (p: { start: string, end: string, sourceList?: string }) => {
+  reportsDoorGeneral: async (p: { start: string, end: string, sourceList?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v]) => v !== undefined && v !== null && v !== '').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-general?' + qs, { headers: headers() }))
   },
