@@ -3917,7 +3917,6 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
     var border = "#d1d5db";
     var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
     var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
-    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
     byte[]? leftLogo = null;
     byte[]? rightLogo = clientLogo;
     byte[]? honeywellLogo = null;
@@ -3950,88 +3949,70 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
 
     return Document.Create(container =>
     {
-        if (includeCover)
-        {
-            container.Page(page =>
-            {
-                page.Margin(36);
-                page.Size(coverSize);
-                page.Header().Column(h =>
-                {
-                    h.Item().Row(row =>
-                    {
-                        row.RelativeItem().Text("");
-                        row.ConstantItem(220).AlignRight().Element(e =>
-                        {
-                            if (honeywellLogo != null)
-                            {
-                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
-                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
-                            }
-                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
-                        });
-                    });
-                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
-                });
-                page.Content().AlignMiddle().AlignCenter().Column(col =>
-                {
-                    col.Spacing(10);
-                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
-                    col.Item().PaddingTop(6).Column(info =>
-                    {
-                        info.Spacing(4);
-                        if (!string.IsNullOrWhiteSpace(sub)) info.Item().Text(sub).FontSize(12);
-                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(12);
-                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
-                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
-                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
-                    });
-                });
-                page.Footer().Column(col =>
-                {
-                    col.Item().LineHorizontal(2).LineColor("#E4002B");
-                    col.Item().PaddingTop(6).Row(row =>
-                    {
-                        row.RelativeItem().Text("");
-                        row.RelativeItem().AlignCenter().Row(r =>
-                        {
-                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
-                            r.AutoItem().Element(e =>
-                            {
-                                if (jumperBrand != null)
-                                {
-                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
-                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
-                                }
-                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
-                            });
-                        });
-                        row.RelativeItem().Text("");
-                    });
-                });
-            });
-        }
         container.Page(page =>
         {
             page.Size(reportSize);
             page.Margin(18);
             page.DefaultTextStyle(x => x.FontSize(9));
 
-            page.Content().Table(table =>
+            // Header with logos
+            page.Header().Column(h =>
             {
-                table.ColumnsDefinition(c =>
+                h.Item().Row(row =>
                 {
-                    c.RelativeColumn(1.4f); // Data/Hora
-                    c.RelativeColumn(1.5f); // TAG
-                    c.RelativeColumn(2.0f); // Acesso
-                    c.RelativeColumn(0.6f); // Evento
-                    c.RelativeColumn(2.3f); // Nome Completo
-                    c.RelativeColumn(0.9f); // DOC/Matrícula
-                    c.RelativeColumn(0.7f); // Cartão
-                    c.RelativeColumn(0.8f); // Tipo
-                    c.RelativeColumn(1.6f); // Empresa
-                    c.RelativeColumn(0.7f); // Status
+                    row.ConstantItem(100).AlignLeft().Element(e =>
+                    {
+                        if (leftLogo != null)
+                        {
+                            try { e.Width(90).Height(30).Image(leftLogo, ImageScaling.FitArea); }
+                            catch { }
+                        }
+                    });
+                    row.RelativeItem().AlignRight().Element(e =>
+                    {
+                        if (honeywellLogo != null)
+                        {
+                            try { e.Width(160).Height(30).Image(honeywellLogo, ImageScaling.FitArea); }
+                            catch { }
+                        }
+                    });
                 });
+                h.Item().PaddingTop(4).LineHorizontal(2).LineColor("#E4002B");
+            });
+
+            page.Content().Column(content =>
+            {
+                // Info block at top (instead of a separate cover page)
+                if (includeCover)
+                {
+                    content.Item().PaddingTop(8).Column(info =>
+                    {
+                        info.Spacing(4);
+                        info.Item().Text(title).FontSize(16).SemiBold().FontColor(accent);
+                        if (!string.IsNullOrWhiteSpace(sub)) info.Item().Text(sub).FontSize(11);
+                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(10);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(10);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(9).FontColor("#374151");
+                        info.Item().PaddingBottom(8).Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(9).FontColor("#374151");
+                    });
+                }
+
+                // Data table
+                content.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(1.4f); // Data/Hora
+                        c.RelativeColumn(1.5f); // TAG
+                        c.RelativeColumn(2.0f); // Acesso
+                        c.RelativeColumn(0.6f); // Evento
+                        c.RelativeColumn(2.3f); // Nome Completo
+                        c.RelativeColumn(0.9f); // DOC/Matrícula
+                        c.RelativeColumn(0.7f); // Cartão
+                        c.RelativeColumn(0.8f); // Tipo
+                        c.RelativeColumn(1.6f); // Empresa
+                        c.RelativeColumn(0.7f); // Status
+                    });
 
                 IContainer HeaderCell(IContainer x) => x
                     .Background(headerBg)
@@ -4073,9 +4054,10 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
                     table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
                     table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.StatusDisplay ?? "");
                 }
-            });
+            }); // Table
+        }); // Column / Content
 
-            page.Footer().Column(col =>
+        page.Footer().Column(col =>
             {
                 col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
                 col.Item().PaddingTop(6).Row(row =>
