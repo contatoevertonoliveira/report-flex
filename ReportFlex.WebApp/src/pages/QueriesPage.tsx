@@ -351,7 +351,7 @@ export function QueriesPage(){
   const [exportModal, setExportModal] = useState(false)
   const [exportMinimized, setExportMinimized] = useState(false)
   const [exportMaximized, setExportMaximized] = useState(false)
-  const [exportStage, setExportStage] = useState<'generating'|'ready'|'error'>('generating')
+  const [exportStage, setExportStage] = useState<'generating'|'ready'|'error'|'loading-background'|'done'>('generating')
   const [exportFmt, setExportFmt] = useState<'csv'|'xlsx'|'pdf'>('pdf')
   const [exportFileName, setExportFileName] = useState<string>('')
   const [exportUrl, setExportUrl] = useState<string | null>(null)
@@ -1439,14 +1439,44 @@ export function QueriesPage(){
         const src = effectiveAllSources ? undefined : doorSelectedSources.join(';')
         if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
-          const collected = await collectUpTo(maxPreview, async (page, ps) => {
-            const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
-            const items = (r as any)?.items ?? []
-            return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
-          })
+          const { collected, total } = await (async () => {
+            let lastTotal: number | null = null
+            const batch = await collectUpTo(maxPreview, async (page, ps) => {
+              const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
+              const items = (r as any)?.items ?? []
+              if (typeof (r as any)?.total === 'number') lastTotal = (r as any).total
+              return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
+            })
+            return { collected: batch, total: lastTotal }
+          })()
           const mapped = collected.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
           setResultTotal(mapped.length)
           setData(mapped)
+          // Continue loading remaining pages in background
+          if (total != null && total > maxPreview) {
+            const remaining = total - maxPreview
+            setExportStage('loading-background')
+            setExportProgress(90)
+            const extraPages = Math.ceil(remaining / 200)
+            let allExtra: any[] = []
+            for (let i = 0; i < extraPages; i++) {
+              const pg = Math.floor(maxPreview / 200) + 1 + i
+              try {
+                const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page: pg, pageSize: 200 })
+                const items = (r as any)?.items ?? []
+                if (Array.isArray(items)) allExtra.push(...items)
+              } catch { break }
+            }
+            if (allExtra.length > 0) {
+              const extraMapped = allExtra.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+              setData(prev => [...prev, ...extraMapped])
+              setResultTotal(total)
+            }
+            setExportStage('done')
+            setExportProgress(100)
+          } else {
+            setExportStage('done')
+          }
         }else if (doorMode === 'general'){
           const res = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src })
           const list = (res as any)?.data ?? res
@@ -3416,9 +3446,15 @@ export function QueriesPage(){
                 )}
                 {exportEnabledPdf && exportAllowsPdf && (
                   <>
-                    <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
+                    <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')} disabled={exportStage === 'loading-background'}>
                       <i className="bi bi-file-earmark-pdf" />
                     </button>
+                    {exportStage === 'loading-background' && (
+                      <span className="text-muted ms-2" style={{fontSize:12}}>
+                        <span className="spinner-border spinner-border-sm me-1" role="status" />
+                        Carregando dados completos...
+                      </span>
+                    )}
                     {exportsToday.length > 0 && (
                       <button className="btn btn-outline-secondary ms-2" onClick={()=> setReportsModal(true)}>
                         <i className="bi bi-journal-text me-1" /> Relatórios
