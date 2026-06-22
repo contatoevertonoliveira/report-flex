@@ -3615,7 +3615,6 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             lock (doorCriticalCacheLock)
             {
                 doorCriticalCache[cacheKey] = allItems;
-                _ = Task.Run(async () => { await Task.Delay(TimeSpan.FromMinutes(10)); lock (doorCriticalCacheLock) doorCriticalCache.Remove(cacheKey); });
             }
         }
         else
@@ -4914,7 +4913,6 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
             lock (doorGeneralCacheLock)
             {
                 doorGeneralCache[cacheKey] = allItems;
-                _ = Task.Run(async () => { await Task.Delay(TimeSpan.FromMinutes(10)); lock (doorGeneralCacheLock) doorGeneralCache.Remove(cacheKey); });
             }
         }
 
