@@ -4864,9 +4864,6 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         // First request: execute SP and cache
         if (allItems == null)
         {
-            if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
-                return Results.BadRequest(new { success = false, error = "Período muito grande. Selecione portas (TAG) ou use Exportação (CSV)." });
-
             using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync();
             var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
@@ -4874,8 +4871,28 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
             var src = explicitSrc;
             if (string.IsNullOrWhiteSpace(src))
             {
-                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-                src = BuildSourceListCsv(tags.Select(x => x.Key));
+                // Use DoorSources table for large periods instead of querying events
+                if ((endDt - startDt).TotalDays > 31)
+                {
+                    try
+                    {
+                        using var cnSrc = new SqlConnection(GetConn("HWR"));
+                        await cnSrc.OpenAsync();
+                        using var cmdSrc = cnSrc.CreateCommand();
+                        cmdSrc.CommandTimeout = 30;
+                        cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
+                        var doorKeys = new List<string>();
+                        using var rSrc = await cmdSrc.ExecuteReaderAsync();
+                        while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
+                        src = BuildSourceListCsv(doorKeys);
+                    }
+                    catch { }
+                }
+                if (string.IsNullOrWhiteSpace(src))
+                {
+                    var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
+                    src = BuildSourceListCsv(tags.Select(x => x.Key));
+                }
             }
             var (rows, err) = ExecDoorProc(cn, proc, new[]
             {
@@ -4954,8 +4971,27 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
         var src = explicitSrc;
         if (string.IsNullOrWhiteSpace(src))
         {
-            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-            src = BuildSourceListCsv(tags.Select(x => x.Key));
+            if ((endDt - startDt).TotalDays > 31)
+            {
+                try
+                {
+                    using var cnSrc = new SqlConnection(GetConn("HWR"));
+                    await cnSrc.OpenAsync();
+                    using var cmdSrc = cnSrc.CreateCommand();
+                    cmdSrc.CommandTimeout = 30;
+                    cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
+                    var doorKeys = new List<string>();
+                    using var rSrc = await cmdSrc.ExecuteReaderAsync();
+                    while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
+                    src = BuildSourceListCsv(doorKeys);
+                }
+                catch { }
+            }
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
+                src = BuildSourceListCsv(tags.Select(x => x.Key));
+            }
         }
         var (rowsResult, err) = ExecDoorProc(cn, proc, new[]
         {
