@@ -347,6 +347,10 @@ export const api = {
 }
 
 export function logout(){
+  // Clear server cache in background
+  try {
+    fetch('/api/cache/clear', { headers: headers(), signal: AbortSignal.timeout(5000) })
+  } catch {}
   authToken = null
   localStorage.removeItem('rf_token')
   localStorage.removeItem('rf_client_id')

@@ -4830,6 +4830,14 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
     return Results.Ok(new { success = true, id = jobId });
 }).RequireAuthorization();
 
+// Clear server caches (called on logout)
+app.MapGet("/api/cache/clear", () =>
+{
+    lock (doorCriticalCacheLock) doorCriticalCache.Clear();
+    lock (doorGeneralCacheLock) doorGeneralCache.Clear();
+    return Results.Ok(new { success = true });
+}).RequireAuthorization();
+
 // door general cache
 var doorGeneralCache = new Dictionary<string, List<dynamic>>(StringComparer.OrdinalIgnoreCase);
 var doorGeneralCacheLock = new object();
