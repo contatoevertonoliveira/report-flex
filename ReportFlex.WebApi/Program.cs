@@ -1883,7 +1883,7 @@ app.MapGet("/api/admin/sql/logins", async () =>
     try
     {
         var items = new List<Dictionary<string, object?>>();
-        using var cn = new SqlConnection(GetConn("CMS"));
+        using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         cmd.CommandText = @"
@@ -3520,7 +3520,7 @@ app.MapGet("/api/reports/door-critical", async (string start, string end, string
         if (page <= 1)
         {
             allItems = new List<dynamic>();
-            using var cn = new SqlConnection(GetConn("HWR"));
+            using var cn = new SqlConnection(GetConn("CMS"));
             await cn.OpenAsync();
             using var cmd = cn.CreateCommand();
             cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
@@ -4853,53 +4853,37 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         var offset = (page - 1) * pageSize;
         var cacheKey = DoorGeneralCacheKey(startDt, endDt, sourceList);
 
-        List<dynamic>? allItems;
+        List<dynamic>? allItems = null;
 
-        // Check cache for existing data
+        // Check cache
         lock (doorGeneralCacheLock)
         {
-            if (doorGeneralCache.TryGetValue(cacheKey, out var cached) && cached != null && cached.Count > 0)
-            {
+            if (doorGeneralCache.TryGetValue(cacheKey, out var cached) && cached != null)
                 allItems = cached;
-            }
-            else
-            {
-                allItems = null;
-            }
         }
 
-        // First request: execute SP and cache
+        // First request: run SP and cache
         if (allItems == null)
         {
             using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync();
             var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
-            var explicitSrc = sourceList;
-            var src = explicitSrc;
+            var src = sourceList;
             if (string.IsNullOrWhiteSpace(src))
             {
-                // Use DoorSources table for large periods instead of querying events
-                if ((endDt - startDt).TotalDays > 31)
+                try
                 {
-                    try
-                    {
-                        using var cnSrc = new SqlConnection(GetConn("HWR"));
-                        await cnSrc.OpenAsync();
-                        using var cmdSrc = cnSrc.CreateCommand();
-                        cmdSrc.CommandTimeout = 30;
-                        cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
-                        var doorKeys = new List<string>();
-                        using var rSrc = await cmdSrc.ExecuteReaderAsync();
-                        while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
-                        src = BuildSourceListCsv(doorKeys);
-                    }
-                    catch { }
+                    using var cnSrc = new SqlConnection(GetConn("HWR"));
+                    await cnSrc.OpenAsync();
+                    using var cmdSrc = cnSrc.CreateCommand();
+                    cmdSrc.CommandTimeout = 30;
+                    cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
+                    var doorKeys = new List<string>();
+                    using var rSrc = await cmdSrc.ExecuteReaderAsync();
+                    while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
+                    src = BuildSourceListCsv(doorKeys);
                 }
-                if (string.IsNullOrWhiteSpace(src))
-                {
-                    var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-                    src = BuildSourceListCsv(tags.Select(x => x.Key));
-                }
+                catch { }
             }
             var (rows, err) = ExecDoorProc(cn, proc, new[]
             {
@@ -4917,11 +4901,7 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
                 DetalheStatusAcesso = x.DetalheStatusAcesso
             }).ToList();
 
-            // Cache with 10min TTL
-            lock (doorGeneralCacheLock)
-            {
-                doorGeneralCache[cacheKey] = allItems;
-            }
+            lock (doorGeneralCacheLock) { doorGeneralCache[cacheKey] = allItems; }
         }
 
         var total = allItems.Count;
@@ -4947,66 +4927,85 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    var cacheKey = DoorGeneralCacheKey(startDt, endDt, sourceList);
 
-    List<dynamic>? cachedRows = null;
-    lock (doorGeneralCacheLock)
+    // Determine source filter
+    var src = sourceList;
+    if (string.IsNullOrWhiteSpace(src))
     {
-        if (doorGeneralCache.TryGetValue(cacheKey, out var c) && c != null && c.Count > 0)
-            cachedRows = c;
-    }
-
-    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
-    if (cachedRows != null)
-    {
-        rows = cachedRows.Select(x => (
-            EventID: (long)x.EventID, TimeOrder: (DateTime?)x.TimeOrder, DataHora: (string?)x.DataHora,
-            TAG: (string?)x.TAG, Acesso: (string?)x.Acesso, Evento: (string?)x.Evento,
-            NomeCompleto: (string?)x.NomeCompleto, DocumentoMatricula: (string?)x.DocumentoMatricula,
-            Cartao: (string?)x.Cartao, Tipo: (string?)x.Tipo, Empresa: (string?)x.Empresa,
-            StatusAcesso: (string?)x.StatusAcesso, DetalheStatusAcesso: (string?)x.DetalheStatusAcesso
-        )).ToList();
-    }
-    else
-    {
-        using var cn = new SqlConnection(GetConn("HWR"));
-        await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
-        var explicitSrc = sourceList;
-        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
-        var src = explicitSrc;
-        if (string.IsNullOrWhiteSpace(src))
+        try
         {
-            if ((endDt - startDt).TotalDays > 31)
-            {
-                try
-                {
-                    using var cnSrc = new SqlConnection(GetConn("HWR"));
-                    await cnSrc.OpenAsync();
-                    using var cmdSrc = cnSrc.CreateCommand();
-                    cmdSrc.CommandTimeout = 30;
-                    cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
-                    var doorKeys = new List<string>();
-                    using var rSrc = await cmdSrc.ExecuteReaderAsync();
-                    while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
-                    src = BuildSourceListCsv(doorKeys);
-                }
-                catch { }
-            }
-            if (string.IsNullOrWhiteSpace(src))
-            {
-                var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-                src = BuildSourceListCsv(tags.Select(x => x.Key));
-            }
+            using var cnSrc = new SqlConnection(GetConn("HWR"));
+            await cnSrc.OpenAsync();
+            using var cmdSrc = cnSrc.CreateCommand();
+            cmdSrc.CommandTimeout = 30;
+            cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
+            var doorKeys = new List<string>();
+            using var rSrc = await cmdSrc.ExecuteReaderAsync();
+            while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
+            src = BuildSourceListCsv(doorKeys);
         }
-        var (rowsResult, err) = ExecDoorProc(cn, proc, new[]
-        {
-            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
-        });
-        if (err != null) return Results.BadRequest(new { error = err });
-        rows = rowsResult;
+        catch { }
+    }
+
+    // Query all rows directly from HA_TRANSIT
+    using var cn = new SqlConnection(GetConn("HWR"));
+    await cn.OpenAsync();
+    using var cmd = cn.CreateCommand();
+    cmd.CommandTimeout = 300;
+    cmd.CommandText = @"
+SELECT
+    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+    t.TRANSIT_DATE AS TimeOrder,
+    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
+    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
+    ISNULL(v.DESCRIPTION,'') AS Acesso,
+    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
+    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
+    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
+    ISNULL(c.CardNumber,'') AS Cartao,
+    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
+    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
+    CAST(NULL AS varchar(50)) AS StatusAcesso,
+    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
+FROM cms..HA_TRANSIT t
+LEFT JOIN cms..Employee e ON e.SbiID = t.SBI_ID
+LEFT JOIN cms..EmployeeUserFields ue ON ue.SbiID = e.SbiID
+LEFT JOIN cms..ExternalRegular x ON x.SbiID = t.SBI_ID
+LEFT JOIN cms..ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN cms..Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+LEFT JOIN cms..AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
+    if (!string.IsNullOrWhiteSpace(src))
+    {
+        var tagArray = src!.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+        var inParams = string.Join(",", tagArray.Select((_, i) => $"@tag{i}"));
+        cmd.CommandText += $" AND t.TERMINAL IN ({inParams})";
+        for (int i = 0; i < tagArray.Length; i++)
+            cmd.Parameters.Add(new SqlParameter($"@tag{i}", SqlDbType.VarChar, 200) { Value = tagArray[i].Trim() });
+    }
+    cmd.CommandText += " ORDER BY t.TRANSIT_DATE;";
+    cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+    cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+
+    var rows = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
+    using var r = await cmd.ExecuteReaderAsync();
+    while (await r.ReadAsync())
+    {
+        rows.Add((
+            r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+            r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+            r.IsDBNull(2) ? null : r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.IsDBNull(4) ? null : r.GetString(4),
+            r.IsDBNull(5) ? null : r.GetString(5),
+            r.IsDBNull(6) ? null : r.GetString(6),
+            r.IsDBNull(7) ? null : r.GetString(7),
+            r.IsDBNull(8) ? null : r.GetString(8),
+            r.IsDBNull(9) ? null : r.GetString(9),
+            r.IsDBNull(10) ? null : r.GetString(10),
+            r.IsDBNull(11) ? null : r.GetString(11),
+            r.IsDBNull(12) ? null : r.GetString(12)
+        ));
     }
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
