@@ -3520,7 +3520,7 @@ app.MapGet("/api/reports/door-critical", async (string start, string end, string
         if (page <= 1)
         {
             allItems = new List<dynamic>();
-            using var cn = new SqlConnection(GetConn("CMS"));
+            using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync();
             using var cmd = cn.CreateCommand();
             cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
