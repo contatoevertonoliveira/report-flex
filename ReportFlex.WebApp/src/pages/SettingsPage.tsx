@@ -58,12 +58,36 @@ export function SettingsPage(){
   const [setupInitialPassword, setSetupInitialPassword] = useState('')
   const [setupInitialName, setSetupInitialName] = useState('SUPERADMIN')
   const [setupTest, setSetupTest] = useState<{ cms?: string, logins?: string, ems?: string, hwr?: string, clav?: string } | null>(null)
+  const [dbObjectMapItems, setDbObjectMapItems] = useState<Array<{ key: string, label: string, connection: string, defaultValue: string, value: string }>>([])
+  const [dbObjectMapLoading, setDbObjectMapLoading] = useState(false)
   const [screensCfg, setScreensCfg] = useState<Record<string, { enabled: boolean, lockedBy?: string }>>({})
   const [screensCfgLoading, setScreensCfgLoading] = useState(false)
   const [screensCfgErr, setScreensCfgErr] = useState<string | null>(null)
   const nivel = (typeof window !== 'undefined' ? (localStorage.getItem('rf_level') || '') : '')
   const isSuperAdmin = nivel === 'SuperAdmin'
   const isAdmin = nivel === 'Administrador'
+
+  function normalizeReportOptions(opts: any){
+    const active = !!opts?.excel ? 'excel' : (!!opts?.xlsx ? 'xlsx' : 'pdf')
+    return {
+      xlsx: active === 'xlsx',
+      pdf: active === 'pdf',
+      excel: active === 'excel',
+      cover: !!opts?.cover,
+      coverOrientation: (opts?.coverOrientation === 'portrait' ? 'portrait' : 'landscape') as 'portrait'|'landscape',
+      reportOrientation: (opts?.reportOrientation === 'portrait' ? 'portrait' : 'landscape') as 'portrait'|'landscape',
+      customQueries: !!opts?.customQueries
+    }
+  }
+
+  function setExclusiveReportFormat(format: 'xlsx'|'excel'|'pdf'){
+    setReportOptions(o => ({
+      ...o,
+      xlsx: format === 'xlsx',
+      excel: format === 'excel',
+      pdf: format === 'pdf'
+    }))
+  }
 
   useEffect(() => {
     (async () => {
@@ -74,15 +98,7 @@ export function SettingsPage(){
           const roOwner = localStorage.getItem('rf_report_options_owner')
           if (ro && roOwner === owner){
             const opts: any = JSON.parse(ro)
-            setReportOptions({
-              xlsx: !!opts.xlsx,
-              pdf: !!opts.pdf,
-              excel: !!opts.excel,
-              cover: !!opts.cover,
-              coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
-              reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
-              customQueries: !!opts.customQueries
-            })
+            setReportOptions(normalizeReportOptions(opts))
           }
         }catch{}
         try{
@@ -127,6 +143,22 @@ export function SettingsPage(){
         if (!c?.CLAV) {
           setClavPath('Data Source=JP4REPORTDEV01;Initial Catalog=claviculario;Integrated Security=True;Encrypt=True;TrustServerCertificate=True')
         }
+        try{
+          setDbObjectMapLoading(true)
+          const objectMap: any = await api.getDbObjectMap()
+          const items = Array.isArray(objectMap?.items) ? objectMap.items : []
+          setDbObjectMapItems(items.map((it: any) => ({
+            key: String(it?.key || ''),
+            label: String(it?.label || it?.key || ''),
+            connection: String(it?.connection || ''),
+            defaultValue: String(it?.defaultValue || ''),
+            value: String(it?.value || '')
+          })))
+        }catch{
+          setDbObjectMapItems([])
+        }finally{
+          setDbObjectMapLoading(false)
+        }
         setDbInfoErr(null)
         try{
           const info = await api.getDbInfo()
@@ -153,15 +185,7 @@ export function SettingsPage(){
         }catch{}
         try{
           const opts = await api.getReportOptions()
-          setReportOptions({
-            xlsx: !!opts.xlsx,
-            pdf: !!opts.pdf,
-            excel: !!opts.excel,
-            cover: !!opts.cover,
-            coverOrientation: (opts.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
-            reportOrientation: (opts.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
-            customQueries: !!opts.customQueries
-          })
+          setReportOptions(normalizeReportOptions(opts))
           try{
             const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
             localStorage.setItem('rf_report_options', JSON.stringify(opts || {}))
@@ -740,20 +764,37 @@ export function SettingsPage(){
     }
   }
 
+  async function saveDbObjectMap(){
+    setErr(null); setMsg(null)
+    setDbObjectMapLoading(true)
+    try{
+      const payload: Record<string, string> = {}
+      for (const item of dbObjectMapItems){
+        payload[item.key] = (item.value || '').trim()
+      }
+      const r: any = await api.setDbObjectMap(payload)
+      const items = Array.isArray(r?.items) ? r.items : []
+      setDbObjectMapItems(items.map((it: any) => ({
+        key: String(it?.key || ''),
+        label: String(it?.label || it?.key || ''),
+        connection: String(it?.connection || ''),
+        defaultValue: String(it?.defaultValue || ''),
+        value: String(it?.value || '')
+      })))
+      setMsg('Mapeamento de objetos salvo')
+    }catch(e:any){
+      setErr(e?.message || 'Falha ao salvar mapeamento de objetos')
+    }finally{
+      setDbObjectMapLoading(false)
+    }
+  }
+
   async function saveReportOptions(){
     setErr(null); setMsg(null)
     setReportOptionsLoading(true)
     try{
       const r = await api.setReportOptions(reportOptions as any)
-      setReportOptions({
-        xlsx: !!r.xlsx,
-        pdf: !!r.pdf,
-        excel: !!r.excel,
-        cover: !!r.cover,
-        coverOrientation: (r.coverOrientation === 'portrait' ? 'portrait' : 'landscape'),
-        reportOrientation: (r.reportOrientation === 'portrait' ? 'portrait' : 'landscape'),
-        customQueries: !!r.customQueries
-      })
+      setReportOptions(normalizeReportOptions(r))
       try{
         const owner = `${localStorage.getItem('rf_client_id') || ''}|${(localStorage.getItem('rf_token') || '').slice(-16)}`
         localStorage.setItem('rf_report_options', JSON.stringify(r || {}))
@@ -1114,6 +1155,64 @@ export function SettingsPage(){
                       </>
                     )}
                   </div>
+                    </details>
+                  </div>
+
+                  <div className="col-12">
+                    <details className="border rounded p-2 mt-2">
+                      <summary className="d-flex align-items-center" style={{gap:8, cursor:'pointer'}}>
+                        <i className="bi bi-diagram-3" />
+                        <span className="fw-semibold">Mapeamento de Objetos</span>
+                      </summary>
+                      <div style={{marginTop:10}}>
+                        <div className="alert alert-warning py-2" style={{marginBottom:10}}>
+                          Use esta área quando a base local tiver o mesmo conteúdo esperado pelo sistema, mas com nomes diferentes de tabelas, views, funções ou procedures. Se deixar em branco, o sistema volta ao nome padrão.
+                        </div>
+                        {dbObjectMapLoading && dbObjectMapItems.length === 0 ? (
+                          <div className="text-muted" style={{fontSize:12}}>Carregando mapeamentos...</div>
+                        ) : (
+                          <div className="table-responsive">
+                            <table className="table table-sm align-middle">
+                              <thead>
+                                <tr>
+                                  <th>Conexão</th>
+                                  <th>Objeto esperado</th>
+                                  <th>Nome local</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {dbObjectMapItems.map((item) => (
+                                  <tr key={item.key}>
+                                    <td><span className="badge text-bg-secondary">{item.connection}</span></td>
+                                    <td>
+                                      <div className="fw-semibold">{item.label}</div>
+                                      <div className="text-muted" style={{fontSize:12}}>Padrão: {item.defaultValue}</div>
+                                    </td>
+                                    <td>
+                                      <input
+                                        className="form-control form-control-sm"
+                                        value={item.value}
+                                        placeholder={item.defaultValue}
+                                        onChange={e => setDbObjectMapItems(prev => prev.map(x => x.key === item.key ? { ...x, value: e.target.value } : x))}
+                                      />
+                                    </td>
+                                  </tr>
+                                ))}
+                                {dbObjectMapItems.length === 0 && (
+                                  <tr>
+                                    <td colSpan={3} className="text-muted">Nenhum mapeamento disponível.</td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                        <div className="d-flex justify-content-end" style={{marginTop:10}}>
+                          <button type="button" className="btn btn-outline-primary btn-sm" onClick={saveDbObjectMap} disabled={dbObjectMapLoading || dbObjectMapItems.length === 0}>
+                            {dbObjectMapLoading ? 'Salvando...' : 'Salvar mapeamento'}
+                          </button>
+                        </div>
+                      </div>
                     </details>
                   </div>
 
@@ -1488,19 +1587,19 @@ export function SettingsPage(){
         </div>
         <div className="card-body d-flex flex-column" style={{gap:12}}>
           <p className="text-muted" style={{fontSize:12, marginBottom:4}}>
-            Os formatos ativados aqui aparecerão como botões de sugestão quando uma consulta retornar dados.
+            Apenas um formato pode ficar ativo por vez. Ao selecionar um, os demais serão desativados automaticamente.
           </p>
           <div className="d-flex flex-wrap" style={{gap:12}}>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repXlsx" checked={reportOptions.xlsx} onChange={e=> setReportOptions(o=> ({...o, xlsx: e.target.checked}))} />
+            <div className="form-check">
+              <input className="form-check-input" type="radio" name="reportFormat" id="repXlsx" checked={reportOptions.xlsx} onChange={()=> setExclusiveReportFormat('xlsx')} />
               <label className="form-check-label" htmlFor="repXlsx">XLSX</label>
             </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repExcel" checked={reportOptions.excel} onChange={e=> setReportOptions(o=> ({...o, excel: e.target.checked}))} />
+            <div className="form-check">
+              <input className="form-check-input" type="radio" name="reportFormat" id="repExcel" checked={reportOptions.excel} onChange={()=> setExclusiveReportFormat('excel')} />
               <label className="form-check-label" htmlFor="repExcel">Excel (compatível)</label>
             </div>
-            <div className="form-check form-switch">
-              <input className="form-check-input" type="checkbox" id="repPdf" checked={reportOptions.pdf} onChange={e=> setReportOptions(o=> ({...o, pdf: e.target.checked}))} />
+            <div className="form-check">
+              <input className="form-check-input" type="radio" name="reportFormat" id="repPdf" checked={reportOptions.pdf} onChange={()=> setExclusiveReportFormat('pdf')} />
               <label className="form-check-label" htmlFor="repPdf">PDF</label>
             </div>
             <div className="form-check form-switch">

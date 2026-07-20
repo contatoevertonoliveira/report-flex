@@ -9,6 +9,7 @@ export function LoginPage() {
   const [senha, setSenha] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadingMessage, setLoadingMessage] = useState('Autenticando...')
   const [showSetup, setShowSetup] = useState(false)
   const [setupLoading, setSetupLoading] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
@@ -146,8 +147,10 @@ export function LoginPage() {
       return
     }
     setLoading(true)
+    setLoadingMessage('Validando usuário e senha...')
     setError(null)
     try{
+      await new Promise(resolve => setTimeout(resolve, 250))
       const res = await api.signin(email.trim(), senha)
       if (res?.__status === 409 && (res?.errorCode === 'DB_SETUP_REQUIRED' || String(res?.errorCode || '').startsWith('DB_SETUP'))){
         setInitialEmail(email.trim())
@@ -157,6 +160,7 @@ export function LoginPage() {
         return
       }
       if (res?.token){
+        setLoadingMessage('Preparando ambiente...')
         setToken(res.token)
         if (res?.nivel) localStorage.setItem('rf_level', res.nivel)
         if (res?.mustChangePassword) localStorage.setItem('rf_pwd_change_required', '1')
@@ -206,6 +210,11 @@ export function LoginPage() {
             await api.setSqlAuthRuntime({ user: u, pwd: p })
           }
         }catch{}
+        try{
+          sessionStorage.setItem('rf_post_login_loading', '1')
+        }catch{}
+        setLoadingMessage('Carregando componentes...')
+        await new Promise(resolve => setTimeout(resolve, 450))
         toast('success', 'Login realizado com sucesso')
         if (res?.mustChangePassword) navigate('/alterar-senha')
         else navigate('/consultas')
@@ -258,7 +267,7 @@ export function LoginPage() {
               </div>
               <button className="btn btn-dark w-100 d-flex align-items-center justify-content-center" type="submit" disabled={loading}>
                 {loading
-                  ? (<><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Autenticando...</>)
+                  ? (<><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>{loadingMessage}</>)
                   : (<><i className="bi bi-box-arrow-in-right me-2" /> Entrar</>)}
               </button>
             </form>

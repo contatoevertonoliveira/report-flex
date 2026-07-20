@@ -213,7 +213,7 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v]) => v !== undefined && v !== null && v !== '').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-general?' + qs, { headers: headers() }))
   },
-  reportsDoorGeneralByName: async (p: { start: string, end: string, name: string, sourceList?: string }) => {
+  reportsDoorGeneralByName: async (p: { start: string, end: string, name: string, sourceList?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v]) => v !== undefined && v !== null && v !== '').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-general/by-name?' + qs, { headers: headers() }))
   },
@@ -267,6 +267,9 @@ export const api = {
   getConnections: async () => withAuth(apiFetch('/api/admin/connections', { headers: headers() })),
   setConnections: async (p: { CMS?: string, Logins?: string, EMS?: string, HWR?: string, CLAV?: string }) =>
     withAuth(apiFetch('/api/admin/connections', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
+  getDbObjectMap: async () => withAuth(apiFetch('/api/admin/db-object-map', { headers: headers() })),
+  setDbObjectMap: async (p: Record<string, string>) =>
+    withAuth(apiFetch('/api/admin/db-object-map', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   setConnectionsRuntime: async (p: { CMS?: string, Logins?: string, EMS?: string, HWR?: string, CLAV?: string }) =>
     withAuth(apiFetch('/api/admin/connections/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),
   setSqlAuthRuntime: async (p: { user: string, pwd: string }) => withAuth(apiFetch('/api/admin/sql-auth/runtime', { method:'POST', headers: { ...headers(), 'Content-Type':'application/json' }, body: JSON.stringify(p) })),

@@ -36,8 +36,11 @@ export default function App() {
   const location = useLocation()
   const showSidebar = location.pathname !== '/login'
   const screensFetchedRef = React.useRef(false)
+  const appBootRef = React.useRef<string | null>(null)
   const [, setScreensCfgTick] = React.useState(0)
   const [toasts, setToasts] = React.useState<Array<{ id: number, type: 'success'|'error'|'info'|'warning', message: string }>>([])
+  const [appBootLoading, setAppBootLoading] = React.useState(false)
+  const [appBootMessage, setAppBootMessage] = React.useState('Carregando ambiente...')
 
   React.useEffect(() => {
     const baseTitle = 'Jumperfour ReportFlex'
@@ -121,6 +124,65 @@ export default function App() {
     })()
   }, [showSidebar])
 
+  React.useEffect(() => {
+    if (!showSidebar) {
+      setAppBootLoading(false)
+      return
+    }
+    const token = localStorage.getItem('rf_token')
+    if (!token) {
+      setAppBootLoading(false)
+      return
+    }
+    const owner = `${localStorage.getItem('rf_client_id') || ''}|${token.slice(-16)}`
+    let postLogin = false
+    try{
+      postLogin = sessionStorage.getItem('rf_post_login_loading') === '1'
+    }catch{}
+    if (!postLogin && appBootRef.current === owner) return
+    appBootRef.current = owner
+    setAppBootMessage(postLogin ? 'Validando permissões e carregando componentes...' : 'Carregando componentes internos...')
+    setAppBootLoading(true)
+    let cancelled = false
+    const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+    ;(async () => {
+      try{
+        await Promise.allSettled([
+          api.getScreensConfig().then((cfg: any) => {
+            if (cfg && typeof cfg === 'object'){
+              localStorage.setItem('rf_screens_config', JSON.stringify(cfg))
+              localStorage.setItem('rf_screens_config_owner', owner)
+              localStorage.setItem('rf_screens_config_ts', String(Date.now()))
+              window.dispatchEvent(new Event('rf:screens-config'))
+            }
+          }),
+          api.getQueriesConfig().then((cfg: any) => {
+            if (cfg && typeof cfg === 'object'){
+              localStorage.setItem('rf_queries_cfg', JSON.stringify(cfg))
+              localStorage.setItem('rf_queries_cfg_owner', owner)
+              localStorage.setItem('rf_queries_cfg_ts', String(Date.now()))
+            }
+          }),
+          api.getReportOptions().then((opts: any) => {
+            if (opts && typeof opts === 'object'){
+              localStorage.setItem('rf_report_options', JSON.stringify(opts))
+              localStorage.setItem('rf_report_options_owner', owner)
+              localStorage.setItem('rf_report_options_ts', String(Date.now()))
+            }
+          }),
+          wait(postLogin ? 900 : 550)
+        ])
+      }catch{}
+      finally{
+        try{ sessionStorage.removeItem('rf_post_login_loading') }catch{}
+        if (!cancelled) setAppBootLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [showSidebar, location.pathname])
+
   return (
     <div className="layout" style={{ '--sidebar-width': showSidebar ? (expanded ? '250px' : '80px') : '0px' } as React.CSSProperties}>
       {showSidebar && <Sidebar expanded={expanded} onToggle={() => setExpanded(!expanded)} />}
@@ -144,6 +206,15 @@ export default function App() {
             <Route path="*" element={<Navigate to="/login" />} />
           </Routes>
         </div>
+        {appBootLoading && showSidebar && (
+          <div className="app-boot-overlay">
+            <div className="app-boot-card">
+              <div className="spinner-border text-light" role="status" aria-hidden="true" />
+              <div className="app-boot-title">Entrando no sistema</div>
+              <div className="app-boot-subtitle">{appBootMessage}</div>
+            </div>
+          </div>
+        )}
       </main>
       <div style={{
         position:'fixed', top:16, right:16, display:'flex', flexDirection:'column', gap:8, zIndex: 9999

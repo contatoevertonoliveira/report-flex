@@ -188,6 +188,58 @@ var dbMode = initialEnv.TryGetValue("DB_MODE", out var m) && !string.IsNullOrWhi
     ? (string.Equals(m, "Real", StringComparison.OrdinalIgnoreCase) ? "Real" : "Demo")
     : "Demo";
 var realOverrides = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+var dbObjectMapDefaults = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["CMS_DOOR_SOURCES"] = "dbo.DoorSources",
+    ["CMS_DOOR_SOURCES_CRITICAL"] = "dbo.DoorSourcesCritical",
+    ["CMS_AC_VTERMINAL"] = "dbo.AC_VTERMINAL",
+    ["CMS_JP4_MERC_TAGS"] = "dbo.JP4_Merc_TAGs",
+    ["EMS_VIEW_EVENTS_DOOR"] = "dbo.ems_vw_EMSevents",
+    ["EMS_VIEW_EVENTS"] = "dbo.ems_vw_Events",
+    ["EMS_EVENTS_TABLE"] = "dbo.Events",
+    ["EMS_UTCFILETIME_FN"] = "dbo.UTCFILETIMEToDateTime",
+    ["HWR_PROC_DOOR_CRITICAL"] = "dbo.jp4_sp_DoorCritical",
+    ["HWR_PROC_DOOR_GENERAL"] = "dbo.jp4_sp_DoorGeneral",
+    ["HWR_PROC_DOOR_GENERAL_BYNAME"] = "dbo.jp4_sp_DoorGeneral_byName",
+    ["HWR_PROC_DOOR_GENERAL_BYSITE"] = "dbo.jp4_sp_DoorGeneral_bysite",
+    ["CLAV_PROC_EVENTOS"] = "dbo.jp4_sp_Eventos_Claviculario",
+    ["CLAV_EVENTOS_TABLE"] = "dbo.eventos"
+};
+var dbObjectMapLabels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["CMS_DOOR_SOURCES"] = "CMS - tabela/lista de portas",
+    ["CMS_DOOR_SOURCES_CRITICAL"] = "CMS - tabela/lista de portas críticas",
+    ["CMS_AC_VTERMINAL"] = "CMS - terminal/acesso",
+    ["CMS_JP4_MERC_TAGS"] = "CMS - descrições de TAG",
+    ["EMS_VIEW_EVENTS_DOOR"] = "EMS - view de eventos de portas",
+    ["EMS_VIEW_EVENTS"] = "EMS - view geral de eventos",
+    ["EMS_EVENTS_TABLE"] = "EMS - tabela Events",
+    ["EMS_UTCFILETIME_FN"] = "EMS - função UTCFILETIMEToDateTime",
+    ["HWR_PROC_DOOR_CRITICAL"] = "HWR - procedure portas críticas",
+    ["HWR_PROC_DOOR_GENERAL"] = "HWR - procedure portas gerais",
+    ["HWR_PROC_DOOR_GENERAL_BYNAME"] = "HWR - procedure portas gerais por nome",
+    ["HWR_PROC_DOOR_GENERAL_BYSITE"] = "HWR - procedure portas gerais por site",
+    ["CLAV_PROC_EVENTOS"] = "CLAV - procedure eventos claviculário",
+    ["CLAV_EVENTOS_TABLE"] = "CLAV - tabela de eventos"
+};
+var dbObjectMapConnections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["CMS_DOOR_SOURCES"] = "CMS",
+    ["CMS_DOOR_SOURCES_CRITICAL"] = "CMS",
+    ["CMS_AC_VTERMINAL"] = "CMS",
+    ["CMS_JP4_MERC_TAGS"] = "CMS",
+    ["EMS_VIEW_EVENTS_DOOR"] = "EMS",
+    ["EMS_VIEW_EVENTS"] = "EMS",
+    ["EMS_EVENTS_TABLE"] = "EMS",
+    ["EMS_UTCFILETIME_FN"] = "EMS",
+    ["HWR_PROC_DOOR_CRITICAL"] = "HWR",
+    ["HWR_PROC_DOOR_GENERAL"] = "HWR",
+    ["HWR_PROC_DOOR_GENERAL_BYNAME"] = "HWR",
+    ["HWR_PROC_DOOR_GENERAL_BYSITE"] = "HWR",
+    ["CLAV_PROC_EVENTOS"] = "CLAV",
+    ["CLAV_EVENTOS_TABLE"] = "CLAV"
+};
+var dbObjectMapOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 string? sqlAuthUser = null;
 string? sqlAuthPwd = null;
 if (initialEnv.TryGetValue("DB_CMS_CONN", out var envCms) && !string.IsNullOrWhiteSpace(envCms))
@@ -213,6 +265,14 @@ if (initialEnv.TryGetValue("DB_SQL_USER", out var su) && !string.IsNullOrWhiteSp
 if (initialEnv.TryGetValue("DB_SQL_PWD", out var sp) && !string.IsNullOrWhiteSpace(sp))
 {
     sqlAuthPwd = sp;
+}
+foreach (var key in dbObjectMapDefaults.Keys)
+{
+    var envKey = "DB_OBJ_" + key;
+    if (initialEnv.TryGetValue(envKey, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
+    {
+        dbObjectMapOverrides[key] = mapped.Trim();
+    }
 }
 
 var app = builder.Build();
@@ -652,6 +712,106 @@ string GetConn(string name)
     cfg = NormalizeConn(cfg);
     cfg = ApplySqlAuth(cfg, sqlUser, sqlPwd);
     return cfg;
+}
+
+string GetMappedObjectName(string key)
+{
+    if (dbObjectMapOverrides.TryGetValue(key, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
+        return mapped.Trim();
+    return dbObjectMapDefaults.TryGetValue(key, out var fallback) ? fallback : "";
+}
+
+Dictionary<string, string> GetResolvedObjectMap()
+{
+    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var key in dbObjectMapDefaults.Keys)
+        result[key] = GetMappedObjectName(key);
+    return result;
+}
+
+string GetConnectionCatalog(string connName)
+{
+    try
+    {
+        var conn = GetConn(connName);
+        if (string.IsNullOrWhiteSpace(conn)) return "";
+        var builderConn = new SqlConnectionStringBuilder(conn);
+        return builderConn.InitialCatalog ?? "";
+    }
+    catch
+    {
+        return "";
+    }
+}
+
+static string QuoteSqlIdentifierPart(string value)
+{
+    return "[" + (value ?? "").Trim().Trim('[', ']').Replace("]", "]]") + "]";
+}
+
+static string NormalizeSqlObjectIdentifier(string value, string defaultValue, string? defaultCatalog = null)
+{
+    var raw = string.IsNullOrWhiteSpace(value) ? defaultValue : value;
+    var cleaned = (raw ?? "").Trim();
+    cleaned = cleaned.Replace("[", "").Replace("]", "");
+    var parts = cleaned
+        .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .ToList();
+
+    if (parts.Count == 0)
+    {
+        parts.Add("dbo");
+        parts.Add("Unknown");
+    }
+    else if (parts.Count == 1)
+    {
+        parts.Insert(0, "dbo");
+    }
+
+    if (!string.IsNullOrWhiteSpace(defaultCatalog) && parts.Count == 2)
+        parts.Insert(0, defaultCatalog.Trim());
+
+    return string.Join(".", parts.Select(QuoteSqlIdentifierPart));
+}
+
+string GetMappedObjectIdentifier(string key, string? defaultCatalog = null)
+{
+    var defaultValue = dbObjectMapDefaults.TryGetValue(key, out var fallback) ? fallback : key;
+    return NormalizeSqlObjectIdentifier(GetMappedObjectName(key), defaultValue, defaultCatalog);
+}
+
+string ApplyDbObjectMappings(string sql)
+{
+    if (string.IsNullOrWhiteSpace(sql)) return sql;
+
+    var cmsCatalog = GetConnectionCatalog("CMS");
+    var emsCatalog = GetConnectionCatalog("EMS");
+    var clavCatalog = GetConnectionCatalog("CLAV");
+
+    var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["cms..DoorSources"] = GetMappedObjectIdentifier("CMS_DOOR_SOURCES", cmsCatalog),
+        ["cms..DoorSourcesCritical"] = GetMappedObjectIdentifier("CMS_DOOR_SOURCES_CRITICAL", cmsCatalog),
+        ["cms..AC_VTERMINAL"] = GetMappedObjectIdentifier("CMS_AC_VTERMINAL", cmsCatalog),
+        ["cms..JP4_Merc_TAGs"] = GetMappedObjectIdentifier("CMS_JP4_MERC_TAGS", cmsCatalog),
+        ["emsevents..ems_vw_EMSevents"] = GetMappedObjectIdentifier("EMS_VIEW_EVENTS_DOOR", emsCatalog),
+        ["emsevents..ems_vw_Events"] = GetMappedObjectIdentifier("EMS_VIEW_EVENTS", emsCatalog),
+        ["emsevents.[dbo].[UTCFILETIMEToDateTime]"] = GetMappedObjectIdentifier("EMS_UTCFILETIME_FN", emsCatalog),
+        ["emsevents.dbo.UTCFILETIMEToDateTime"] = GetMappedObjectIdentifier("EMS_UTCFILETIME_FN", emsCatalog),
+        ["[EMSEVENTS].dbo.Events"] = GetMappedObjectIdentifier("EMS_EVENTS_TABLE", emsCatalog),
+        ["[claviculario].[dbo].[eventos]"] = GetMappedObjectIdentifier("CLAV_EVENTOS_TABLE", clavCatalog),
+        ["dbo.jp4_sp_DoorCritical"] = GetMappedObjectIdentifier("HWR_PROC_DOOR_CRITICAL"),
+        ["dbo.jp4_sp_DoorGeneral"] = GetMappedObjectIdentifier("HWR_PROC_DOOR_GENERAL"),
+        ["dbo.jp4_sp_DoorGeneral_byName"] = GetMappedObjectIdentifier("HWR_PROC_DOOR_GENERAL_BYNAME"),
+        ["dbo.jp4_sp_DoorGeneral_bysite"] = GetMappedObjectIdentifier("HWR_PROC_DOOR_GENERAL_BYSITE"),
+        ["dbo.jp4_sp_Eventos_Claviculario"] = GetMappedObjectIdentifier("CLAV_PROC_EVENTOS")
+    };
+
+    foreach (var replacement in replacements)
+        sql = sql.Replace(replacement.Key, replacement.Value, StringComparison.OrdinalIgnoreCase);
+
+    return sql;
 }
 
 try
@@ -1291,13 +1451,17 @@ app.MapGet("/api/admin/report-options", () =>
         if (s is "landscape" or "paisagem") return "landscape";
         return "landscape";
     }
+    var selectedFormat = GetFlag("REPORT_EXCEL") ? "excel"
+        : GetFlag("REPORT_XLSX") ? "xlsx"
+        : GetFlag("REPORT_PDF") ? "pdf"
+        : "pdf";
     return Results.Ok(new
     {
         txt = false,
-        xlsx = GetFlag("REPORT_XLSX"),
-        pdf = GetFlag("REPORT_PDF"),
+        xlsx = selectedFormat == "xlsx",
+        pdf = selectedFormat == "pdf",
         word = false,
-        excel = GetFlag("REPORT_EXCEL"),
+        excel = selectedFormat == "excel",
         csv = false,
         cover = GetFlag("REPORT_PDF_COVER"),
         coverOrientation = GetOrientation("REPORT_PDF_COVER_ORIENTATION"),
@@ -1343,13 +1507,17 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
     }
     var coverOrientation = GetOrientation("coverOrientation", "landscape");
     var reportOrientation = GetOrientation("reportOrientation", "landscape");
+    var selectedFormat = GetBool("excel") ? "excel"
+        : GetBool("xlsx") ? "xlsx"
+        : GetBool("pdf") ? "pdf"
+        : "pdf";
     var values = new Dictionary<string, string>
     {
         ["REPORT_TXT"] = "0",
-        ["REPORT_XLSX"] = GetBool("xlsx") ? "1" : "0",
-        ["REPORT_PDF"] = GetBool("pdf") ? "1" : "0",
+        ["REPORT_XLSX"] = selectedFormat == "xlsx" ? "1" : "0",
+        ["REPORT_PDF"] = selectedFormat == "pdf" ? "1" : "0",
         ["REPORT_WORD"] = "0",
-        ["REPORT_EXCEL"] = GetBool("excel") ? "1" : "0",
+        ["REPORT_EXCEL"] = selectedFormat == "excel" ? "1" : "0",
         ["REPORT_CSV"] = "0",
         ["REPORT_PDF_COVER"] = GetBool("cover") ? "1" : "0",
         ["REPORT_PDF_COVER_ORIENTATION"] = coverOrientation,
@@ -1679,6 +1847,65 @@ app.MapGet("/api/admin/connections", () =>
     }
     
     return Results.Ok(new { CMS = cms, Logins = logins, EMS = ems, HWR = hwr, CLAV = clav, mode = dbMode });
+}).RequireAuthorization("AdminsOnly");
+
+
+app.MapGet("/api/admin/db-object-map", () =>
+{
+    var values = GetResolvedObjectMap();
+    var items = dbObjectMapDefaults.Keys
+        .OrderBy(k => dbObjectMapConnections.TryGetValue(k, out var conn) ? conn : "")
+        .ThenBy(k => dbObjectMapLabels.TryGetValue(k, out var label) ? label : k)
+        .Select(k => new
+        {
+            key = k,
+            label = dbObjectMapLabels.TryGetValue(k, out var label) ? label : k,
+            connection = dbObjectMapConnections.TryGetValue(k, out var conn) ? conn : "",
+            defaultValue = dbObjectMapDefaults[k],
+            value = values[k]
+        });
+    return Results.Ok(new { items });
+}).RequireAuthorization("AdminsOnly");
+
+app.MapPost("/api/admin/db-object-map", async (HttpContext ctx) =>
+{
+    var dto = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+    if (dto == null) return Results.BadRequest(new { error = "Payload inválido" });
+
+    var changes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var key in dbObjectMapDefaults.Keys)
+    {
+        if (!dto.TryGetValue(key, out var incoming)) continue;
+        var normalized = (incoming ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            dbObjectMapOverrides.Remove(key);
+            changes["DB_OBJ_" + key] = "";
+        }
+        else
+        {
+            dbObjectMapOverrides[key] = normalized;
+            changes["DB_OBJ_" + key] = normalized;
+        }
+    }
+
+    if (changes.Count > 0)
+        SaveEnv(changes);
+
+    var values = GetResolvedObjectMap();
+    var items = dbObjectMapDefaults.Keys
+        .OrderBy(k => dbObjectMapConnections.TryGetValue(k, out var conn) ? conn : "")
+        .ThenBy(k => dbObjectMapLabels.TryGetValue(k, out var label) ? label : k)
+        .Select(k => new
+        {
+            key = k,
+            label = dbObjectMapLabels.TryGetValue(k, out var label) ? label : k,
+            connection = dbObjectMapConnections.TryGetValue(k, out var conn) ? conn : "",
+            defaultValue = dbObjectMapDefaults[k],
+            value = values[k]
+        });
+
+    return Results.Ok(new { items });
 }).RequireAuthorization("AdminsOnly");
 
 app.MapGet("/api/admin/db-info", async () =>
@@ -2967,7 +3194,7 @@ app.MapGet("/api/reports/population", async (string start, string end) =>
     cmd.CommandTimeout = 120;
     cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
     cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 WITH EmpFunc AS (
     SELECT DISTINCT e.SbiID
     FROM Employee e
@@ -3002,7 +3229,7 @@ FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpPrest p ON p.SbiID =
 UNION ALL
 SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
 FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
-";
+");
     using var r = await cmd.ExecuteReaderAsync();
     var items = new List<object>();
     while (await r.ReadAsync())
@@ -3031,7 +3258,7 @@ app.MapGet("/api/reports/population/export", async (HttpContext http, string sta
     cmd.CommandTimeout = 120;
     cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
     cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 WITH EmpFunc AS (
     SELECT DISTINCT e.SbiID
     FROM Employee e
@@ -3066,7 +3293,7 @@ FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpPrest p ON p.SbiID =
 UNION ALL
 SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
 FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
-";
+");
     using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
     var rows = new List<(string Label, int Total)>();
     while (await r.ReadAsync(http.RequestAborted))
@@ -3202,11 +3429,11 @@ WHERE
     }
     catch (SqlException ex) when (ex.Number == 2812)
     {
-        return Results.Problem(title: "Procedure não encontrada", detail: "Não foi possível localizar dbo.jp4_sp_Eventos_Claviculario no banco configurado em CLAV.", statusCode: 500);
+        return Results.Problem(title: "Procedure não encontrada", detail: $"Não foi possível localizar {GetMappedObjectName("CLAV_PROC_EVENTOS")} no banco configurado em CLAV.", statusCode: 500);
     }
     catch (SqlException ex) when (ex.Number == 229)
     {
-        return Results.Problem(title: "Sem permissão", detail: "Sem permissão para executar dbo.jp4_sp_Eventos_Claviculario no banco configurado em CLAV.", statusCode: 500);
+        return Results.Problem(title: "Sem permissão", detail: $"Sem permissão para executar {GetMappedObjectName("CLAV_PROC_EVENTOS")} no banco configurado em CLAV.", statusCode: 500);
     }
     catch (SqlException ex) when (ex.Number == 208)
     {
@@ -3214,7 +3441,7 @@ WHERE
     }
     catch (SqlException ex)
     {
-        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}). Verifique permissões para executar dbo.jp4_sp_Eventos_Claviculario e a conexão CLAV.", statusCode: 500);
+        return Results.Problem(title: "Erro ao consultar", detail: $"Falha ao executar a consulta Eventos_Claviculario (SQL {ex.Number}). Verifique permissões para executar {GetMappedObjectName("CLAV_PROC_EVENTOS")} e a conexão CLAV.", statusCode: 500);
     }
     using var _r = r;
     var items = new List<object>();
@@ -3500,63 +3727,143 @@ ORDER BY u.UF2, t.TERMINAL";
 // new report: door critical events generated by jp4_sp_DoorCritical
 // supports pagination via page/pageSize params for progressive loading
 // Uses server-side cache so the SP runs only once per query
-var doorCriticalCache = new Dictionary<string, List<dynamic>>(StringComparer.OrdinalIgnoreCase);
+var doorCriticalCache = new Dictionary<string, DoorQueryCacheEntry>(StringComparer.OrdinalIgnoreCase);
 var doorCriticalCacheLock = new object();
 string DoorCriticalCacheKey(DateTime start, DateTime end, string? sourceList) =>
     $"{start:O}|{end:O}|{sourceList ?? ""}";
 
-app.MapGet("/api/reports/door-critical", async (string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
+var doorGeneralCache = new Dictionary<string, DoorQueryCacheEntry>(StringComparer.OrdinalIgnoreCase);
+var doorGeneralCacheLock = new object();
+string DoorGeneralCacheKey(DateTime start, DateTime end, string? sourceList) =>
+    $"{start:O}|{end:O}|{sourceList ?? ""}";
+
+var doorGeneralByNameCache = new Dictionary<string, DoorQueryCacheEntry>(StringComparer.OrdinalIgnoreCase);
+var doorGeneralByNameCacheLock = new object();
+string DoorGeneralByNameCacheKey(DateTime start, DateTime end, string? sourceList, string? name) =>
+    $"{start:O}|{end:O}|{sourceList ?? ""}|{name ?? ""}";
+
+HashSet<string>? BuildDoorAllowSet(string? sourceList)
 {
-    try
+    if (string.IsNullOrWhiteSpace(sourceList)) return null;
+    return new HashSet<string>(
+        sourceList.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        StringComparer.OrdinalIgnoreCase);
+}
+
+bool DoorTagAllowed(HashSet<string>? allow, string? tag) =>
+    allow == null || (!string.IsNullOrWhiteSpace(tag) && allow.Contains(tag));
+
+(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso) ReadDoorRow(SqlDataReader r)
+{
+    return (
+        EventID: r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+        TimeOrder: r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+        DataHora: r.IsDBNull(2) ? null : r.GetString(2),
+        TAG: r.IsDBNull(3) ? null : r.GetString(3),
+        Acesso: r.IsDBNull(4) ? null : r.GetString(4),
+        Evento: r.IsDBNull(5) ? null : r.GetString(5),
+        NomeCompleto: r.IsDBNull(6) ? null : r.GetString(6),
+        DocumentoMatricula: r.IsDBNull(7) ? null : r.GetString(7),
+        Cartao: r.IsDBNull(8) ? null : r.GetString(8),
+        Tipo: r.IsDBNull(9) ? null : r.GetString(9),
+        Empresa: r.IsDBNull(10) ? null : r.GetString(10),
+        StatusAcesso: r.IsDBNull(11) ? null : r.GetString(11),
+        DetalheStatusAcesso: r.IsDBNull(12) ? null : r.GetString(12)
+    );
+}
+
+void AddDoorRow(DoorQueryCacheEntry entry, (long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso) row)
+{
+    lock (entry.SyncRoot)
     {
-        var startDt = ParseDate(start);
-        var endDt = ParseDate(end);
-        var offset = (page - 1) * pageSize;
-        var cacheKey = DoorCriticalCacheKey(startDt, endDt, sourceList);
+        entry.Items.Add(row);
+    }
+}
 
-        List<dynamic>? allItems;
+void CompleteDoorEntry(DoorQueryCacheEntry entry)
+{
+    lock (entry.SyncRoot)
+    {
+        entry.IsComplete = true;
+    }
+}
 
-        // First request: execute SP and cache
-        if (page <= 1)
+void FailDoorEntry(DoorQueryCacheEntry entry, Exception ex)
+{
+    lock (entry.SyncRoot)
+    {
+        entry.Error = ex.Message;
+        entry.IsComplete = true;
+    }
+}
+
+async Task WaitForDoorCachePageAsync(DoorQueryCacheEntry entry, int requiredCount)
+{
+    while (true)
+    {
+        lock (entry.SyncRoot)
         {
-            allItems = new List<dynamic>();
-            using var cn = new SqlConnection(GetConn("HWR"));
-            await cn.OpenAsync();
-            using var cmd = cn.CreateCommand();
-            cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
-            cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
-            cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
-            cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
-            try
+            if (!string.IsNullOrWhiteSpace(entry.Error))
+                throw new InvalidOperationException(entry.Error);
+            if (entry.Items.Count >= requiredCount || entry.IsComplete)
+                return;
+        }
+        await Task.Delay(75);
+    }
+}
+
+async Task WaitForDoorCacheCompleteAsync(DoorQueryCacheEntry entry)
+{
+    while (true)
+    {
+        lock (entry.SyncRoot)
+        {
+            if (!string.IsNullOrWhiteSpace(entry.Error))
+                throw new InvalidOperationException(entry.Error);
+            if (entry.IsComplete)
+                return;
+        }
+        await Task.Delay(100);
+    }
+}
+
+DoorQueryCacheEntry GetOrStartDoorCriticalCacheEntry(DateTime startDt, DateTime endDt, string? sourceList)
+{
+    var cacheKey = DoorCriticalCacheKey(startDt, endDt, sourceList);
+    lock (doorCriticalCacheLock)
+    {
+        if (!doorCriticalCache.TryGetValue(cacheKey, out var entry))
+        {
+            entry = new DoorQueryCacheEntry();
+            var allow = BuildDoorAllowSet(sourceList);
+            entry.LoadTask = Task.Run(async () =>
             {
-                using var r = await cmd.ExecuteReaderAsync();
-                while (await r.ReadAsync())
+                try
                 {
-                    allItems.Add(new
+                    using var cn = new SqlConnection(GetConn("HWR"));
+                    await cn.OpenAsync();
+                    using var cmd = cn.CreateCommand();
+                    cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
+                    cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim");
+                    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    try
                     {
-                        EventID = r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
-                        TimeOrder = r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
-                        DataHora = r.IsDBNull(2) ? null : r.GetString(2),
-                        TAG = r.IsDBNull(3) ? null : r.GetString(3),
-                        Acesso = r.IsDBNull(4) ? null : r.GetString(4),
-                        Evento = r.IsDBNull(5) ? null : r.GetString(5),
-                        NomeCompleto = r.IsDBNull(6) ? null : r.GetString(6),
-                        DocumentoMatricula = r.IsDBNull(7) ? null : r.GetString(7),
-                        Cartao = r.IsDBNull(8) ? null : r.GetString(8),
-                        Tipo = r.IsDBNull(9) ? null : r.GetString(9),
-                        Empresa = r.IsDBNull(10) ? null : r.GetString(10),
-                        StatusAcesso = r.IsDBNull(11) ? null : r.GetString(11),
-                        DetalheStatusAcesso = r.IsDBNull(12) ? null : r.GetString(12)
-                    });
-                }
-            }
-            catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
-            {
-                using var cn2 = new SqlConnection(GetConn("CMS"));
-                await cn2.OpenAsync();
-                using var cmd2 = cn2.CreateCommand();
-                cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
-                cmd2.CommandText = @"
+                        using var r = await cmd.ExecuteReaderAsync();
+                        while (await r.ReadAsync())
+                        {
+                            var row = ReadDoorRow(r);
+                            if (DoorTagAllowed(allow, row.TAG))
+                                AddDoorRow(entry, row);
+                        }
+                    }
+                    catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+                    {
+                        using var cn2 = new SqlConnection(GetConn("CMS"));
+                        await cn2.OpenAsync();
+                        using var cmd2 = cn2.CreateCommand();
+                        cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
+                        cmd2.CommandText = @"
 SELECT
     ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
     t.TRANSIT_DATE AS TimeOrder,
@@ -3580,56 +3887,189 @@ LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
 WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
 ";
-                cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
-                cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
-                using var r2 = await cmd2.ExecuteReaderAsync();
-                while (await r2.ReadAsync())
-                {
-                    allItems.Add(new
-                    {
-                        EventID = r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
-                        TimeOrder = r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
-                        DataHora = r2.IsDBNull(2) ? null : r2.GetString(2),
-                        TAG = r2.IsDBNull(3) ? null : r2.GetString(3),
-                        Acesso = r2.IsDBNull(4) ? null : r2.GetString(4),
-                        Evento = r2.IsDBNull(5) ? null : r2.GetString(5),
-                        NomeCompleto = r2.IsDBNull(6) ? null : r2.GetString(6),
-                        DocumentoMatricula = r2.IsDBNull(7) ? null : r2.GetString(7),
-                        Cartao = r2.IsDBNull(8) ? null : r2.GetString(8),
-                        Tipo = r2.IsDBNull(9) ? null : r2.GetString(9),
-                        Empresa = r2.IsDBNull(10) ? null : r2.GetString(10),
-                        StatusAcesso = r2.IsDBNull(11) ? null : r2.GetString(11),
-                        DetalheStatusAcesso = r2.IsDBNull(12) ? null : r2.GetString(12)
-                    });
+                        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+                        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+                        using var r2 = await cmd2.ExecuteReaderAsync();
+                        while (await r2.ReadAsync())
+                        {
+                            var row = ReadDoorRow(r2);
+                            if (DoorTagAllowed(allow, row.TAG))
+                                AddDoorRow(entry, row);
+                        }
+                    }
+                    CompleteDoorEntry(entry);
                 }
-            }
-
-            // Apply sourceList filter
-            if (!string.IsNullOrWhiteSpace(sourceList))
-            {
-                var allow = new HashSet<string>(sourceList!.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
-                allItems = allItems.Where(x => x.TAG != null && allow.Contains((string)x.TAG)).ToList();
-            }
-
-            // Cache with 10min TTL
-            lock (doorCriticalCacheLock)
-            {
-                doorCriticalCache[cacheKey] = allItems;
-            }
+                catch (Exception ex)
+                {
+                    FailDoorEntry(entry, ex);
+                }
+            });
+            doorCriticalCache[cacheKey] = entry;
         }
-        else
+        return entry;
+    }
+}
+
+DoorQueryCacheEntry GetOrStartDoorGeneralCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList)
+{
+    var cacheKey = DoorGeneralCacheKey(startDt, endDt, effectiveSourceList);
+    lock (doorGeneralCacheLock)
+    {
+        if (!doorGeneralCache.TryGetValue(cacheKey, out var entry))
         {
-            // Subsequent pages: read from cache
-            lock (doorCriticalCacheLock)
+            entry = new DoorQueryCacheEntry();
+            var allow = BuildDoorAllowSet(effectiveSourceList);
+            entry.LoadTask = Task.Run(async () =>
             {
-                doorCriticalCache.TryGetValue(cacheKey, out allItems);
-            }
-            if (allItems == null)
-                return Results.BadRequest(new { success = false, error = "Cache expirado. Execute novamente a partir da página 1." });
+                try
+                {
+                    using var cn = new SqlConnection(GetConn("HWR"));
+                    await cn.OpenAsync();
+                    using var cmd = cn.CreateCommand();
+                    cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
+                    cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList");
+                    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" });
+                    try
+                    {
+                        using var r = await cmd.ExecuteReaderAsync();
+                        while (await r.ReadAsync())
+                        {
+                            var row = ReadDoorRow(r);
+                            if (DoorTagAllowed(allow, row.TAG))
+                                AddDoorRow(entry, row);
+                        }
+                    }
+                    catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+                    {
+                        using var cn2 = new SqlConnection(GetConn("CMS"));
+                        await cn2.OpenAsync();
+                        using var cmd2 = cn2.CreateCommand();
+                        cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
+                        cmd2.CommandText = @"
+SELECT
+    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+    t.TRANSIT_DATE AS TimeOrder,
+    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
+    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
+    ISNULL(v.DESCRIPTION,'') AS Acesso,
+    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
+    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
+    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
+    ISNULL(c.CardNumber,'') AS Cartao,
+    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
+    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
+    CAST(NULL AS varchar(50)) AS StatusAcesso,
+    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
+FROM HA_TRANSIT t
+LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
+LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+";
+                        cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+                        cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+                        using var r2 = await cmd2.ExecuteReaderAsync();
+                        while (await r2.ReadAsync())
+                        {
+                            var row = ReadDoorRow(r2);
+                            if (DoorTagAllowed(allow, row.TAG))
+                                AddDoorRow(entry, row);
+                        }
+                    }
+                    CompleteDoorEntry(entry);
+                }
+                catch (Exception ex)
+                {
+                    FailDoorEntry(entry, ex);
+                }
+            });
+            doorGeneralCache[cacheKey] = entry;
+        }
+        return entry;
+    }
+}
+
+DoorQueryCacheEntry GetOrStartDoorGeneralByNameCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList, string? name)
+{
+    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name);
+    lock (doorGeneralByNameCacheLock)
+    {
+        if (!doorGeneralByNameCache.TryGetValue(cacheKey, out var entry))
+        {
+            entry = new DoorQueryCacheEntry();
+            entry.LoadTask = Task.Run(async () =>
+            {
+                try
+                {
+                    using var cn = new SqlConnection(GetConn("HWR"));
+                    await cn.OpenAsync();
+                    using var cmd = cn.CreateCommand();
+                    cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
+                    cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
+                    cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
+                    cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" });
+                    cmd.Parameters.Add(new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" });
+                    using var r = await cmd.ExecuteReaderAsync();
+                    while (await r.ReadAsync())
+                    {
+                        AddDoorRow(entry, ReadDoorRow(r));
+                    }
+                    CompleteDoorEntry(entry);
+                }
+                catch (Exception ex)
+                {
+                    FailDoorEntry(entry, ex);
+                }
+            });
+            doorGeneralByNameCache[cacheKey] = entry;
+        }
+        return entry;
+    }
+}
+
+app.MapGet("/api/reports/door-critical", async (string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
+{
+    try
+    {
+        var startDt = ParseDate(start);
+        var endDt = ParseDate(end);
+        var offset = (page - 1) * pageSize;
+        var entry = GetOrStartDoorCriticalCacheEntry(startDt, endDt, sourceList);
+        await WaitForDoorCachePageAsync(entry, offset + pageSize);
+
+        List<object> items;
+        int? total;
+        lock (entry.SyncRoot)
+        {
+            items = entry.Items
+                .Skip(offset)
+                .Take(pageSize)
+                .Select(x => (object)new
+                {
+                    x.EventID,
+                    x.TimeOrder,
+                    x.DataHora,
+                    x.TAG,
+                    x.Acesso,
+                    x.Evento,
+                    x.NomeCompleto,
+                    x.DocumentoMatricula,
+                    x.Cartao,
+                    x.Tipo,
+                    x.Empresa,
+                    x.StatusAcesso,
+                    x.DetalheStatusAcesso
+                })
+                .ToList();
+            total = entry.IsComplete ? entry.Items.Count : null;
         }
 
-        var total = allItems.Count;
-        var items = allItems.Skip(offset).Take(pageSize).ToList();
         return Results.Ok(new { success = true, total, count = items.Count, items, page, pageSize });
     }
     catch (Exception ex)
@@ -3642,34 +4082,26 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
-    var cacheKey = DoorCriticalCacheKey(startDt, endDt, null);
+    var cacheKey = DoorCriticalCacheKey(startDt, endDt, sourceList);
 
     // Try cache first
     List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
+    DoorQueryCacheEntry? cachedEntry;
     lock (doorCriticalCacheLock)
     {
-        if (doorCriticalCache.TryGetValue(cacheKey, out var cached) && cached != null && cached.Count > 0)
+        doorCriticalCache.TryGetValue(cacheKey, out cachedEntry);
+    }
+    if (cachedEntry != null)
+    {
+        await WaitForDoorCacheCompleteAsync(cachedEntry);
+        lock (cachedEntry.SyncRoot)
         {
-            rows = cached.Select(x => (
-                EventID: (long)x.EventID,
-                TimeOrder: (DateTime?)x.TimeOrder,
-                DataHora: (string?)x.DataHora,
-                TAG: (string?)x.TAG,
-                Acesso: (string?)x.Acesso,
-                Evento: (string?)x.Evento,
-                NomeCompleto: (string?)x.NomeCompleto,
-                DocumentoMatricula: (string?)x.DocumentoMatricula,
-                Cartao: (string?)x.Cartao,
-                Tipo: (string?)x.Tipo,
-                Empresa: (string?)x.Empresa,
-                StatusAcesso: (string?)x.StatusAcesso,
-                DetalheStatusAcesso: (string?)x.DetalheStatusAcesso
-            )).ToList();
+            rows = cachedEntry.Items.ToList();
         }
-        else
-        {
-            rows = null!;
-        }
+    }
+    else
+    {
+        rows = null!;
     }
 
     // Fallback: run SP if no cache
@@ -3679,7 +4111,7 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
-        cmd.CommandText = "EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim";
+        cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorCritical @DataInicio, @DataFim");
         cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
         cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
         try
@@ -3786,7 +4218,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
         var (clientName, _) = await GetReportClientInfoAsync(ctx);
         var generatedBy = GetReportUser(ctx);
         var includeCover = ShouldIncludeCover(ctx);
-        var (_, reportPortrait) = GetPdfOrientationFlags(ctx);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(ctx);
         var mapped = rows.Select(x => (
             DataHora: x.DataHora,
             TAG: x.TAG,
@@ -3799,7 +4231,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Críticos", startDt, endDt, mapped, generatedBy, includeCover, "Escopo: Eventos Críticos", reportPortrait);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Críticos", startDt, endDt, mapped, generatedBy, includeCover, "Escopo: Eventos Críticos", coverPortrait, reportPortrait);
         var rel = SaveReportFile("door-critical.xlsx", bytesX, app.Environment);
         ctx.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
@@ -3914,30 +4346,22 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
     var headerBg = "#0b3d2e";
     var rowAlt = "#f4f7f5";
     var border = "#d1d5db";
+    var reportCriteria = includeCover ? null : criteria;
     var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
     var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
-    byte[]? leftLogo = null;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
     byte[]? rightLogo = clientLogo;
     byte[]? honeywellLogo = null;
     byte[]? jumperBrand = null;
     try
     {
         var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
-        var jumperLogoRepo = Path.Combine(repoRoot, "img", "logoJumper.jpg");
-        var jumperLogoWww = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "img", "logoJumper.jpg");
-        if (System.IO.File.Exists(jumperLogoRepo)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoRepo);
-        else if (System.IO.File.Exists(jumperLogoWww)) leftLogo = System.IO.File.ReadAllBytes(jumperLogoWww);
         var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
         if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
         var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
         if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
 
         var env = LoadEnv();
-        if (leftLogo == null && env.TryGetValue("REPORT_LOGO_LEFT", out var lp) && !string.IsNullOrWhiteSpace(lp))
-        {
-            var full = lp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", lp.TrimStart('/')) : lp;
-            if (System.IO.File.Exists(full)) leftLogo = System.IO.File.ReadAllBytes(full);
-        }
         if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
         {
             var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
@@ -3948,56 +4372,91 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
 
     return Document.Create(container =>
     {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        if (!string.IsNullOrWhiteSpace(sub)) info.Item().Text(sub).FontSize(12);
+                        if (!string.IsNullOrWhiteSpace(criteria))
+                            foreach (var line in criteria.Split('\n'))
+                                if (!string.IsNullOrWhiteSpace(line))
+                                    info.Item().Text(line.Trim()).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
         container.Page(page =>
         {
             page.Size(reportSize);
             page.Margin(18);
             page.DefaultTextStyle(x => x.FontSize(9));
 
-            // Header with logos
-            page.Header().Column(h =>
+            page.Content().Column(col =>
             {
-                h.Item().Row(row =>
+                col.Item().PaddingBottom(8).Column(h =>
                 {
-                    row.ConstantItem(100).AlignLeft().Element(e =>
-                    {
-                        if (leftLogo != null)
-                        {
-                            try { e.Width(90).Height(30).Image(leftLogo, ImageScaling.FitArea); }
-                            catch { }
-                        }
-                    });
-                    row.RelativeItem().AlignRight().Element(e =>
-                    {
-                        if (honeywellLogo != null)
-                        {
-                            try { e.Width(160).Height(30).Image(honeywellLogo, ImageScaling.FitArea); }
-                            catch { }
-                        }
-                    });
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    if (!string.IsNullOrWhiteSpace(sub)) h.Item().Text(sub).FontSize(9).FontColor("#374151");
+                    if (!string.IsNullOrWhiteSpace(reportCriteria))
+                        foreach (var line in reportCriteria.Split('\n'))
+                            if (!string.IsNullOrWhiteSpace(line))
+                                h.Item().Text(line.Trim()).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
                 });
-                h.Item().PaddingTop(4).LineHorizontal(2).LineColor("#E4002B");
-            });
 
-            page.Content().Column(content =>
-            {
-                // Info block at top (instead of a separate cover page)
-                if (includeCover)
-                {
-                    content.Item().PaddingTop(8).Column(info =>
-                    {
-                        info.Spacing(4);
-                        info.Item().Text(title).FontSize(16).SemiBold().FontColor(accent);
-                        if (!string.IsNullOrWhiteSpace(sub)) info.Item().Text(sub).FontSize(11);
-                        if (!string.IsNullOrWhiteSpace(criteria)) info.Item().Text(criteria).FontSize(10);
-                        info.Item().Text($"Cliente: {clientName}").FontSize(10);
-                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(9).FontColor("#374151");
-                        info.Item().PaddingBottom(8).Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(9).FontColor("#374151");
-                    });
-                }
-
-                // Data table
-                content.Item().Table(table =>
+                col.Item().Table(table =>
                 {
                     table.ColumnsDefinition(c =>
                     {
@@ -4013,50 +4472,50 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
                         c.RelativeColumn(0.7f); // Status
                     });
 
-                IContainer HeaderCell(IContainer x) => x
-                    .Background(headerBg)
-                    .Border(0.5f).BorderColor(border)
-                    .PaddingVertical(4).PaddingHorizontal(6)
-                    .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
 
-                IContainer Cell(IContainer x, bool alt) => x
-                    .Background(alt ? rowAlt : "#ffffff")
-                    .Border(0.5f).BorderColor(border)
-                    .PaddingVertical(3).PaddingHorizontal(6);
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
 
-                table.Header(h =>
-                {
-                    h.Cell().Element(HeaderCell).Text("DATA/HORA");
-                    h.Cell().Element(HeaderCell).Text("TAG");
-                    h.Cell().Element(HeaderCell).Text("ACESSO");
-                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("EVENTO");
-                    h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
-                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("MATRÍCULA");
-                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("CARTÃO");
-                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("TIPO");
-                    h.Cell().Element(HeaderCell).Text("EMPRESA");
-                    h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("STATUS");
-                });
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("DATA/HORA");
+                        h.Cell().Element(HeaderCell).Text("TAG");
+                        h.Cell().Element(HeaderCell).Text("ACESSO");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("EVENTO");
+                        h.Cell().Element(HeaderCell).Text("NOME COMPLETO");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("MATRÍCULA");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("CARTÃO");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("TIPO");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(x => HeaderCell(x).AlignCenter()).Text("STATUS");
+                    });
 
-                for (int i = 0; i < rows.Count; i++)
-                {
-                    var r = rows[i];
-                    var alt = i % 2 == 1;
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.TAG ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Acesso ?? "");
-                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Evento ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
-                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.DocumentoMatricula ?? "");
-                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Cartao ?? "");
-                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Tipo ?? "");
-                    table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
-                    table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.StatusDisplay ?? "");
-                }
-            }); // Table
-        }); // Column / Content
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.DataHora ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.TAG ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Acesso ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Evento ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.DocumentoMatricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Cartao ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.Tipo ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt).AlignCenter()).Text(r.StatusDisplay ?? "");
+                    }
+                }); // Table
+            }); // Column
 
-        page.Footer().Column(col =>
+            page.Footer().Column(col =>
             {
                 col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
                 col.Item().PaddingTop(6).Row(row =>
@@ -4088,8 +4547,9 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
     }).GeneratePdf();
 }
 
-byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)> rows, string generatedBy, bool includeCover, string? criteria, bool reportPortrait)
+byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)> rows, string generatedBy, bool includeCover, string? criteria, bool coverPortrait, bool reportPortrait)
 {
+    includeCover = false; // XLSX deve sair apenas com a aba de relatorio; a capa permanece exclusiva do PDF.
     byte[]? honeywellLogo = null;
     byte[]? jumperBrand = null;
     try
@@ -4107,7 +4567,6 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
     {
         var wb = doc.AddWorkbookPart();
         wb.Workbook = new Workbook();
-
         var styles = wb.AddNewPart<WorkbookStylesPart>();
         styles.Stylesheet = new Stylesheet(
             new Fonts(
@@ -4149,10 +4608,98 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             )
         );
         styles.Stylesheet.Save();
+        var sheets = wb.Workbook.AppendChild(new Sheets());
+        uint nextSheetId = 1;
 
-        var wsPart = wb.AddNewPart<WorksheetPart>();
-        var sheetData = new SheetData();
-        var cols = new Columns(
+        SheetProperties EnsureSheetProperties(Worksheet worksheet)
+        {
+            var sheetProps = worksheet.Elements<SheetProperties>().FirstOrDefault();
+            if (sheetProps != null) return sheetProps;
+            sheetProps = new SheetProperties();
+            worksheet.InsertAt(sheetProps, 0);
+            return sheetProps;
+        }
+
+        void ApplyWorksheetPageSetup(Worksheet worksheet, OrientationValues orientation, UInt32Value fitToWidth, UInt32Value fitToHeight)
+        {
+            var sheetProps = EnsureSheetProperties(worksheet);
+            var pageSetupProps = sheetProps.Elements<PageSetupProperties>().FirstOrDefault();
+            if (pageSetupProps == null)
+            {
+                pageSetupProps = new PageSetupProperties { FitToPage = true };
+                sheetProps.Append(pageSetupProps);
+            }
+            else
+            {
+                pageSetupProps.FitToPage = true;
+            }
+
+            var pageSetup = worksheet.Elements<PageSetup>().FirstOrDefault();
+            if (pageSetup == null)
+            {
+                pageSetup = new PageSetup();
+                worksheet.Append(pageSetup);
+            }
+            pageSetup.Orientation = orientation;
+            pageSetup.FitToWidth = fitToWidth;
+            pageSetup.FitToHeight = fitToHeight;
+        }
+
+        void MoveDrawingToWorksheetEnd(Worksheet worksheet)
+        {
+            var drawing = worksheet.Elements<Drawing>().FirstOrDefault();
+            if (drawing == null) return;
+            drawing.Remove();
+            worksheet.Append(drawing);
+        }
+
+        void AddPng(WorksheetPart worksheetPart, byte[] bytes, string name, uint fromCol0, uint fromRow0, int widthPx, int heightPx, ref uint picId)
+        {
+            var drawingsPart = worksheetPart.DrawingsPart ?? worksheetPart.AddNewPart<DrawingsPart>();
+            if (worksheetPart.Worksheet.Elements<Drawing>().FirstOrDefault() == null)
+                worksheetPart.Worksheet.Append(new Drawing { Id = worksheetPart.GetIdOfPart(drawingsPart) });
+            if (drawingsPart.WorksheetDrawing == null)
+                drawingsPart.WorksheetDrawing = new DocumentFormat.OpenXml.Drawing.Spreadsheet.WorksheetDrawing();
+
+            var part = drawingsPart.AddImagePart(ImagePartType.Png);
+            using (var img = new MemoryStream(bytes)) part.FeedData(img);
+            var rid = drawingsPart.GetIdOfPart(part);
+            long cx = widthPx * 9525L;
+            long cy = heightPx * 9525L;
+            var anchor = new DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor(
+                new DocumentFormat.OpenXml.Drawing.Spreadsheet.FromMarker(
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnId(fromCol0.ToString()),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnOffset("0"),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowId(fromRow0.ToString()),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowOffset("0")
+                ),
+                new DocumentFormat.OpenXml.Drawing.Spreadsheet.Extent { Cx = cx, Cy = cy },
+                new DocumentFormat.OpenXml.Drawing.Spreadsheet.Picture(
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureProperties(
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualDrawingProperties { Id = picId++, Name = name },
+                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureDrawingProperties(
+                            new DocumentFormat.OpenXml.Drawing.PictureLocks { NoChangeAspect = true }
+                        )
+                    ),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.BlipFill(
+                        new DocumentFormat.OpenXml.Drawing.Blip { Embed = rid, CompressionState = DocumentFormat.OpenXml.Drawing.BlipCompressionValues.Print },
+                        new DocumentFormat.OpenXml.Drawing.Stretch(new DocumentFormat.OpenXml.Drawing.FillRectangle())
+                    ),
+                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.ShapeProperties(
+                        new DocumentFormat.OpenXml.Drawing.Transform2D(
+                            new DocumentFormat.OpenXml.Drawing.Offset { X = 0, Y = 0 },
+                            new DocumentFormat.OpenXml.Drawing.Extents { Cx = cx, Cy = cy }
+                        ),
+                        new DocumentFormat.OpenXml.Drawing.PresetGeometry(new DocumentFormat.OpenXml.Drawing.AdjustValueList()) { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle }
+                    )
+                ),
+                new DocumentFormat.OpenXml.Drawing.Spreadsheet.ClientData()
+            );
+            drawingsPart.WorksheetDrawing.Append(anchor);
+            drawingsPart.WorksheetDrawing.Save();
+        }
+
+        Columns BuildReportColumns() => new Columns(
             new Column { Min = 1, Max = 1, Width = 20, CustomWidth = true },
             new Column { Min = 2, Max = 2, Width = 23, CustomWidth = true },
             new Column { Min = 3, Max = 3, Width = 30, CustomWidth = true },
@@ -4164,68 +4711,143 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             new Column { Min = 9, Max = 9, Width = 24, CustomWidth = true },
             new Column { Min = 10, Max = 10, Width = 11, CustomWidth = true }
         );
-        var mergeCells = new MergeCells();
-        wsPart.Worksheet = new Worksheet(cols, sheetData, mergeCells);
 
-        var sheets = wb.Workbook.AppendChild(new Sheets());
-        sheets.Append(new Sheet() { Id = wb.GetIdOfPart(wsPart), SheetId = 1, Name = "EventosDePorta" });
+        Columns BuildCoverColumns() => new Columns(
+            new Column { Min = 1, Max = 10, Width = 18, CustomWidth = true }
+        );
+
+        if (includeCover)
+        {
+            var coverPart = wb.AddNewPart<WorksheetPart>();
+            var coverSheetData = new SheetData();
+            var coverMergeCells = new MergeCells();
+            coverPart.Worksheet = new Worksheet(BuildCoverColumns(), coverSheetData, coverMergeCells);
+            sheets.Append(new Sheet() { Id = wb.GetIdOfPart(coverPart), SheetId = nextSheetId++, Name = "Capa" });
+
+            uint coverRowIndex = 1;
+            uint coverTopRow = 1;
+            uint? coverBrandRow = null;
+
+            void AddCoverMergedRow(string text, uint styleIdx, uint fromCol, uint toCol)
+            {
+                var row = new Row { RowIndex = coverRowIndex };
+                row.Append(new Cell
+                {
+                    CellReference = $"{GetExcelCol(fromCol)}{coverRowIndex}",
+                    DataType = CellValues.String,
+                    CellValue = new CellValue(text ?? ""),
+                    StyleIndex = styleIdx
+                });
+                coverSheetData.Append(row);
+                coverMergeCells.Append(new MergeCell { Reference = new StringValue($"{GetExcelCol(fromCol)}{coverRowIndex}:{GetExcelCol(toCol)}{coverRowIndex}") });
+                coverRowIndex++;
+            }
+
+            void AddCoverRow((string? text, uint styleIdx)[] cells)
+            {
+                var row = new Row { RowIndex = coverRowIndex };
+                for (uint c = 1; c <= (uint)cells.Length; c++)
+                {
+                    var (t, s) = cells[c - 1];
+                    row.Append(new Cell
+                    {
+                        CellReference = $"{GetExcelCol(c)}{coverRowIndex}",
+                        DataType = CellValues.String,
+                        CellValue = new CellValue(t ?? ""),
+                        StyleIndex = s
+                    });
+                }
+                coverSheetData.Append(row);
+                coverRowIndex++;
+            }
+
+            var line = new (string?, uint)[] { ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3) };
+            AddCoverRow(new (string?, uint)[] { ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0) });
+            AddCoverRow(line);
+            coverRowIndex++;
+            AddCoverMergedRow(title, 2, 1, 10);
+            if (start != null && end != null)
+                AddCoverMergedRow($"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}", 0, 1, 10);
+            AddCoverMergedRow("Os dados completos estao na aba: Relatorio", 4, 1, 10);
+            if (!string.IsNullOrWhiteSpace(criteria))
+            {
+                AddCoverMergedRow("REFERENCIAS DA CONSULTA", 5, 1, 10);
+                foreach (var criterionLine in (criteria ?? "").Split('\n'))
+                    if (!string.IsNullOrWhiteSpace(criterionLine))
+                        AddCoverMergedRow(criterionLine.Trim(), 0, 1, 10);
+            }
+            AddCoverMergedRow("IDENTIFICACAO DO RELATORIO", 5, 1, 10);
+            AddCoverMergedRow($"Cliente: {clientName}", 0, 1, 10);
+            AddCoverMergedRow($"Gerado por: {generatedBy}", 0, 1, 10);
+            AddCoverMergedRow($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", 0, 1, 10);
+            coverRowIndex++;
+            AddCoverRow(line);
+            coverBrandRow = coverRowIndex;
+            AddCoverMergedRow("Relatorio by", 4, 1, 10);
+
+            uint coverPicId = 1;
+            if (honeywellLogo != null)
+                AddPng(coverPart, honeywellLogo, "HoneywellCover", 8U, coverTopRow - 1U, 200, 40, ref coverPicId);
+            if (jumperBrand != null && coverBrandRow != null)
+                AddPng(coverPart, jumperBrand, "JumperFourCover", 5U, coverBrandRow.Value - 1U, 120, 22, ref coverPicId);
+
+            ApplyWorksheetPageSetup(coverPart.Worksheet, coverPortrait ? OrientationValues.Portrait : OrientationValues.Landscape, 1U, 1U);
+            MoveDrawingToWorksheetEnd(coverPart.Worksheet);
+            coverPart.Worksheet.Save();
+        }
+
+        var reportPart = wb.AddNewPart<WorksheetPart>();
+        var reportSheetData = new SheetData();
+        var reportMergeCells = new MergeCells();
+        reportPart.Worksheet = new Worksheet(BuildReportColumns(), reportSheetData, reportMergeCells);
+        sheets.Append(new Sheet() { Id = wb.GetIdOfPart(reportPart), SheetId = nextSheetId++, Name = "Relatorio" });
 
         uint rowIndex = 1;
-        var coverTopRow = 1U;
-        uint? coverByRow = null;
         uint? footerByRow = null;
-        void AddMergedRow(string text, uint styleIdx, uint fromCol, uint toCol)
+
+        void AddReportMergedRow(string text, uint styleIdx, uint fromCol, uint toCol)
         {
             var row = new Row { RowIndex = rowIndex };
-            var cell = new Cell { CellReference = $"{GetExcelCol(fromCol)}{rowIndex}", DataType = CellValues.String, CellValue = new CellValue(text ?? ""), StyleIndex = styleIdx };
-            row.Append(cell);
-            sheetData.Append(row);
-            mergeCells.Append(new MergeCell { Reference = new StringValue($"{GetExcelCol(fromCol)}{rowIndex}:{GetExcelCol(toCol)}{rowIndex}") });
+            row.Append(new Cell
+            {
+                CellReference = $"{GetExcelCol(fromCol)}{rowIndex}",
+                DataType = CellValues.String,
+                CellValue = new CellValue(text ?? ""),
+                StyleIndex = styleIdx
+            });
+            reportSheetData.Append(row);
+            reportMergeCells.Append(new MergeCell { Reference = new StringValue($"{GetExcelCol(fromCol)}{rowIndex}:{GetExcelCol(toCol)}{rowIndex}") });
             rowIndex++;
         }
-        void AddRowCells((string? text, uint styleIdx)[] cells)
+
+        void AddReportRow((string? text, uint styleIdx)[] cells)
         {
             var row = new Row { RowIndex = rowIndex };
             for (uint c = 1; c <= (uint)cells.Length; c++)
             {
                 var (t, s) = cells[c - 1];
-                row.Append(new Cell { CellReference = $"{GetExcelCol(c)}{rowIndex}", DataType = CellValues.String, CellValue = new CellValue(t ?? ""), StyleIndex = s });
+                row.Append(new Cell
+                {
+                    CellReference = $"{GetExcelCol(c)}{rowIndex}",
+                    DataType = CellValues.String,
+                    CellValue = new CellValue(t ?? ""),
+                    StyleIndex = s
+                });
             }
-            sheetData.Append(row);
-            rowIndex++;
-        }
-
-        if (includeCover)
-        {
-            AddRowCells(new (string?, uint)[] { ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("", 0) });
-            var line = new (string?, uint)[] { ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3), ("", 3) };
-            AddRowCells(line);
-            rowIndex++;
-            AddMergedRow(title, 2, 1, 10);
-            var sub = "";
-            if (start != null && end != null) sub = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}";
-            if (!string.IsNullOrWhiteSpace(sub)) AddMergedRow(sub, 0, 1, 10);
-            if (!string.IsNullOrWhiteSpace(criteria)) AddMergedRow(criteria, 0, 1, 10);
-            AddMergedRow($"Cliente: {clientName}", 0, 1, 10);
-            AddMergedRow($"Gerado por: {generatedBy}", 0, 1, 10);
-            AddMergedRow($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", 0, 1, 10);
-            rowIndex++;
-            AddRowCells(line);
-            coverByRow = rowIndex;
-            AddMergedRow("Relatório by", 4, 1, 10);
+            reportSheetData.Append(row);
             rowIndex++;
         }
 
         var headerRowIndex = rowIndex;
-        AddRowCells(new (string?, uint)[]
+        AddReportRow(new (string?, uint)[]
         {
             ("Data/Hora", 5),
             ("TAG", 5),
             ("Acesso", 5),
             ("Evento", 5),
             ("Nome Completo", 5),
-            ("MATRÍCULA", 5),
-            ("Cartão", 5),
+            ("MATRICULA", 5),
+            ("Cartao", 5),
             ("Tipo", 5),
             ("Empresa", 5),
             ("Status", 5)
@@ -4237,7 +4859,7 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             var s = alt ? (uint)7 : (uint)6;
             var sc = alt ? (uint)9 : (uint)8;
             var r = rows[i];
-            AddRowCells(new (string?, uint)[]
+            AddReportRow(new (string?, uint)[]
             {
                 (r.DataHora, s),
                 (r.TAG, s),
@@ -4252,71 +4874,14 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             });
         }
 
-        var footerRowIndex = rowIndex + 1;
-        AddMergedRow("", 0, 1, 10);
+        AddReportMergedRow("", 0, 1, 10);
         footerByRow = rowIndex;
-        AddRowCells(new (string?, uint)[] { ("Página 1 de 1", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("Relatório by", 4), ("", 0), ("", 0), ("", 0), (clientName, 0) });
+        AddReportRow(new (string?, uint)[] { ("Pagina 1 de 1", 0), ("", 0), ("", 0), ("", 0), ("", 0), ("Relatorio by", 4), ("", 0), ("", 0), ("", 0), (clientName, 0) });
 
-        if (includeCover && (honeywellLogo != null || jumperBrand != null))
+        if (jumperBrand != null && footerByRow != null)
         {
-            var drawingsPart = wsPart.AddNewPart<DrawingsPart>();
-            wsPart.Worksheet.Append(new Drawing { Id = wsPart.GetIdOfPart(drawingsPart) });
-            drawingsPart.WorksheetDrawing = new DocumentFormat.OpenXml.Drawing.Spreadsheet.WorksheetDrawing();
-            uint picId = 1;
-
-            void AddPng(byte[] bytes, string name, uint fromCol0, uint fromRow0, int widthPx, int heightPx)
-            {
-                var part = drawingsPart.AddImagePart(ImagePartType.Png);
-                using (var img = new MemoryStream(bytes)) part.FeedData(img);
-                var rid = drawingsPart.GetIdOfPart(part);
-                long cx = widthPx * 9525L;
-                long cy = heightPx * 9525L;
-                var anchor = new DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor(
-                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.FromMarker(
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnId(fromCol0.ToString()),
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnOffset("0"),
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowId(fromRow0.ToString()),
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowOffset("0")
-                    ),
-                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.Extent { Cx = cx, Cy = cy },
-                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.Picture(
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureProperties(
-                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualDrawingProperties { Id = picId++, Name = name },
-                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureDrawingProperties(
-                                new DocumentFormat.OpenXml.Drawing.PictureLocks { NoChangeAspect = true }
-                            )
-                        ),
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.BlipFill(
-                            new DocumentFormat.OpenXml.Drawing.Blip { Embed = rid, CompressionState = DocumentFormat.OpenXml.Drawing.BlipCompressionValues.Print },
-                            new DocumentFormat.OpenXml.Drawing.Stretch(new DocumentFormat.OpenXml.Drawing.FillRectangle())
-                        ),
-                        new DocumentFormat.OpenXml.Drawing.Spreadsheet.ShapeProperties(
-                            new DocumentFormat.OpenXml.Drawing.Transform2D(
-                                new DocumentFormat.OpenXml.Drawing.Offset { X = 0, Y = 0 },
-                                new DocumentFormat.OpenXml.Drawing.Extents { Cx = cx, Cy = cy }
-                            ),
-                            new DocumentFormat.OpenXml.Drawing.PresetGeometry(new DocumentFormat.OpenXml.Drawing.AdjustValueList()) { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle }
-                        )
-                    ),
-                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.ClientData()
-                );
-                drawingsPart.WorksheetDrawing.Append(anchor);
-            }
-
-            if (honeywellLogo != null)
-            {
-                AddPng(honeywellLogo, "Honeywell", 8U, coverTopRow - 1U, 200, 40);
-            }
-            if (jumperBrand != null && coverByRow != null)
-            {
-                AddPng(jumperBrand, "JumperFour", 5U, coverByRow.Value - 1U, 120, 22);
-            }
-            if (jumperBrand != null && footerByRow != null)
-            {
-                AddPng(jumperBrand, "JumperFourFooter", 6U, footerByRow.Value - 1U, 110, 20);
-            }
-
-            drawingsPart.WorksheetDrawing.Save();
+            uint reportPicId = 1;
+            AddPng(reportPart, jumperBrand, "JumperFourFooter", 6U, footerByRow.Value - 1U, 110, 20, ref reportPicId);
         }
 
         var sheetViews = new SheetViews();
@@ -4329,13 +4894,11 @@ byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime?
             State = PaneStateValues.Frozen
         };
         sheetViews.Append(sv);
-        wsPart.Worksheet.InsertAt(sheetViews, 0);
+        reportPart.Worksheet.InsertAt(sheetViews, 0);
 
-        var pageSetup = new PageSetup { Orientation = reportPortrait ? OrientationValues.Portrait : OrientationValues.Landscape, FitToWidth = 1, FitToHeight = 0 };
-        wsPart.Worksheet.Append(new PageSetupProperties { FitToPage = true });
-        wsPart.Worksheet.Append(pageSetup);
-
-        wsPart.Worksheet.Save();
+        ApplyWorksheetPageSetup(reportPart.Worksheet, reportPortrait ? OrientationValues.Portrait : OrientationValues.Landscape, 1U, 0U);
+        MoveDrawingToWorksheetEnd(reportPart.Worksheet);
+        reportPart.Worksheet.Save();
         wb.Workbook.Save();
     }
     return ms.ToArray();
@@ -4364,7 +4927,7 @@ async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(
         await cnCms.OpenAsync();
         using var cmdCms = cnCms.CreateCommand();
         cmdCms.CommandTimeout = 30;
-        cmdCms.CommandText = "SELECT DoorKey, ISNULL(Description,'') FROM cms..DoorSources ORDER BY Description, DoorKey;";
+        cmdCms.CommandText = ApplyDbObjectMappings("SELECT DoorKey, ISNULL(Description,'') FROM cms..DoorSources ORDER BY Description, DoorKey;");
         using var rCms = await cmdCms.ExecuteReaderAsync();
         while (await rCms.ReadAsync())
         {
@@ -4384,14 +4947,14 @@ async Task<List<(string Key, string Description)>> GetDoorTagSourcesByDaysAsync(
         await cnCms.OpenAsync();
         using var cmdCms = cnCms.CreateCommand();
         cmdCms.CommandTimeout = 120;
-        cmdCms.CommandText = @"
+        cmdCms.CommandText = ApplyDbObjectMappings(@"
 SELECT DISTINCT
     CAST(VTERMINAL_KEY AS varchar(200)) AS [Key],
     ISNULL(CAST(DESCRIPTION AS varchar(400)), '') AS [Description]
 FROM cms..AC_VTERMINAL
 WHERE VTERMINAL_KEY IS NOT NULL AND LTRIM(RTRIM(CAST(VTERMINAL_KEY AS varchar(200)))) <> ''
 ORDER BY [Description], [Key];
-";
+");
         using var rCms = await cmdCms.ExecuteReaderAsync();
         while (await rCms.ReadAsync())
         {
@@ -4408,7 +4971,7 @@ ORDER BY [Description], [Key];
         using var cn = new SqlConnection(conn);
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = ApplyDbObjectMappings(@"
 SELECT DISTINCT
     CAST(vmE.Source AS varchar(200)) AS [Key],
     CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
@@ -4420,7 +4983,7 @@ WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) 
   AND (@daysBack <= 0 OR emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) >= DATEADD(day, -@daysBack, GETDATE()))
 ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
          CAST(vmE.Source AS varchar(200));
-";
+");
         cmd.Parameters.Clear();
         cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = daysBack });
         using var r2 = await cmd.ExecuteReaderAsync();
@@ -4439,7 +5002,7 @@ async Task<List<(string Key, string Description)>> GetDoorTagSourcesByRangeAsync
     using var cn = new SqlConnection(conn);
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 SELECT DISTINCT
     CAST(vmE.Source AS varchar(200)) AS [Key],
     CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)) AS [Description]
@@ -4451,7 +5014,7 @@ WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) 
   AND (emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) BETWEEN @start AND @end)
 ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,'') ELSE '' END AS varchar(400)),
          CAST(vmE.Source AS varchar(200));
-";
+");
     cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = start });
     cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = end });
     using var r = await cmd.ExecuteReaderAsync();
@@ -4465,6 +5028,30 @@ ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,
     return list;
 }
 
+static async Task<string> GetAllDoorSourcesCsvAsync(string cmsConnStr)
+{
+    try
+    {
+        using var cn = new SqlConnection(cmsConnStr);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = 30;
+        cmd.CommandText = ApplyDbObjectMappings("SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey");
+        var doorKeys = new List<string>();
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            if (!r.IsDBNull(0))
+                doorKeys.Add(r.GetString(0));
+        }
+        return BuildSourceListCsv(doorKeys);
+    }
+    catch
+    {
+        return "";
+    }
+}
+
 static string BuildSourceListCsv(IEnumerable<string> keys) =>
     string.Join(";", keys.Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).Distinct(StringComparer.OrdinalIgnoreCase));
 
@@ -4476,8 +5063,11 @@ static string BuildPortasCriteria(string? sourceList)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
     if (tags.Length == 0) return "Portas: todas no período";
-    var joined = string.Join("; ", tags);
-    return $"Portas ({tags.Length}): {joined}";
+    var lineGroups = tags
+        .Chunk(6)
+        .Select(group => string.Join("; ", group))
+        .ToArray();
+    return $"Portas ({tags.Length}):\n" + string.Join("\n", lineGroups);
 }
 app.MapGet("/api/reports/door-sources", async (int? daysBack) =>
 {
@@ -4622,7 +5212,7 @@ app.MapGet("/api/reports/door-sources/debug", async (int? daysBack) =>
             using var cn = new SqlConnection(conn);
             await cn.OpenAsync();
             using var cmd = cn.CreateCommand();
-            cmd.CommandText = @"
+            cmd.CommandText = ApplyDbObjectMappings(@"
 SELECT
     CAST(CASE WHEN OBJECT_ID('cms..JP4_Merc_TAGs','U') IS NOT NULL THEN 1 ELSE 0 END AS int) AS HasMercTags;
 
@@ -4636,7 +5226,7 @@ WHERE vmE.Source IS NOT NULL AND LTRIM(RTRIM(CAST(vmE.Source AS varchar(200)))) 
   AND (vmE.Category = 16 OR vmE.Category = 5)
   AND (@daysBack <= 0 OR emsevents.[dbo].[UTCFILETIMEToDateTime](vmE.LocalTime) >= DATEADD(day, -@daysBack, GETDATE()))
 ORDER BY CAST(vmE.Source AS varchar(200));
-";
+");
             cmd.Parameters.Add(new SqlParameter("@daysBack", SqlDbType.Int) { Value = days });
             using var r = await cmd.ExecuteReaderAsync();
             await r.ReadAsync();
@@ -4762,8 +5352,8 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
             }
 
             var proc = string.IsNullOrWhiteSpace(req.Name)
-                ? "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList"
-                : "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
+                ? ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList")
+                : ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
 
             using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync(job.Cts!.Token);
@@ -4834,6 +5424,8 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
 app.MapGet("/api/cache/clear", () =>
 {
     lock (doorCriticalCacheLock) doorCriticalCache.Clear();
+    lock (doorGeneralCacheLock) doorGeneralCache.Clear();
+    lock (doorGeneralByNameCacheLock) doorGeneralByNameCache.Clear();
     return Results.Ok(new { success = true });
 }).RequireAuthorization();
 
@@ -4844,46 +5436,40 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
         var offset = (page - 1) * pageSize;
+        var cmsConn = GetConn("CMS");
+        var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList) 
+            ? await GetAllDoorSourcesCsvAsync(cmsConn)
+            : sourceList;
+        var entry = GetOrStartDoorGeneralCacheEntry(startDt, endDt, effectiveSourceList);
+        await WaitForDoorCachePageAsync(entry, offset + pageSize);
 
-        // Run SP for each request (no cache)
-        using var cn = new SqlConnection(GetConn("HWR"));
-        await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
-        var src = sourceList;
-        if (string.IsNullOrWhiteSpace(src))
+        List<object> items;
+        int? total;
+        lock (entry.SyncRoot)
         {
-            try
-            {
-                using var cnSrc = new SqlConnection(GetConn("HWR"));
-                await cnSrc.OpenAsync();
-                using var cmdSrc = cnSrc.CreateCommand();
-                cmdSrc.CommandTimeout = 30;
-                cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
-                var doorKeys = new List<string>();
-                using var rSrc = await cmdSrc.ExecuteReaderAsync();
-                while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
-                src = BuildSourceListCsv(doorKeys);
-            }
-            catch { }
+            items = entry.Items
+                .Skip(offset)
+                .Take(pageSize)
+                .Select(x => (object)new
+                {
+                    x.EventID,
+                    x.TimeOrder,
+                    x.DataHora,
+                    x.TAG,
+                    x.Acesso,
+                    x.Evento,
+                    x.NomeCompleto,
+                    x.DocumentoMatricula,
+                    x.Cartao,
+                    x.Tipo,
+                    x.Empresa,
+                    x.StatusAcesso,
+                    x.DetalheStatusAcesso
+                })
+                .ToList();
+            total = entry.IsComplete ? entry.Items.Count : null;
         }
-        var (rows, err) = ExecDoorProc(cn, proc, new[]
-        {
-            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" }
-        });
-        if (err != null) return Results.BadRequest(new { success = false, error = err });
 
-        var allItems = rows.Select(x => new
-        {
-            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso,
-            Evento = x.Evento, NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula,
-            Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa, StatusAcesso = x.StatusAcesso,
-            DetalheStatusAcesso = x.DetalheStatusAcesso
-        }).ToList();
-
-        var total = allItems.Count;
-        var items = allItems.Skip(offset).Take(pageSize).ToList();
         return Results.Ok(new { success = true, total, count = items.Count, items, page, pageSize });
     }
     catch (Exception ex)
@@ -4899,67 +5485,74 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
 
-    // Determine source filter
-    var src = sourceList;
-    if (string.IsNullOrWhiteSpace(src))
+    var cmsConn = GetConn("CMS");
+    var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList) 
+        ? await GetAllDoorSourcesCsvAsync(cmsConn)
+        : sourceList;
+
+    // Try cache first (like door-critical)
+    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
+    var cacheKey = DoorGeneralCacheKey(startDt, endDt, effectiveSourceList);
+    DoorQueryCacheEntry? cachedEntry;
+    lock (doorGeneralCacheLock)
     {
-        try
+        doorGeneralCache.TryGetValue(cacheKey, out cachedEntry);
+    }
+    if (cachedEntry != null)
+    {
+        await WaitForDoorCacheCompleteAsync(cachedEntry);
+        lock (cachedEntry.SyncRoot)
         {
-            using var cnSrc = new SqlConnection(GetConn("HWR"));
-            await cnSrc.OpenAsync();
-            using var cmdSrc = cnSrc.CreateCommand();
-            cmdSrc.CommandTimeout = 30;
-            cmdSrc.CommandText = "SELECT DoorKey FROM cms..DoorSources ORDER BY DoorKey";
-            var doorKeys = new List<string>();
-            using var rSrc = await cmdSrc.ExecuteReaderAsync();
-            while (await rSrc.ReadAsync()) { if (!rSrc.IsDBNull(0)) doorKeys.Add(rSrc.GetString(0)); }
-            src = BuildSourceListCsv(doorKeys);
+            rows = cachedEntry.Items.ToList();
         }
-        catch { }
+    }
+    else
+    {
+        rows = null!;
     }
 
-    // Use stored procedure instead of direct SQL
-    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
-    try
+    // Fallback: run SP if no cache
+    if (rows == null)
     {
         using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
         using var cmd = cn.CreateCommand();
         cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
-        cmd.CommandText = "EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList";
+        cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList");
         cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
         cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
-        cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" });
-
-        rows = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
-        using var r = await cmd.ExecuteReaderAsync();
-        while (await r.ReadAsync())
+        cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" });
+        try
         {
-            rows.Add((
-                r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
-                r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
-                r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : r.GetString(3),
-                r.IsDBNull(4) ? null : r.GetString(4),
-                r.IsDBNull(5) ? null : r.GetString(5),
-                r.IsDBNull(6) ? null : r.GetString(6),
-                r.IsDBNull(7) ? null : r.GetString(7),
-                r.IsDBNull(8) ? null : r.GetString(8),
-                r.IsDBNull(9) ? null : r.GetString(9),
-                r.IsDBNull(10) ? null : r.GetString(10),
-                r.IsDBNull(11) ? null : r.GetString(11),
-                r.IsDBNull(12) ? null : r.GetString(12)
-            ));
+            rows = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
+            using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+            {
+                rows.Add((
+                    r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+                    r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                    r.IsDBNull(2) ? null : r.GetString(2),
+                    r.IsDBNull(3) ? null : r.GetString(3),
+                    r.IsDBNull(4) ? null : r.GetString(4),
+                    r.IsDBNull(5) ? null : r.GetString(5),
+                    r.IsDBNull(6) ? null : r.GetString(6),
+                    r.IsDBNull(7) ? null : r.GetString(7),
+                    r.IsDBNull(8) ? null : r.GetString(8),
+                    r.IsDBNull(9) ? null : r.GetString(9),
+                    r.IsDBNull(10) ? null : r.GetString(10),
+                    r.IsDBNull(11) ? null : r.GetString(11),
+                    r.IsDBNull(12) ? null : r.GetString(12)
+                ));
+            }
         }
-    }
-    catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
-    {
-        // Fallback to direct SQL if SP doesn't exist
-        using var cn = new SqlConnection(GetConn("CMS"));
-        await cn.OpenAsync();
-        using var cmd = cn.CreateCommand();
-        cmd.CommandTimeout = 300;
-        cmd.CommandText = @"
+        catch (SqlException ex) when (ex.Message.Contains("Could not find stored procedure", StringComparison.OrdinalIgnoreCase))
+        {
+            // Fallback to direct SQL if SP doesn't exist
+            using var cn2 = new SqlConnection(GetConn("CMS"));
+            await cn2.OpenAsync();
+            using var cmd2 = cn2.CreateCommand();
+            cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
+            cmd2.CommandText = @"
 SELECT
     ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
     t.TRANSIT_DATE AS TimeOrder,
@@ -4981,40 +5574,41 @@ LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
 LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
 LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
-        if (!string.IsNullOrWhiteSpace(src))
-        {
-            var tagArray = src!.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-            var inParams = string.Join(",", tagArray.Select((_, i) => $"@tag{i}"));
-            cmd.CommandText += $" AND t.TERMINAL IN ({inParams})";
-            for (int i = 0; i < tagArray.Length; i++)
-                cmd.Parameters.Add(new SqlParameter($"@tag{i}", SqlDbType.VarChar, 200) { Value = tagArray[i].Trim() });
-        }
-        cmd.CommandText += " ORDER BY t.TRANSIT_DATE;";
-        cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
-        cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+";
+            cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+            cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
 
-        rows = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
-        using var r = await cmd.ExecuteReaderAsync();
-        while (await r.ReadAsync())
+            rows = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
+            using var r2 = await cmd2.ExecuteReaderAsync();
+            while (await r2.ReadAsync())
+            {
+                rows.Add((
+                    r2.IsDBNull(0) ? 0L : Convert.ToInt64(r2.GetValue(0)),
+                    r2.IsDBNull(1) ? (DateTime?)null : r2.GetDateTime(1),
+                    r2.IsDBNull(2) ? null : r2.GetString(2),
+                    r2.IsDBNull(3) ? null : r2.GetString(3),
+                    r2.IsDBNull(4) ? null : r2.GetString(4),
+                    r2.IsDBNull(5) ? null : r2.GetString(5),
+                    r2.IsDBNull(6) ? null : r2.GetString(6),
+                    r2.IsDBNull(7) ? null : r2.GetString(7),
+                    r2.IsDBNull(8) ? null : r2.GetString(8),
+                    r2.IsDBNull(9) ? null : r2.GetString(9),
+                    r2.IsDBNull(10) ? null : r2.GetString(10),
+                    r2.IsDBNull(11) ? null : r2.GetString(11),
+                    r2.IsDBNull(12) ? null : r2.GetString(12)
+                ));
+            }
+        }
+
+        // Apply sourceList filter (same as door-critical)
+        if (!string.IsNullOrWhiteSpace(effectiveSourceList))
         {
-            rows.Add((
-                r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
-                r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
-                r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : r.GetString(3),
-                r.IsDBNull(4) ? null : r.GetString(4),
-                r.IsDBNull(5) ? null : r.GetString(5),
-                r.IsDBNull(6) ? null : r.GetString(6),
-                r.IsDBNull(7) ? null : r.GetString(7),
-                r.IsDBNull(8) ? null : r.GetString(8),
-                r.IsDBNull(9) ? null : r.GetString(9),
-                r.IsDBNull(10) ? null : r.GetString(10),
-                r.IsDBNull(11) ? null : r.GetString(11),
-                r.IsDBNull(12) ? null : r.GetString(12)
-            ));
+            var allow = new HashSet<string>(effectiveSourceList!.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+            rows = rows.Where(x => x.TAG != null && allow.Contains(x.TAG)).ToList();
         }
     }
+
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -5031,7 +5625,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
         var (clientName, _) = await GetReportClientInfoAsync(http);
         var generatedBy = GetReportUser(http);
         var includeCover = ShouldIncludeCover(http);
-        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
         var mapped = rows.Select(x => (
             DataHora: x.DataHora,
             TAG: x.TAG,
@@ -5044,8 +5638,8 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var criteria = string.IsNullOrWhiteSpace(sourceList) ? "Portas: todas no período" : "Portas: selecionadas";
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(sourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), reportPortrait);
+        var criteria = string.IsNullOrWhiteSpace(effectiveSourceList) ? "Portas: todas no período" : "Portas: selecionadas";
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), coverPortrait, reportPortrait);
         var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
@@ -5068,7 +5662,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = "Escopo: Eventos Gerais\n" + BuildPortasCriteria(sourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s))));
+        var criteria = "Escopo: Eventos Gerais\n" + BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s))));
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -5079,38 +5673,48 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end";
     return Results.BadRequest(new { error = "Formato inválido" });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name, string? sourceList) =>
+app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name, string? sourceList, int page = 1, int pageSize = 200) =>
 {
     try
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
-        if ((endDt - startDt).TotalDays > 31 && string.IsNullOrWhiteSpace(sourceList))
-            return Results.BadRequest(new { success = false, error = "Período muito grande para visualização na tela. Selecione portas (TAG) ou use Exportação (CSV)." });
-        using var cn = new SqlConnection(GetConn("HWR"));
-        await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
-        var explicitSrc = sourceList;
-        var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
-        var src = explicitSrc;
-        if (string.IsNullOrWhiteSpace(src))
+        var offset = (page - 1) * pageSize;
+        var cmsConn = GetConn("CMS");
+        var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList)
+            ? await GetAllDoorSourcesCsvAsync(cmsConn)
+            : sourceList;
+        var entry = GetOrStartDoorGeneralByNameCacheEntry(startDt, endDt, effectiveSourceList, name);
+        await WaitForDoorCachePageAsync(entry, offset + pageSize);
+
+        List<object> items;
+        int? total;
+        lock (entry.SyncRoot)
         {
-            var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-            src = BuildSourceListCsv(tags.Select(x => x.Key));
+            items = entry.Items
+                .Skip(offset)
+                .Take(pageSize)
+                .Select(x => (object)new
+                {
+                    x.EventID,
+                    x.TimeOrder,
+                    x.DataHora,
+                    x.TAG,
+                    x.Acesso,
+                    x.Evento,
+                    x.NomeCompleto,
+                    x.DocumentoMatricula,
+                    x.Cartao,
+                    x.Tipo,
+                    x.Empresa,
+                    x.StatusAcesso,
+                    x.DetalheStatusAcesso
+                })
+                .ToList();
+            total = entry.IsComplete ? entry.Items.Count : null;
         }
-        var (rows, err) = ExecDoorProc(cn, proc, new[]
-        {
-            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" },
-            new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
-        });
-        if (err != null) return Results.BadRequest(new { success = false, error = err });
-        return Results.Ok(new { success = true, count = rows.Count, data = rows.Select(x => new {
-            EventID = x.EventID, TimeOrder = x.TimeOrder, DataHora = x.DataHora, TAG = x.TAG, Acesso = x.Acesso, Evento = x.Evento,
-            NomeCompleto = x.NomeCompleto, DocumentoMatricula = x.DocumentoMatricula, Cartao = x.Cartao, Tipo = x.Tipo, Empresa = x.Empresa,
-            StatusAcesso = x.StatusAcesso, DetalheStatusAcesso = x.DetalheStatusAcesso
-        }) });
+
+        return Results.Ok(new { success = true, total, count = items.Count, items, page, pageSize });
     }
     catch (Exception ex)
     {
@@ -5124,25 +5728,40 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     var endDt = ParseDate(end);
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
-    using var cn = new SqlConnection(GetConn("HWR"));
-    await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name";
-    var explicitSrc = sourceList;
-    var hasExplicitSrc = !string.IsNullOrWhiteSpace(explicitSrc);
-    var src = explicitSrc;
-    if (string.IsNullOrWhiteSpace(src))
+    var cmsConn = GetConn("CMS");
+    var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList)
+        ? await GetAllDoorSourcesCsvAsync(cmsConn)
+        : sourceList;
+    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
+    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name);
+    DoorQueryCacheEntry? cachedEntry;
+    lock (doorGeneralByNameCacheLock)
     {
-        var tags = await GetDoorTagSourcesByRangeAsync(GetConn("HWR"), startDt, endDt);
-        src = BuildSourceListCsv(tags.Select(x => x.Key));
+        doorGeneralByNameCache.TryGetValue(cacheKey, out cachedEntry);
     }
-    var (rows, err) = ExecDoorProc(cn, proc, new[]
+    if (cachedEntry != null)
     {
-        new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
-        new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" },
-        new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
-    });
-    if (err != null) return Results.BadRequest(new { error = err });
+        await WaitForDoorCacheCompleteAsync(cachedEntry);
+        lock (cachedEntry.SyncRoot)
+        {
+            rows = cachedEntry.Items.ToList();
+        }
+    }
+    else
+    {
+        using var cn = new SqlConnection(GetConn("HWR"));
+        await cn.OpenAsync();
+        var proc = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
+        var (fallbackRows, err) = ExecDoorProc(cn, proc, new[]
+        {
+            new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
+            new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" },
+            new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
+        });
+        if (err != null) return Results.BadRequest(new { error = err });
+        rows = fallbackRows;
+    }
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
@@ -5155,7 +5774,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         var (clientName, _) = await GetReportClientInfoAsync(http);
         var generatedBy = GetReportUser(http);
         var includeCover = ShouldIncludeCover(http);
-        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
         var mapped = rows.Select(x => (
             DataHora: x.DataHora,
             TAG: x.TAG,
@@ -5168,8 +5787,8 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(src);
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
+        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(effectiveSourceList);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait);
         var rel = SaveReportFile("door-general-by-name.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
@@ -5192,7 +5811,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(src);
+        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(effectiveSourceList);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -5211,7 +5830,7 @@ app.MapGet("/api/reports/door-general/by-site", async (string start, string end,
         var endDt = ParseDate(end);
         using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
-        var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
+        var proc = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC");
         var (rows, err) = ExecDoorProc(cn, proc, new[]
         {
             new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
@@ -5239,7 +5858,7 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         format = "xlsx";
     using var cn = new SqlConnection(GetConn("HWR"));
     await cn.OpenAsync();
-    var proc = "EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC";
+    var proc = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_bysite @DataInicio, @DataFim, @DC");
     var (rows, err) = ExecDoorProc(cn, proc, new[]
     {
         new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
@@ -5259,7 +5878,7 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         var (clientName, _) = await GetReportClientInfoAsync(http);
         var generatedBy = GetReportUser(http);
         var includeCover = ShouldIncludeCover(http);
-        var (_, reportPortrait) = GetPdfOrientationFlags(http);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
         var mapped = rows.Select(x => (
             DataHora: x.DataHora,
             TAG: x.TAG,
@@ -5274,7 +5893,7 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         )).ToList();
         var portasCsvX = BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)));
         var criteria = $"Filtro: Site = {site}\n" + BuildPortasCriteria(portasCsvX);
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, criteria, reportPortrait);
+        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait);
         var rel = SaveReportFile("door-general-by-site.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
@@ -7304,6 +7923,64 @@ bool ShouldIncludeCover(HttpContext ctx)
     return (cover == "portrait", report == "portrait");
 }
 
+static string NormalizeOrientationSetting(string? value, string fallback = "landscape")
+{
+    if (string.IsNullOrWhiteSpace(value)) return fallback;
+    var normalized = value.Trim().ToLowerInvariant();
+    if (normalized is "portrait" or "retrato") return "portrait";
+    if (normalized is "landscape" or "paisagem") return "landscape";
+    return fallback;
+}
+
+static OrientationValues GetConfiguredWorksheetOrientation(string envKey, string fallback = "landscape")
+{
+    try
+    {
+        var env = LoadEnv();
+        if (env.TryGetValue(envKey, out var configured))
+            return NormalizeOrientationSetting(configured, fallback) == "portrait"
+                ? OrientationValues.Portrait
+                : OrientationValues.Landscape;
+    }
+    catch { }
+
+    return NormalizeOrientationSetting(null, fallback) == "portrait"
+        ? OrientationValues.Portrait
+        : OrientationValues.Landscape;
+}
+
+static void ApplyWorksheetPageSetupToSheet(Worksheet worksheet, OrientationValues orientation, UInt32Value fitToWidth, UInt32Value fitToHeight)
+{
+    var sheetProps = worksheet.Elements<SheetProperties>().FirstOrDefault();
+    if (sheetProps == null)
+    {
+        sheetProps = new SheetProperties();
+        worksheet.InsertAt(sheetProps, 0);
+    }
+
+    var pageSetupProps = sheetProps.Elements<PageSetupProperties>().FirstOrDefault();
+    if (pageSetupProps == null)
+    {
+        pageSetupProps = new PageSetupProperties { FitToPage = true };
+        sheetProps.Append(pageSetupProps);
+    }
+    else
+    {
+        pageSetupProps.FitToPage = true;
+    }
+
+    var pageSetup = worksheet.Elements<PageSetup>().FirstOrDefault();
+    if (pageSetup == null)
+    {
+        pageSetup = new PageSetup();
+        worksheet.Append(pageSetup);
+    }
+
+    pageSetup.Orientation = orientation;
+    pageSetup.FitToWidth = fitToWidth;
+    pageSetup.FitToHeight = fitToHeight;
+}
+
 byte[] BuildAccessPdf(string clientName, byte[]? clientLogo, string documento, string modo, DateTime? start, DateTime? end, IReadOnlyList<(int Codigo, string? Nome, string? CPF, string? Matricula, string? Empresa, string? Cartao, string? Direcao, string? Tipo, string? Terminal, string? Descricao, DateTime Transito)> rows, string generatedBy, bool includeCover = true, bool coverPortrait = false, bool reportPortrait = false)
 {
     QuestPDF.Settings.License = LicenseType.Community;
@@ -7556,6 +8233,10 @@ byte[] BuildVisitorsXlsx(string clientName, string title, DateTime? start, DateT
                 x.Saida?.ToString("dd/MM/yyyy HH:mm:ss")
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -7795,6 +8476,10 @@ byte[] BuildEmployeesXlsx(string clientName, string title, IReadOnlyList<(string
                 x.Empresa
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -7831,6 +8516,10 @@ byte[] BuildCardByCpfXlsx(string clientName, string title, IReadOnlyList<(string
         {
             AddRow(x.Nome, x.Cracha, x.Tipo);
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -8046,6 +8735,10 @@ byte[] BuildCompanyInfoXlsx(string clientName, string title, IReadOnlyList<(stri
         {
             AddRow(x.Nome, x.Cpf, x.Matricula, x.Empresa, x.Tipo, x.Cracha);
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -8279,6 +8972,10 @@ byte[] BuildCardInfoXlsx(string clientName, string title, IReadOnlyList<(string?
                 x.Expira?.ToString("dd/MM/yyyy HH:mm:ss")
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -8518,6 +9215,10 @@ byte[] BuildMatriculaInfoXlsx(string clientName, string title, IReadOnlyList<(st
                 x.Expira?.ToString("dd/MM/yyyy HH:mm:ss")
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -8942,6 +9643,10 @@ byte[] BuildAccessAggXlsx(string clientName, string title, IReadOnlyList<(int Le
         {
             AddRow(x.LevelId.ToString(), x.Level, x.Total.ToString());
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -9158,6 +9863,10 @@ byte[] BuildPopulationXlsx(string clientName, string title, DateTime start, Date
         {
             AddRow(x.Label, x.Total.ToString());
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -9382,6 +10091,10 @@ byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, Da
                 x.Descricao
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -9618,6 +10331,10 @@ byte[] BuildTransitXlsx(string clientName, string title, DateTime start, DateTim
                 x.DataHora.ToString("dd/MM/yyyy HH:mm:ss")
             );
         }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
     }
     return ms.ToArray();
 }
@@ -9831,7 +10548,7 @@ app.MapGet("/api/access/info/by-document", async (string documento) =>
     }
     using var cmd = cn.CreateCommand();
     cmd.CommandTimeout = 120;
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 WITH Persons AS (
     SELECT
         e.SbiID AS SbiID,
@@ -9889,7 +10606,7 @@ SELECT DISTINCT
     Cadastro,
     Expira
 FROM Persons
-ORDER BY CardNumber, Name;";
+ORDER BY CardNumber, Name;");
     cmd.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
     cmd.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
     using var r = await cmd.ExecuteReaderAsync();
@@ -9959,7 +10676,7 @@ app.MapGet("/api/access/by-document", async (string documento, string start, str
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
 
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -10090,7 +10807,7 @@ WHERE
             OR (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%')
         ))
     );
-";
+");
 
     SqlDataReader r;
     try
@@ -10153,7 +10870,7 @@ app.MapGet("/api/access/by-document/all", async (string documento, string? mode,
     cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
-    cmd.CommandText = @"
+    cmd.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -10282,7 +10999,7 @@ WHERE
             OR (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%')
         ))
     );
-";
+");
     SqlDataReader r;
     try
     {
@@ -10374,7 +11091,7 @@ app.MapGet("/api/access/by-document/export", async (HttpContext http, string doc
                 cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.ToFileTimeUtc() });
                 cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.ToFileTimeUtc() });
                 cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-                cmd.CommandText = @"
+                cmd.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -10461,7 +11178,7 @@ SELECT
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '1601-01-01'))) AS Transito
 FROM EventsFiltered
 ORDER BY CardNumber ASC, TimeTicks DESC;
-";
+");
                 SqlDataReader r;
                 try
                 {
@@ -10517,7 +11234,7 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
         cmdCount.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startDt.ToFileTimeUtc() });
         cmdCount.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endDt.ToFileTimeUtc() });
         cmdCount.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-        cmdCount.CommandText = @"
+        cmdCount.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT c.CardNumber AS CardNumber
     FROM Employee e
@@ -10555,7 +11272,7 @@ WHERE
             OR (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%')
         ))
     );
-";
+");
         try
         {
             using var rCount = await cmdCount.ExecuteReaderAsync(http.RequestAborted);
@@ -10581,7 +11298,7 @@ WHERE
         cmdAll.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startDt.ToFileTimeUtc() });
         cmdAll.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endDt.ToFileTimeUtc() });
         cmdAll.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-        cmdAll.CommandText = @"
+        cmdAll.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -10668,7 +11385,7 @@ SELECT
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '1601-01-01'))) AS Transito
 FROM EventsFiltered
 ORDER BY TimeTicks DESC;
-";
+");
         try
         {
             using var rAll = await cmdAll.ExecuteReaderAsync(http.RequestAborted);
@@ -10719,7 +11436,8 @@ ORDER BY TimeTicks DESC;
             ));
         }
         var criteria = $"Documento: {docRaw} • Tipo: {modeNorm} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
-        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", startDt, endDt, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, reportPortrait: false);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", startDt, endDt, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, coverPortrait, reportPortrait);
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
     var cliInfoPdf = await GetReportClientInfoAsync(http);
@@ -10841,7 +11559,7 @@ WHERE
                 cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = chunkStart.ToFileTimeUtc() });
                 cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = chunkEnd.ToFileTimeUtc() });
                 cmd.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-                cmd.CommandText = @"
+                cmd.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -10928,7 +11646,7 @@ SELECT
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '1601-01-01'))) AS Transito
 FROM EventsFiltered
 ORDER BY CardNumber ASC, TimeTicks DESC;
-";
+");
                 SqlDataReader r;
                 try { r = await cmd.ExecuteReaderAsync(http.RequestAborted); }
                 catch (SqlException ex) when (ex.Number == -2)
@@ -10978,7 +11696,7 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
         cmdCount.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
         cmdCount.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
         cmdCount.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-        cmdCount.CommandText = @"
+        cmdCount.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT c.CardNumber AS CardNumber
     FROM Employee e
@@ -11015,7 +11733,7 @@ WHERE
             OR (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%')
         ))
     );
-";
+");
         try
         {
             using var rCount = await cmdCount.ExecuteReaderAsync(http.RequestAborted);
@@ -11040,7 +11758,7 @@ WHERE
         cmdRange.Parameters.Add(new SqlParameter("@docRaw", SqlDbType.NVarChar, 80) { Value = docRaw });
         cmdRange.Parameters.Add(new SqlParameter("@docDigits", SqlDbType.NVarChar, 80) { Value = docDigits });
         cmdRange.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-        cmdRange.CommandText = @"
+        cmdRange.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT c.CardNumber AS CardNumber
     FROM Employee e
@@ -11081,7 +11799,7 @@ WHERE
             OR (ev.Source LIKE '%FAC%' OR ev.Source LIKE '%FACE%' OR ev.Description LIKE '%FACIAL%' OR ev.Description LIKE '%Facial%')
         ))
     );
-";
+");
         try
         {
             using var rr = await cmdRange.ExecuteReaderAsync(http.RequestAborted);
@@ -11102,7 +11820,8 @@ WHERE
         if (fmt == "xlsx")
         {
             var clientInfoEmpty = await GetReportClientInfoAsync(http);
-            var bytesX = BuildDoorXlsx(clientInfoEmpty.Name, "CPF (Cadastro/Acessos)", null, null, Array.Empty<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)>(), GetReportUser(http), ShouldIncludeCover(http), "Documento sem eventos no período", reportPortrait: false);
+            var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+            var bytesX = BuildDoorXlsx(clientInfoEmpty.Name, "CPF (Cadastro/Acessos)", null, null, Array.Empty<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)>(), GetReportUser(http), ShouldIncludeCover(http), "Documento sem eventos no período", coverPortrait, reportPortrait);
             return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
         }
         var reportClientInfo = await GetReportClientInfoAsync(http);
@@ -11120,7 +11839,7 @@ WHERE
         cmdAll.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = minDt!.Value.ToFileTimeUtc() });
         cmdAll.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = maxDt!.Value.ToFileTimeUtc() + 1 });
         cmdAll.Parameters.Add(new SqlParameter("@mode", SqlDbType.VarChar, 20) { Value = modeNorm });
-        cmdAll.CommandText = @"
+        cmdAll.CommandText = ApplyDbObjectMappings(@"
 WITH People AS (
     SELECT
         e.SbiID AS SbiID,
@@ -11208,7 +11927,7 @@ SELECT
         DATEADD(DAY, CAST(TimeTicks / 864000000000 AS int), CONVERT(datetime2, '1601-01-01'))) AS Transito
 FROM EventsFiltered
 ORDER BY CardNumber ASC, TimeTicks DESC;
-";
+");
         try
         {
             using var rAll = await cmdAll.ExecuteReaderAsync(http.RequestAborted);
@@ -11259,7 +11978,8 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
             ));
         }
         var criteria = $"Documento: {docRaw} • Tipo: {modeNorm} • Todos os períodos";
-        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", null, null, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, reportPortrait: false);
+        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
+        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", null, null, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, coverPortrait, reportPortrait);
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
 

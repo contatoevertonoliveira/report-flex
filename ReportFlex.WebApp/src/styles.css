@@ -102,6 +102,10 @@ th{background:var(--rf-table-head-bg); color:var(--rf-table-head-color)}
 .login-form .form-control:focus{border-color:#9ca3af; box-shadow:0 0 0 .25rem rgba(156,163,175,0.25)}
 .login-form .btn-dark{background:#111827; border-color:#111827}
 .login-form .btn-dark:hover{background:#0b1220; border-color:#0b1220}
+.app-boot-overlay{position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,0.72); backdrop-filter:blur(4px)}
+.app-boot-card{min-width:min(420px, calc(100% - 32px)); max-width:520px; border:1px solid rgba(255,255,255,0.16); border-radius:16px; padding:28px 24px; background:linear-gradient(180deg, rgba(17,24,39,0.95), rgba(31,41,55,0.92)); box-shadow:0 24px 70px rgba(0,0,0,0.35); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center; color:#fff}
+.app-boot-title{font-size:20px; font-weight:700; color:#fff}
+.app-boot-subtitle{font-size:14px; color:rgba(255,255,255,0.82)}
 
 h1,h2,h3,h4,h5,h6{font-weight:700}
 p,span,small,li,td,th,input,button,textarea{font-weight:300}

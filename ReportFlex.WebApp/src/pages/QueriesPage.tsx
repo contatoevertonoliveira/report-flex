@@ -503,19 +503,78 @@ export function QueriesPage(){
   }
 
   const currentQueryKey = useMemo(() => {
-    if (mode === 'personalizadas') {
-      if (dataset === 'db-table') return `p:db-table:${dbTableDb}:${dbTableName || ''}`
-      return `p:${dataset}`
+    const normalize = (value: any): any => {
+      if (value == null) return null
+      if (Array.isArray(value)) return [...value].map(normalize)
+      if (typeof value === 'object') {
+        return Object.keys(value)
+          .sort()
+          .reduce((acc: Record<string, any>, key) => {
+            acc[key] = normalize(value[key])
+            return acc
+          }, {})
+      }
+      return value
     }
-    if (quickKind === 'door-critical') return `q:door:${doorMode}`
-    if (quickKind === 'cpf') return `q:cpf:${cpfObter}:${cpfSemPeriodo ? 'no-period' : 'period'}`
-    if (quickKind === 'matricula') return `q:matricula:${matriculaObter}`
-    if (quickKind === 'empresa') return `q:empresa:${empresaObter}`
-    if (quickKind === 'cracha') return `q:cracha:${crachaObter}`
-    if (quickKind === 'nivel') return `q:nivel:${nivelObter}`
-    if (quickKind === 'visitantes') return `q:visitantes:${visitantesObter}`
-    return `q:${quickKind}`
-  }, [mode, dataset, quickKind, doorMode, cpfObter, cpfSemPeriodo, matriculaObter, empresaObter, crachaObter, nivelObter, visitantesObter, dbTableDb, dbTableName])
+    const encode = (value: any) => JSON.stringify(normalize(value))
+
+    if (mode === 'personalizadas') {
+      return encode({
+        mode,
+        dataset,
+        dbTableDb: dataset === 'db-table' ? dbTableDb : undefined,
+        dbTableName: dataset === 'db-table' ? (dbTableName || '') : undefined,
+        filters
+      })
+    }
+
+    if (quickKind === 'door-critical') {
+      return encode({
+        mode,
+        quickKind,
+        filters,
+        doorMode,
+        doorAllData,
+        doorAllSources,
+        doorSelectedSources: [...doorSelectedSources].sort(),
+        doorName,
+        doorSite
+      })
+    }
+
+    return encode({
+      mode,
+      quickKind,
+      filters,
+      cpfObter,
+      cpfSemPeriodo,
+      matriculaObter,
+      empresaObter,
+      crachaObter,
+      nivelObter,
+      visitantesObter
+    })
+  }, [
+    mode,
+    dataset,
+    quickKind,
+    dbTableDb,
+    dbTableName,
+    filters,
+    doorMode,
+    doorAllData,
+    doorAllSources,
+    doorSelectedSources,
+    doorName,
+    doorSite,
+    cpfObter,
+    cpfSemPeriodo,
+    matriculaObter,
+    empresaObter,
+    crachaObter,
+    nivelObter,
+    visitantesObter
+  ])
 
   const lastQueryKeyRef = React.useRef<string | null>(null)
   const formatTime = (ts: number) => {
@@ -848,12 +907,8 @@ export function QueriesPage(){
           const status = s?.status
           const prog = Number(s?.progress ?? 0)
           if (!Number.isNaN(prog)) {
-            let mapped = 65
-            if (prog >= 100) mapped = 100
-            else if (prog >= 90) mapped = 90
-            else if (prog >= 50) mapped = 75
-            else mapped = 65
-            setExportProgress(mapped)
+            const mapped = Math.max(0, Math.min(100, Math.round(prog)))
+            setExportProgress(prev => Math.max(prev, mapped))
           }
           if (status === 'done' && s?.downloadUrl) {
             if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
@@ -883,6 +938,7 @@ export function QueriesPage(){
   const exportEnabledCsv = reportOptions.csv
   const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
   const exportEnabledPdf = reportOptions.pdf
+  const spreadsheetExportLabel = reportOptions.excel ? 'Excel' : 'XLSX'
 
   const canExport = useMemo(() => {
     if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) {
@@ -992,6 +1048,8 @@ export function QueriesPage(){
     if (!restoredCache) return
     if (mode !== 'prontas') return
     if (quickKind !== 'door-critical') return
+    const cached = loadResultsEntry(currentQueryKey)
+    if (cached) return
     if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
     autoRunTimerRef.current = setTimeout(() => {
       runQuick()
@@ -1001,7 +1059,7 @@ export function QueriesPage(){
       autoRunTimerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restoredCache, mode, quickKind, doorMode, doorAllSources, doorSelectedSources.join('|')])
+  }, [restoredCache, mode, quickKind, doorMode, doorAllSources, doorSelectedSources.join('|'), currentQueryKey])
 
   const doorShortKey = (key: string) => {
     const parts = (key || '').split('_').filter(Boolean)
@@ -1142,12 +1200,14 @@ export function QueriesPage(){
     setResultTotal(null)
     if (progressTimerRef.current) clearInterval(progressTimerRef.current)
     progressTimerRef.current = setInterval(() => {
-      setProgress(p => {
-        if (p >= 90) return p
-        const inc = p < 30 ? 6 : p < 60 ? 3 : 1
-        return Math.min(90, p + inc)
+      setProgress(prev => {
+        if (prev >= 99) return 99
+        if (prev < 60) return Math.min(60, prev + 4)
+        if (prev < 80) return Math.min(80, prev + 2)
+        if (prev < 90) return Math.min(90, prev + 1)
+        return Math.min(99, prev + 1)
       })
-    }, 500)
+    }, 800)
   }
 
   function stopProgress(ok: boolean){
@@ -1183,10 +1243,14 @@ export function QueriesPage(){
         batch.push(it)
         if (batch.length >= maxItems) break
       }
-      if (lastTotal != null && lastTotal > 0 && progressActive){
-        const denom = Math.min(lastTotal, maxItems)
-        const pct = denom <= 0 ? 0 : Math.min(99, Math.floor((Math.min(batch.length, denom) / denom) * 100))
-        setProgress(p => Math.max(p, pct))
+      if (lastTotal != null && lastTotal > 0){
+        const previewTarget = Math.min(lastTotal, maxItems)
+        const ratio = previewTarget <= 0 ? 0 : Math.min(1, batch.length / previewTarget)
+        const actualProgress = Math.max(8, Math.min(90, Math.round(8 + (ratio * 82))))
+        setProgress(prev => Math.max(prev, actualProgress))
+      } else {
+        const pageProgress = Math.max(8, Math.min(88, 8 + ((page - 1) * 15)))
+        setProgress(prev => Math.max(prev, pageProgress))
       }
       if (items.length < ps) break
       page += 1
@@ -1439,38 +1503,32 @@ export function QueriesPage(){
         const src = effectiveAllSources ? undefined : doorSelectedSources.join(';')
         if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src){ setError('Selecione uma ou mais portas'); setLoading(false); return }
         if (doorMode === 'critical'){
-          const { collected, total } = await (async () => {
-            let lastTotal: number | null = null
-            const batch = await collectUpTo(maxPreview, async (page, ps) => {
-              const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
-              const items = (r as any)?.items ?? []
-              if (typeof (r as any)?.total === 'number') lastTotal = (r as any).total
-              return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
-            })
-            return { collected: batch, total: lastTotal }
-          })()
-          const mapped = collected.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
-          setResultTotal(mapped.length)
-          setData(mapped)
-          // Continue loading remaining pages in background
-          if (total != null && total > maxPreview) {
-            const remaining = total - maxPreview
+          const first = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page: 1, pageSize: 200 })
+          const firstItems = Array.isArray((first as any)?.items) ? (first as any).items : []
+          const firstMapped = firstItems.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          const firstTotal = typeof (first as any)?.total === 'number' ? (first as any).total : null
+          setData(firstMapped)
+          setResultTotal(firstTotal ?? firstMapped.length)
+          setProgress(prev => Math.max(prev, firstTotal != null ? 35 : 25))
+          if (firstItems.length === 200) {
             setExportStage('loading-background')
-            setExportProgress(90)
-            const extraPages = Math.ceil(remaining / 200)
-            let allExtra: any[] = []
-            for (let i = 0; i < extraPages; i++) {
-              const pg = Math.floor(maxPreview / 200) + 1 + i
+            let loaded = firstMapped.length
+            const previewPages = Math.ceil(maxPreview / 200)
+            for (let pg = 2; pg <= previewPages; pg++) {
               try {
                 const r = await api.reportsDoorCritical({ start: r0.startIso, end: r0.endIso, sourceList: src, page: pg, pageSize: 200 })
-                const items = (r as any)?.items ?? []
-                if (Array.isArray(items)) allExtra.push(...items)
+                const items = Array.isArray((r as any)?.items) ? (r as any).items : []
+                if (!items.length) break
+                const extraMapped = items.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+                loaded += extraMapped.length
+                setData(prev => [...prev, ...extraMapped])
+                const currentTotal = typeof (r as any)?.total === 'number' ? (r as any).total : firstTotal
+                if (currentTotal != null) setResultTotal(currentTotal)
+                const previewTarget = currentTotal != null ? Math.min(currentTotal, maxPreview) : maxPreview
+                const ratio = previewTarget > 0 ? Math.min(1, loaded / previewTarget) : 1
+                setProgress(prev => Math.max(prev, Math.min(95, Math.round(35 + (ratio * 55)))))
+                if (items.length < 200) break
               } catch { break }
-            }
-            if (allExtra.length > 0) {
-              const extraMapped = allExtra.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
-              setData(prev => [...prev, ...extraMapped])
-              setResultTotal(total)
             }
             setExportStage('done')
             setExportProgress(100)
@@ -1478,38 +1536,32 @@ export function QueriesPage(){
             setExportStage('done')
           }
         }else if (doorMode === 'general'){
-          const { collected, total } = await (async () => {
-            let lastTotal: number | null = null
-            const batch = await collectUpTo(maxPreview, async (page, ps) => {
-              const r = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src, page, pageSize: ps })
-              const items = (r as any)?.items ?? []
-              if (typeof (r as any)?.total === 'number') lastTotal = (r as any).total
-              return { items: Array.isArray(items) ? items : [], total: (r as any)?.total }
-            })
-            return { collected: batch, total: lastTotal }
-          })()
-          const mapped = collected.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
-          setResultTotal(mapped.length)
-          setData(mapped)
-          // Continue loading remaining pages in background
-          if (total != null && total > maxPreview) {
+          const first = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src, page: 1, pageSize: 200 })
+          const firstItems = Array.isArray((first as any)?.items) ? (first as any).items : []
+          const firstMapped = firstItems.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          const firstTotal = typeof (first as any)?.total === 'number' ? (first as any).total : null
+          setData(firstMapped)
+          setResultTotal(firstTotal ?? firstMapped.length)
+          setProgress(prev => Math.max(prev, firstTotal != null ? 35 : 25))
+          if (firstItems.length === 200) {
             setExportStage('loading-background')
-            setExportProgress(90)
-            const remaining = total - maxPreview
-            const extraPages = Math.ceil(remaining / 200)
-            let allExtra: any[] = []
-            for (let i = 0; i < extraPages; i++) {
-              const pg = Math.floor(maxPreview / 200) + 1 + i
+            let loaded = firstMapped.length
+            const previewPages = Math.ceil(maxPreview / 200)
+            for (let pg = 2; pg <= previewPages; pg++) {
               try {
                 const r = await api.reportsDoorGeneral({ start: r0.startIso, end: r0.endIso, sourceList: src, page: pg, pageSize: 200 })
-                const items = (r as any)?.items ?? []
-                if (Array.isArray(items)) allExtra.push(...items)
+                const items = Array.isArray((r as any)?.items) ? (r as any).items : []
+                if (!items.length) break
+                const extraMapped = items.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+                loaded += extraMapped.length
+                setData(prev => [...prev, ...extraMapped])
+                const currentTotal = typeof (r as any)?.total === 'number' ? (r as any).total : firstTotal
+                if (currentTotal != null) setResultTotal(currentTotal)
+                const previewTarget = currentTotal != null ? Math.min(currentTotal, maxPreview) : maxPreview
+                const ratio = previewTarget > 0 ? Math.min(1, loaded / previewTarget) : 1
+                setProgress(prev => Math.max(prev, Math.min(95, Math.round(35 + (ratio * 55)))))
+                if (items.length < 200) break
               } catch { break }
-            }
-            if (allExtra.length > 0) {
-              const extraMapped = allExtra.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
-              setData(prev => [...prev, ...extraMapped])
-              setResultTotal(total)
             }
             setExportStage('done')
             setExportProgress(100)
@@ -1518,12 +1570,38 @@ export function QueriesPage(){
           }
         }else if (doorMode === 'general-by-name'){
           if (!doorName){ setError('Informe o nome'); setLoading(false); return }
-          const res = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src })
-          const list = (res as any)?.data ?? res
-          const rows = Array.isArray(list) ? list : []
-          const mapped = rows.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
-          setResultTotal(mapped.length)
-          setData(mapped.slice(0, maxPreview))
+          const first = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src, page: 1, pageSize: 200 })
+          const firstItems = Array.isArray((first as any)?.items) ? (first as any).items : []
+          const firstMapped = firstItems.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+          const firstTotal = typeof (first as any)?.total === 'number' ? (first as any).total : null
+          setData(firstMapped)
+          setResultTotal(firstTotal ?? firstMapped.length)
+          setProgress(prev => Math.max(prev, firstTotal != null ? 35 : 25))
+          if (firstItems.length === 200) {
+            setExportStage('loading-background')
+            let loaded = firstMapped.length
+            const previewPages = Math.ceil(maxPreview / 200)
+            for (let pg = 2; pg <= previewPages; pg++) {
+              try {
+                const r = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src, page: pg, pageSize: 200 })
+                const items = Array.isArray((r as any)?.items) ? (r as any).items : []
+                if (!items.length) break
+                const extraMapped = items.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
+                loaded += extraMapped.length
+                setData(prev => [...prev, ...extraMapped])
+                const currentTotal = typeof (r as any)?.total === 'number' ? (r as any).total : firstTotal
+                if (currentTotal != null) setResultTotal(currentTotal)
+                const previewTarget = currentTotal != null ? Math.min(currentTotal, maxPreview) : maxPreview
+                const ratio = previewTarget > 0 ? Math.min(1, loaded / previewTarget) : 1
+                setProgress(prev => Math.max(prev, Math.min(95, Math.round(35 + (ratio * 55)))))
+                if (items.length < 200) break
+              } catch { break }
+            }
+            setExportStage('done')
+            setExportProgress(100)
+          } else {
+            setExportStage('done')
+          }
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); setLoading(false); return }
           const res = await api.reportsDoorGeneralBySite({ start: r0.startIso, end: r0.endIso, site: doorSite })
@@ -3459,7 +3537,7 @@ export function QueriesPage(){
             {progressActive && (
               <div className="progress" style={{width:260, height:38}}>
                 <div className={'progress-bar progress-bar-striped' + (loading ? ' progress-bar-animated' : '')} role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-                  {progress}%
+                  {Math.round(progress)}%
                 </div>
               </div>
             )}
@@ -3472,7 +3550,7 @@ export function QueriesPage(){
                   </button>
                 )}
                 {exportEnabledXlsx && exportAllowsXlsx && (
-                  <button className="btn btn-light btn-icon" title="XLSX" onClick={()=> exportData('xlsx')}>
+                  <button className="btn btn-light btn-icon" title={spreadsheetExportLabel} onClick={()=> exportData('xlsx')}>
                     <i className="bi bi-file-earmark-excel" />
                   </button>
                 )}
@@ -3597,7 +3675,7 @@ export function QueriesPage(){
             {progressActive && (
               <div className="progress" style={{width:260, height:38}}>
                 <div className={'progress-bar progress-bar-striped' + (loading ? ' progress-bar-animated' : '')} role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-                  {progress}%
+                  {Math.round(progress)}%
                 </div>
               </div>
             )}
@@ -3610,7 +3688,7 @@ export function QueriesPage(){
                   </button>
                 )}
                 {exportEnabledXlsx && exportAllowsXlsx && (
-                  <button className="btn btn-light btn-icon" title="XLSX" onClick={()=> exportData('xlsx')}>
+                  <button className="btn btn-light btn-icon" title={spreadsheetExportLabel} onClick={()=> exportData('xlsx')}>
                     <i className="bi bi-file-earmark-excel" />
                   </button>
                 )}
