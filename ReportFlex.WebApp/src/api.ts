@@ -1,4 +1,8 @@
 let authToken: string | null = localStorage.getItem('rf_token')
+// Id de progresso da consulta em andamento (header X-Progress-Id). Definido pela
+// tela de Consultas durante a execução e limpo ao final.
+let progressId: string | null = null
+export function setProgressId(id: string | null){ progressId = id }
 const API_BASE = (() => {
   try{
     const override = localStorage.getItem('rf_api_base')
@@ -37,7 +41,7 @@ export function setToken(t: string){
   localStorage.setItem('rf_token', t)
   clearSessionCaches()
 }
-function headers(){ const h: Record<string,string> = {}; if(authToken) h['Authorization'] = `Bearer ${authToken}`; const cid = localStorage.getItem('rf_client_id'); if (cid) h['X-Client-Id'] = cid; return h }
+function headers(){ const h: Record<string,string> = {}; if(authToken) h['Authorization'] = `Bearer ${authToken}`; const cid = localStorage.getItem('rf_client_id'); if (cid) h['X-Client-Id'] = cid; if (progressId) h['X-Progress-Id'] = progressId; return h }
 
 async function apiFetch(path: string, init?: RequestInit){
   // Try API_BASE first, then fallback to relative path if 404/not reachable
@@ -197,6 +201,12 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/population?' + qs, { headers: headers() }))
   },
+  bimestralFuncionario: async () => {
+    return await withAuth(apiFetch('/api/reports/bimestral-funcionario', { headers: headers() }))
+  },
+  bimestralVisitante: async () => {
+    return await withAuth(apiFetch('/api/reports/bimestral-visitante', { headers: headers() }))
+  },
   reportsEventosClaviculario: async (p: { start: string, end: string, nome?: string, matricula?: string, chave?: string, dc?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!==undefined && v!==null && v!=='').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/eventos-claviculario?' + qs, { headers: headers() }))
@@ -213,7 +223,7 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v]) => v !== undefined && v !== null && v !== '').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-general?' + qs, { headers: headers() }))
   },
-  reportsDoorGeneralByName: async (p: { start: string, end: string, name: string, sourceList?: string, page?: number, pageSize?: number }) => {
+  reportsDoorGeneralByName: async (p: { start: string, end: string, name: string, documento?: string, sourceList?: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v]) => v !== undefined && v !== null && v !== '').map(([k,v])=>[k,String(v)])).toString()
     return await withAuth(apiFetch('/api/reports/door-general/by-name?' + qs, { headers: headers() }))
   },
@@ -231,6 +241,9 @@ export const api = {
   },
   reportsAccessAggregated: async () => {
     return await withAuth(apiFetch('/api/reports/access/aggregated', { headers: headers() }))
+  },
+  getQueryProgress: async (id: string) => {
+    return await withAuth(apiFetch('/api/progress/' + encodeURIComponent(id), { headers: headers() }))
   },
   dbTableRows: async (p: { db: 'CMS'|'Logins'|'EMS', table: string, page?: number, pageSize?: number }) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=> v!=null).map(([k,v])=>[k,String(v)])).toString()

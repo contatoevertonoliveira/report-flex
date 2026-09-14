@@ -15,8 +15,8 @@ export function SettingsPage(){
   const [clavPath, setClavPath] = useState('')
   const [dbInfo, setDbInfo] = useState<any | null>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
-  const [reportOptions, setReportOptions] = useState<{ xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape', customQueries: boolean }>({
-    xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape', customQueries: true
+  const [reportOptions, setReportOptions] = useState<{ word: boolean, xlsx: boolean, pdf: boolean, excel: boolean, cover: boolean, coverOrientation: 'portrait'|'landscape', reportOrientation: 'portrait'|'landscape', customQueries: boolean }>({
+    word: false, xlsx: true, pdf: true, excel: true, cover: false, coverOrientation: 'landscape', reportOrientation: 'landscape', customQueries: true
   })
   const [reportOptionsLoading, setReportOptionsLoading] = useState(false)
   const [useSqlAuth, setUseSqlAuth] = useState(false)
@@ -67,12 +67,16 @@ export function SettingsPage(){
   const isSuperAdmin = nivel === 'SuperAdmin'
   const isAdmin = nivel === 'Administrador'
 
+  // XLSX e Excel geram o mesmo arquivo (.xlsx) — só muda o rótulo do botão. As duas flags do
+  // .env (REPORT_XLSX/REPORT_EXCEL) ficam espelhadas para não quebrar configurações antigas.
   function normalizeReportOptions(opts: any){
-    const active = !!opts?.excel ? 'excel' : (!!opts?.xlsx ? 'xlsx' : 'pdf')
+    const has = !!opts && typeof opts === 'object'
+    const spreadsheet = has ? (!!opts.excel || !!opts.xlsx) : true
     return {
-      xlsx: active === 'xlsx',
-      pdf: active === 'pdf',
-      excel: active === 'excel',
+      xlsx: spreadsheet,
+      excel: spreadsheet,
+      word: has ? !!opts.word : false,
+      pdf: has ? !!opts.pdf : true,
       cover: !!opts?.cover,
       coverOrientation: (opts?.coverOrientation === 'portrait' ? 'portrait' : 'landscape') as 'portrait'|'landscape',
       reportOrientation: (opts?.reportOrientation === 'portrait' ? 'portrait' : 'landscape') as 'portrait'|'landscape',
@@ -80,13 +84,8 @@ export function SettingsPage(){
     }
   }
 
-  function setExclusiveReportFormat(format: 'xlsx'|'excel'|'pdf'){
-    setReportOptions(o => ({
-      ...o,
-      xlsx: format === 'xlsx',
-      excel: format === 'excel',
-      pdf: format === 'pdf'
-    }))
+  function setSpreadsheetFormat(enabled: boolean){
+    setReportOptions(o => ({ ...o, xlsx: enabled, excel: enabled }))
   }
 
   useEffect(() => {
@@ -1587,20 +1586,20 @@ export function SettingsPage(){
         </div>
         <div className="card-body d-flex flex-column" style={{gap:12}}>
           <p className="text-muted" style={{fontSize:12, marginBottom:4}}>
-            Apenas um formato pode ficar ativo por vez. Ao selecionar um, os demais serão desativados automaticamente.
+            Marque todos os formatos que devem ficar disponíveis na tela de consultas. É possível manter mais de um ativo ao mesmo tempo.
           </p>
           <div className="d-flex flex-wrap" style={{gap:12}}>
             <div className="form-check">
-              <input className="form-check-input" type="radio" name="reportFormat" id="repXlsx" checked={reportOptions.xlsx} onChange={()=> setExclusiveReportFormat('xlsx')} />
-              <label className="form-check-label" htmlFor="repXlsx">XLSX</label>
+              <input className="form-check-input" type="checkbox" id="repExcel" checked={reportOptions.excel} onChange={e=> setSpreadsheetFormat(e.target.checked)} />
+              <label className="form-check-label" htmlFor="repExcel">Excel (.xlsx)</label>
             </div>
             <div className="form-check">
-              <input className="form-check-input" type="radio" name="reportFormat" id="repExcel" checked={reportOptions.excel} onChange={()=> setExclusiveReportFormat('excel')} />
-              <label className="form-check-label" htmlFor="repExcel">Excel (compatível)</label>
-            </div>
-            <div className="form-check">
-              <input className="form-check-input" type="radio" name="reportFormat" id="repPdf" checked={reportOptions.pdf} onChange={()=> setExclusiveReportFormat('pdf')} />
+              <input className="form-check-input" type="checkbox" id="repPdf" checked={reportOptions.pdf} onChange={e=> setReportOptions(o=> ({...o, pdf: e.target.checked}))} />
               <label className="form-check-label" htmlFor="repPdf">PDF</label>
+            </div>
+            <div className="form-check">
+              <input className="form-check-input" type="checkbox" id="repWord" checked={reportOptions.word} onChange={e=> setReportOptions(o=> ({...o, word: e.target.checked}))} />
+              <label className="form-check-label" htmlFor="repWord">Word (.docx)</label>
             </div>
             <div className="form-check form-switch">
               <input className="form-check-input" type="checkbox" id="repPdfCover" checked={reportOptions.cover} onChange={e=> setReportOptions(o=> ({...o, cover: e.target.checked}))} />

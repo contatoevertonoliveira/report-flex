@@ -5,6 +5,7 @@ type QuickKey =
   | 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'door-critical'
   | 'employees' | 'external' | 'card-by-cpf'
   | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes'
+  | 'bimestral-funcionario' | 'bimestral-visitante'
 
 export function ConsultasConfigPage() {
   const [cfg, setCfg] = React.useState<Record<string, boolean>>({})
@@ -62,17 +63,19 @@ export function ConsultasConfigPage() {
     { key:'access-agg', label:'Acessos Agregados' },
     { key:'transit-period', label:'Trânsito por Período' },
     { key:'population', label:'População' },
-    { key:'eventos-claviculario', label:'Eventos_Claviculario' },
+    { key:'eventos-claviculario', label:'Claviculário' },
     { key:'door-critical', label:'Eventos de Porta' },
     { key:'employees', label:'Funcionários' },
     { key:'external', label:'Externos' },
-    { key:'card-by-cpf', label:'Buscar Crachá por CPF' },
-    { key:'cpf', label:'CPF (Cadastro/Acessos)' },
+    { key:'card-by-cpf', label:'Buscar Crachá' },
+    { key:'cpf', label:'Cadastro/Acessos' },
     { key:'matricula', label:'Matrícula' },
     { key:'empresa', label:'Empresa' },
     { key:'cracha', label:'Crachá' },
     { key:'nivel', label:'Nível de Acesso' },
-    { key:'visitantes', label:'Visitantes' }
+    { key:'visitantes', label:'Visitantes' },
+    { key:'bimestral-funcionario', label:'Bimestral Funcionário' },
+    { key:'bimestral-visitante', label:'Bimestral Visitante' }
   ]
   return (
     <section className="page">

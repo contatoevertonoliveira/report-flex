@@ -8,6 +8,7 @@ using System.Text;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
+using W = DocumentFormat.OpenXml.Wordprocessing;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using System.Text.RegularExpressions;
@@ -266,12 +267,12 @@ if (initialEnv.TryGetValue("DB_SQL_PWD", out var sp) && !string.IsNullOrWhiteSpa
 {
     sqlAuthPwd = sp;
 }
-foreach (var key in dbObjectMapDefaults.Keys)
+foreach (var objKey in dbObjectMapDefaults.Keys)
 {
-    var envKey = "DB_OBJ_" + key;
+    var envKey = "DB_OBJ_" + objKey;
     if (initialEnv.TryGetValue(envKey, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
     {
-        dbObjectMapOverrides[key] = mapped.Trim();
+        dbObjectMapOverrides[objKey] = mapped.Trim();
     }
 }
 
@@ -280,6 +281,112 @@ app.UseResponseCompression();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ---------------------------------------------------------------------------
+// Progresso REAL das consultas (barra de progresso do frontend).
+// O frontend envia o header X-Progress-Id em todas as requisições da consulta e
+// consulta GET /api/progress/{id} em paralelo. O backend registra as etapas e, quando
+// possível, o número real de registros lidos/gravados.
+// ---------------------------------------------------------------------------
+var queryProgress = new System.Collections.Concurrent.ConcurrentDictionary<string, QueryProgressState>(StringComparer.OrdinalIgnoreCase);
+
+string ProgressIdFromHeader(Microsoft.AspNetCore.Http.HttpContext? ctx)
+{
+    try
+    {
+        var raw = ctx?.Request?.Headers["X-Progress-Id"].ToString();
+        return string.IsNullOrWhiteSpace(raw) ? "" : raw.Trim();
+    }
+    catch { return ""; }
+}
+
+void ProgressBegin(string? id, string stage = "running")
+{
+    if (string.IsNullOrWhiteSpace(id)) return;
+    queryProgress.AddOrUpdate(id!,
+        _ => new QueryProgressState { Stage = stage, UpdatedAtUtc = DateTime.UtcNow },
+        (_, s) => { if (!s.Done) s.Stage = stage; s.UpdatedAtUtc = DateTime.UtcNow; return s; });
+}
+
+void ProgressTick(string? id, int loaded, int? total = null, string? stage = null)
+{
+    if (string.IsNullOrWhiteSpace(id)) return;
+    queryProgress.AddOrUpdate(id!,
+        _ => new QueryProgressState { Stage = stage ?? "running", Loaded = loaded, Total = total, UpdatedAtUtc = DateTime.UtcNow },
+        (_, s) =>
+        {
+            s.Loaded = loaded;
+            if (total.HasValue) s.Total = total;
+            if (!string.IsNullOrWhiteSpace(stage)) s.Stage = stage!;
+            s.UpdatedAtUtc = DateTime.UtcNow;
+            return s;
+        });
+}
+
+void ProgressDone(string? id, int? total = null)
+{
+    if (string.IsNullOrWhiteSpace(id)) return;
+    queryProgress.AddOrUpdate(id!,
+        _ => new QueryProgressState { Stage = "done", Done = true, Loaded = total ?? 0, Total = total, UpdatedAtUtc = DateTime.UtcNow },
+        (_, s) => { s.Stage = "done"; s.Done = true; if (total.HasValue) { s.Total = total; s.Loaded = total.Value; } s.UpdatedAtUtc = DateTime.UtcNow; return s; });
+}
+
+void ProgressFail(string? id, string? error)
+{
+    if (string.IsNullOrWhiteSpace(id)) return;
+    queryProgress.AddOrUpdate(id!,
+        _ => new QueryProgressState { Stage = "error", Done = true, Error = error, UpdatedAtUtc = DateTime.UtcNow },
+        (_, s) => { s.Stage = "error"; s.Done = true; s.Error = error; s.UpdatedAtUtc = DateTime.UtcNow; return s; });
+}
+
+// Caminhos cujo progresso é gerenciado explicitamente (cache progressivo do servidor).
+var progressManagedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "/api/reports/door-critical",
+    "/api/reports/door-general",
+    "/api/reports/door-general/by-name"
+};
+
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.HasValue ? ctx.Request.Path.Value! : "";
+    // O próprio endpoint de progresso não deve ser instrumentado.
+    if (!path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith("/api/progress", StringComparison.OrdinalIgnoreCase) ||
+        progressManagedPaths.Contains(path))
+    {
+        await next();
+        return;
+    }
+    var pid = ProgressIdFromHeader(ctx);
+    if (string.IsNullOrWhiteSpace(pid)) { await next(); return; }
+    ProgressBegin(pid);
+    try
+    {
+        await next();
+        ProgressDone(pid);
+    }
+    catch (Exception ex)
+    {
+        ProgressFail(pid, ex.Message);
+        throw;
+    }
+});
+
+app.MapGet("/api/progress/{id}", (string id) =>
+{
+    var now = DateTime.UtcNow;
+    foreach (var kv in queryProgress)
+    {
+        if ((now - kv.Value.UpdatedAtUtc).TotalMinutes > 10) queryProgress.TryRemove(kv.Key, out _);
+    }
+    if (queryProgress.TryGetValue(id, out var st))
+    {
+        return Results.Ok(new { success = true, stage = st.Stage, loaded = st.Loaded, total = st.Total, done = st.Done, error = st.Error });
+    }
+    return Results.Ok(new { success = false, stage = "unknown", done = false });
+}).RequireAuthorization();
+
 app.Use(async (ctx, next) =>
 {
     var path = ctx.Request.Path.HasValue ? ctx.Request.Path.Value! : "";
@@ -808,7 +915,9 @@ string ApplyDbObjectMappings(string sql)
         ["dbo.jp4_sp_Eventos_Claviculario"] = GetMappedObjectIdentifier("CLAV_PROC_EVENTOS")
     };
 
-    foreach (var replacement in replacements)
+    // Substitui primeiro as chaves mais longas: "dbo.jp4_sp_DoorGeneral" é prefixo de
+    // "dbo.jp4_sp_DoorGeneral_byName"/"_bysite" e, se aplicado antes, corrompe o EXEC.
+    foreach (var replacement in replacements.OrderByDescending(r => r.Key.Length))
         sql = sql.Replace(replacement.Key, replacement.Value, StringComparison.OrdinalIgnoreCase);
 
     return sql;
@@ -1451,17 +1560,14 @@ app.MapGet("/api/admin/report-options", () =>
         if (s is "landscape" or "paisagem") return "landscape";
         return "landscape";
     }
-    var selectedFormat = GetFlag("REPORT_EXCEL") ? "excel"
-        : GetFlag("REPORT_XLSX") ? "xlsx"
-        : GetFlag("REPORT_PDF") ? "pdf"
-        : "pdf";
+    // Formatos independentes: o administrador pode manter mais de um ativo ao mesmo tempo.
     return Results.Ok(new
     {
         txt = false,
-        xlsx = selectedFormat == "xlsx",
-        pdf = selectedFormat == "pdf",
-        word = false,
-        excel = selectedFormat == "excel",
+        xlsx = GetFlag("REPORT_XLSX"),
+        pdf = GetFlag("REPORT_PDF"),
+        word = GetFlag("REPORT_WORD"),
+        excel = GetFlag("REPORT_EXCEL"),
         csv = false,
         cover = GetFlag("REPORT_PDF_COVER"),
         coverOrientation = GetOrientation("REPORT_PDF_COVER_ORIENTATION"),
@@ -1507,17 +1613,14 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
     }
     var coverOrientation = GetOrientation("coverOrientation", "landscape");
     var reportOrientation = GetOrientation("reportOrientation", "landscape");
-    var selectedFormat = GetBool("excel") ? "excel"
-        : GetBool("xlsx") ? "xlsx"
-        : GetBool("pdf") ? "pdf"
-        : "pdf";
+    // Cada formato é gravado de forma independente (permite mais de um ativo).
     var values = new Dictionary<string, string>
     {
         ["REPORT_TXT"] = "0",
-        ["REPORT_XLSX"] = selectedFormat == "xlsx" ? "1" : "0",
-        ["REPORT_PDF"] = selectedFormat == "pdf" ? "1" : "0",
-        ["REPORT_WORD"] = "0",
-        ["REPORT_EXCEL"] = selectedFormat == "excel" ? "1" : "0",
+        ["REPORT_XLSX"] = GetBool("xlsx") ? "1" : "0",
+        ["REPORT_PDF"] = GetBool("pdf") ? "1" : "0",
+        ["REPORT_WORD"] = GetBool("word") ? "1" : "0",
+        ["REPORT_EXCEL"] = GetBool("excel") ? "1" : "0",
         ["REPORT_CSV"] = "0",
         ["REPORT_PDF_COVER"] = GetBool("cover") ? "1" : "0",
         ["REPORT_PDF_COVER_ORIENTATION"] = coverOrientation,
@@ -1530,7 +1633,7 @@ app.MapPost("/api/admin/report-options", async (HttpContext ctx) =>
         txt = false,
         xlsx = values["REPORT_XLSX"] == "1",
         pdf = values["REPORT_PDF"] == "1",
-        word = false,
+        word = values["REPORT_WORD"] == "1",
         excel = values["REPORT_EXCEL"] == "1",
         csv = false,
         cover = values["REPORT_PDF_COVER"] == "1",
@@ -3175,26 +3278,73 @@ ORDER BY b.BEHAVIOR_ID";
     return Results.Ok(items);
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/population", async (string start, string end) =>
+async Task<(bool Ok, string? Error, List<(string Label, int Total)> Rows)> QueryPopulationAsync(SqlConnection cn, DateTime startDt, DateTime endDt, CancellationToken ct)
 {
-    var startDt = ParseDateTimeAny(start);
-    var endDt = ParseDateTimeAny(end);
-    if (endDt <= startDt) return Results.BadRequest("Período inválido");
-    if ((endDt - startDt).TotalDays > 370)
+    // 1) Consulta "molde" (mesma semântica da jp4_sp_Population): conta pessoas distintas (CardHolderID)
+    //    com Category IN (16,5) na view do EMS, filtrando UTCFILETIMEToDateTime(LocalTime) por data/hora.
+    try
     {
-        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = 120;
+        cmd.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
+        cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
+        cmd.CommandText = ApplyDbObjectMappings(@"
+SELECT 'Total de Funcionários' AS Label, COUNT(DISTINCT ev.CardHolderID) AS Total
+FROM emsevents..ems_vw_Events ev
+WHERE emsevents.[dbo].[UTCFILETIMEToDateTime](ev.LocalTime) BETWEEN @start AND @end
+  AND ev.Category IN (16, 5)
+  AND ev.CardHolderID IN (
+      SELECT uf.SbiID FROM EmployeeUserFields uf
+      WHERE uf.UF6 = 20001
+        AND uf.SbiID IN (SELECT e.SbiID FROM Employee e WHERE e.SbiID > 0 AND e.StateID <> 1)
+  )
+UNION ALL
+SELECT 'Total de Prestadores' AS Label, COUNT(DISTINCT ev.CardHolderID) AS Total
+FROM emsevents..ems_vw_Events ev
+WHERE emsevents.[dbo].[UTCFILETIMEToDateTime](ev.LocalTime) BETWEEN @start AND @end
+  AND ev.Category IN (16, 5)
+  AND ev.CardHolderID IN (
+      SELECT uf.SbiID FROM EmployeeUserFields uf
+      WHERE uf.UF6 <> 20001
+        AND uf.SbiID IN (SELECT e.SbiID FROM Employee e WHERE e.SbiID > 0 AND e.StateID <> 1)
+  )
+UNION ALL
+SELECT 'Total de Visitantes' AS Label, COUNT(DISTINCT ev.CardHolderID) AS Total
+FROM emsevents..ems_vw_Events ev
+WHERE emsevents.[dbo].[UTCFILETIMEToDateTime](ev.LocalTime) BETWEEN @start AND @end
+  AND ev.Category IN (16, 5)
+  AND ev.CardHolderID IN (
+      SELECT x.SbiID FROM ExternalRegular x WHERE x.SbiID > 0 AND x.StateID <> 1
+  );
+");
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<(string Label, int Total)>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add((r.GetString(0), r.GetInt32(1)));
+        }
+        return (true, null, rows);
+    }
+    catch (SqlException ex) when (
+        ex.Number == 208 || ex.Number == 207 || ex.Number == 2812 ||
+        ex.Message.IndexOf("Invalid object name", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        ex.Message.IndexOf("Invalid column name", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        ex.Message.Contains("binding errors", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("Could not find server", StringComparison.OrdinalIgnoreCase))
+    {
+        // View/função do EMS ausente nesse ambiente: usa o caminho antigo (tabela Events + Card, ticks).
     }
 
+    // 2) Fallback: consulta atual, com @startTicks/@endTicks e [EMSEVENTS].dbo.Events mapeado
     var startTicks = startDt.ToFileTimeUtc();
     var endTicks = endDt.ToFileTimeUtc();
-
-    using var cn = new SqlConnection(GetConn("CMS"));
-    await cn.OpenAsync();
-    using var cmd = cn.CreateCommand();
-    cmd.CommandTimeout = 120;
-    cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
-    cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
-    cmd.CommandText = ApplyDbObjectMappings(@"
+    try
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = 120;
+        cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
+        cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
+        cmd.CommandText = ApplyDbObjectMappings(@"
 WITH EmpFunc AS (
     SELECT DISTINCT e.SbiID
     FROM Employee e
@@ -3230,11 +3380,41 @@ UNION ALL
 SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
 FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
 ");
-    using var r = await cmd.ExecuteReaderAsync();
-    var items = new List<object>();
-    while (await r.ReadAsync())
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<(string Label, int Total)>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add((r.GetString(0), r.GetInt32(1)));
+        }
+        return (true, null, rows);
+    }
+    catch (SqlException ex)
     {
-        items.Add(new { Label = r.GetString(0), Total = r.GetInt32(1) });
+        return (false, ex.Message, new List<(string Label, int Total)>());
+    }
+}
+
+app.MapGet("/api/reports/population", async (string start, string end) =>
+{
+    var startDt = ParseDateTimeAny(start);
+    var endDt = ParseDateTimeAny(end);
+    if (endDt <= startDt) return Results.BadRequest("Período inválido");
+    if ((endDt - startDt).TotalDays > 370)
+    {
+        return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
+    }
+
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync();
+    var res = await QueryPopulationAsync(cn, startDt, endDt, CancellationToken.None);
+    if (!res.Ok)
+    {
+        return Results.Problem(title: "Erro ao consultar população", detail: res.Error, statusCode: 500);
+    }
+    var items = new List<object>();
+    foreach (var x in res.Rows)
+    {
+        items.Add(new { Label = x.Label, Total = x.Total });
     }
     return Results.Ok(items);
 }).RequireAuthorization();
@@ -3249,57 +3429,14 @@ app.MapGet("/api/reports/population/export", async (HttpContext http, string sta
         return Results.Problem(title: "Período muito grande", detail: "Para períodos acima de 12 meses, use um período menor.", statusCode: 422);
     }
 
-    var startTicks = startDt.ToFileTimeUtc();
-    var endTicks = endDt.ToFileTimeUtc();
-
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync(http.RequestAborted);
-    using var cmd = cn.CreateCommand();
-    cmd.CommandTimeout = 120;
-    cmd.Parameters.Add(new SqlParameter("@startTicks", SqlDbType.BigInt) { Value = startTicks });
-    cmd.Parameters.Add(new SqlParameter("@endTicks", SqlDbType.BigInt) { Value = endTicks });
-    cmd.CommandText = ApplyDbObjectMappings(@"
-WITH EmpFunc AS (
-    SELECT DISTINCT e.SbiID
-    FROM Employee e
-    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
-    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 = 20001
-),
-EmpPrest AS (
-    SELECT DISTINCT e.SbiID
-    FROM Employee e
-    INNER JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
-    WHERE e.SbiID > 0 AND e.StateID <> 1 AND uf.UF6 <> 20001
-),
-Visitors AS (
-    SELECT DISTINCT x.SbiID
-    FROM ExternalRegular x
-    WHERE x.SbiID > 0 AND x.StateID <> 1
-),
-EvPeople AS (
-    SELECT DISTINCT c.SbiID
-    FROM Card c
-    INNER JOIN [EMSEVENTS].dbo.Events ev
-        ON ev.CardNumber = c.CardNumber
-    WHERE
-        ev.[Time] >= @startTicks AND ev.[Time] < @endTicks
-        AND ev.Category IN (16, 5)
-)
-SELECT 'Total de Funcionários' AS Label, COUNT(1) AS Total
-FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpFunc f ON f.SbiID = e.SbiID) x
-UNION ALL
-SELECT 'Total de Prestadores' AS Label, COUNT(1) AS Total
-FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN EmpPrest p ON p.SbiID = e.SbiID) x
-UNION ALL
-SELECT 'Total de Visitantes' AS Label, COUNT(1) AS Total
-FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID = e.SbiID) x;
-");
-    using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
-    var rows = new List<(string Label, int Total)>();
-    while (await r.ReadAsync(http.RequestAborted))
+    var res = await QueryPopulationAsync(cn, startDt, endDt, http.RequestAborted);
+    if (!res.Ok)
     {
-        rows.Add((r.GetString(0), r.GetInt32(1)));
+        return Results.Problem(title: "Erro ao consultar população", detail: res.Error, statusCode: 500);
     }
+    var rows = res.Rows;
 
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
@@ -3316,13 +3453,381 @@ FROM (SELECT DISTINCT e.SbiID FROM EvPeople e INNER JOIN Visitors v ON v.SbiID =
     var criteria = $"Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
     if (fmt == "xlsx")
     {
-        var bytesX = BuildPopulationXlsx(clientInfo.Name, "População", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildPopulationXlsx(clientInfo.Name, "População", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "População", startDt, endDt, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "População", startDt, endDt, GetReportUser(http), criteria,
+            new[] { "PERÍODO", "TOTAL" },
+            rows.Select(x => new string?[] { x.Label, x.Total.ToString() }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "populacao.docx");
     }
     if (fmt == "pdf")
     {
         var (cp, rp) = GetPdfOrientationFlags(http);
         var bytesP = BuildPopulationPdf(clientInfo.Name, clientInfo.Logo, "População", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+}).RequireAuthorization();
+
+async Task<(bool Ok, string? Error, List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)> Rows)> QueryBimestralFuncionarioAsync(SqlConnection cn, CancellationToken ct)
+{
+    try
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = 300;
+        cmd.CommandText = ApplyDbObjectMappings(@"
+;WITH UltimosEventos AS
+(
+    SELECT
+        E.SbiID,
+        CAST(E.Name + ' ' + E.Surname AS varchar(200)) AS NomeCompleto,
+        E.identifier AS Matricula,
+        E.PreferredName AS CpfDocumento,
+        CASE
+            WHEN E.StateID = 0 THEN 'ATIVO'
+            WHEN E.StateID = 1 THEN 'DELETADO'
+            ELSE 'INATIVO'
+        END AS StatusCadastro,
+        ROW_NUMBER() OVER (
+            PARTITION BY E.SbiID
+            ORDER BY emsevents.dbo.UTCFILETIMEToDateTime(EMS.[Time]) DESC
+        ) AS rn
+    FROM Employee E
+    LEFT JOIN Card EMC ON EMC.SbiID = E.SbiID
+    LEFT JOIN [EMSEVENTS].dbo.Events EMS
+        ON EMS.CardNumber = EMC.CardNumber
+        AND EMS.Category = 16
+)
+SELECT
+    CAST(C.CardNumber AS varchar(100)) AS CardNumber,
+    UE.NomeCompleto,
+    UE.Matricula,
+    UE.CpfDocumento,
+    UE.StatusCadastro,
+    GAL.AccessLevelName AS NivelAcesso,
+    ACHAL.Comment AS ComentarioNivel,
+    DATEADD(HOUR, -3, ACHAL.ExpiryDateTime) AS DataExpiracaoNivel,
+    EUF.UF5 AS Empresa,
+    CASE WHEN TRY_CONVERT(int, EUF.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, EUF.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo
+FROM UltimosEventos UE
+LEFT JOIN AssignedCHAccessLevels ACHAL ON UE.SbiID = ACHAL.SbiID
+LEFT JOIN GlobalAccessLevels GAL ON GAL.ServerRecordNumber = ACHAL.ServerRecordNumber
+LEFT JOIN EmployeeUserFields EUF ON UE.SbiID = EUF.SbiID
+LEFT JOIN Card C ON C.SbiID = UE.SbiID
+WHERE (UE.rn = 1 OR UE.rn IS NULL)
+  AND UE.StatusCadastro <> 'DELETADO'
+  AND UE.StatusCadastro = 'ATIVO'
+  AND ACHAL.StateID = 0
+  AND (C.StateID = 0 OR C.StateID IS NULL)
+  AND C.CardNumber IS NOT NULL
+ORDER BY 4 ASC;");
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add((
+                r.IsDBNull(0) ? null : r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetString(6),
+                r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+                r.IsDBNull(8) ? null : r.GetString(8),
+                r.IsDBNull(9) ? null : r.GetString(9)
+            ));
+        }
+        return (true, null, rows);
+    }
+    catch (SqlException ex)
+    {
+        return (false, ex.Message, new List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)>());
+    }
+}
+
+async Task<(bool Ok, string? Error, List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)> Rows)> QueryBimestralVisitanteAsync(SqlConnection cn, CancellationToken ct)
+{
+    try
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandTimeout = 300;
+        cmd.CommandText = ApplyDbObjectMappings(@"
+;WITH UltimosEventos AS
+(
+    SELECT
+        E.SbiID,
+        CAST(E.Name + ' ' + E.Surname AS varchar(200)) AS NomeCompleto,
+        E.identifier AS Matricula,
+        E.PreferredName AS CpfDocumento,
+        CASE
+            WHEN E.StateID = 0 THEN 'ATIVO'
+            WHEN E.StateID = 1 THEN 'DELETADO'
+            ELSE 'INATIVO'
+        END AS StatusCadastro,
+        ROW_NUMBER() OVER (
+            PARTITION BY E.SbiID
+            ORDER BY emsevents.dbo.UTCFILETIMEToDateTime(EMS.[Time]) DESC
+        ) AS rn
+    FROM ExternalRegular E
+    LEFT JOIN Card EMC ON EMC.SbiID = E.SbiID
+    LEFT JOIN [EMSEVENTS].dbo.Events EMS
+        ON EMS.CardNumber = EMC.CardNumber
+        AND EMS.Category = 16
+)
+SELECT
+    CAST(C.CardNumber AS varchar(100)) AS CardNumber,
+    UE.NomeCompleto,
+    UE.Matricula,
+    UE.CpfDocumento,
+    UE.StatusCadastro,
+    GAL.AccessLevelName AS NivelAcesso,
+    ACHAL.Comment AS ComentarioNivel,
+    DATEADD(HOUR, -3, ACHAL.ExpiryDateTime) AS DataExpiracaoNivel,
+    EC.Name AS Empresa,
+    'VISITANTE' AS Tipo
+FROM UltimosEventos UE
+LEFT JOIN AssignedCHAccessLevels ACHAL ON UE.SbiID = ACHAL.SbiID
+LEFT JOIN GlobalAccessLevels GAL ON GAL.ServerRecordNumber = ACHAL.ServerRecordNumber
+LEFT JOIN ExternalRegularUserFields EUF ON UE.SbiID = EUF.SbiID
+LEFT JOIN Card C ON C.SbiID = UE.SbiID
+INNER JOIN ExternalRegular er ON er.SbiID = EUF.SbiID
+LEFT JOIN ExternalCompany EC ON EC.ExternalCompanyID = er.ExternalCompanyID
+WHERE (UE.rn = 1 OR UE.rn IS NULL)
+  AND UE.StatusCadastro <> 'DELETADO'
+  AND UE.StatusCadastro = 'ATIVO'
+  AND ACHAL.StateID = 0
+  AND (C.StateID = 0 OR C.StateID IS NULL)
+  AND C.CardNumber IS NOT NULL
+ORDER BY 4 ASC;");
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add((
+                r.IsDBNull(0) ? null : r.GetString(0),
+                r.IsDBNull(1) ? null : r.GetString(1),
+                r.IsDBNull(2) ? null : r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetString(6),
+                r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+                r.IsDBNull(8) ? null : r.GetString(8),
+                r.IsDBNull(9) ? null : r.GetString(9)
+            ));
+        }
+        return (true, null, rows);
+    }
+    catch (SqlException ex)
+    {
+        return (false, ex.Message, new List<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)>());
+    }
+}
+
+app.MapGet("/api/reports/bimestral-funcionario", async (HttpContext http) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    var res = await QueryBimestralFuncionarioAsync(cn, http.RequestAborted);
+    if (!res.Ok)
+    {
+        return Results.Problem(title: "Erro ao consultar bimestral funcionário", detail: res.Error, statusCode: 500);
+    }
+    var items = new List<object>();
+    foreach (var x in res.Rows)
+    {
+        items.Add(new
+        {
+            CardNumber = x.CardNumber,
+            NomeCompleto = x.NomeCompleto,
+            Matricula = x.Matricula,
+            CpfDocumento = x.CpfDocumento,
+            StatusCadastro = x.StatusCadastro,
+            NivelAcesso = x.NivelAcesso,
+            ComentarioNivel = x.ComentarioNivel,
+            DataExpiracaoNivel = x.DataExpiracaoNivel,
+            Empresa = x.Empresa,
+            Tipo = x.Tipo
+        });
+    }
+    return Results.Ok(items);
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/bimestral-funcionario/export", async (HttpContext http, string format = "csv", string? tipo = null, string? status = null, string? nivel = null, string? empresa = null) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    var res = await QueryBimestralFuncionarioAsync(cn, http.RequestAborted);
+    if (!res.Ok)
+    {
+        return Results.Problem(title: "Erro ao consultar bimestral funcionário", detail: res.Error, statusCode: 500);
+    }
+    var rows = res.Rows
+        .Where(x => MatchTipoCadastro(x.Tipo, tipo))
+        .Where(x => MatchIgual(x.StatusCadastro, status))
+        .Where(x => MatchContem(x.NivelAcesso, nivel))
+        .Where(x => MatchContem(x.Empresa, empresa))
+        .ToList();
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    var fileName = $"bimestral-funcionario.{fmt}";
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHÁ,NOME,MATRÍCULA,CPF/DOCUMENTO,STATUS CADASTRO,NÍVEL DE ACESSO,COMENTÁRIO,EXPIRAÇÃO NÍVEL,EMPRESA,TIPO");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",",
+                Csv(x.CardNumber),
+                Csv(x.NomeCompleto),
+                Csv(x.Matricula),
+                Csv(x.CpfDocumento),
+                Csv(x.StatusCadastro),
+                Csv(x.NivelAcesso),
+                Csv(x.ComentarioNivel),
+                x.DataExpiracaoNivel?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",
+                Csv(x.Empresa),
+                Csv(x.Tipo)));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv; charset=utf-8", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var criteria = "Todos os cadastros ativos";
+    if (fmt == "xlsx")
+    {
+        var bytesX = AddXlsxChrome(BuildBimestralFuncionarioXlsx(clientInfo.Name, "Bimestral Funcionário", DateTime.Now, DateTime.Now, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Bimestral Funcionário", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Bimestral Funcionário", null, null, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "MATRÍCULA", "CPF/DOCUMENTO", "STATUS CADASTRO", "NÍVEL DE ACESSO", "COMENTÁRIO", "EXPIRAÇÃO NÍVEL", "EMPRESA", "TIPO" },
+            rows.Select(x => new string?[] { x.CardNumber, x.NomeCompleto, x.Matricula, x.CpfDocumento, x.StatusCadastro, x.NivelAcesso, x.ComentarioNivel, x.DataExpiracaoNivel?.ToString("dd/MM/yyyy HH:mm:ss"), x.Empresa, x.Tipo }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "bimestral-funcionario.docx");
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildBimestralFuncionarioPdf(clientInfo.Name, clientInfo.Logo, "Bimestral Funcionário", DateTime.Now, DateTime.Now, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+        return Results.File(bytesP, "application/pdf", fileName);
+    }
+    return Results.BadRequest(new { error = "Formato inválido" });
+
+    static string Csv(string? s)
+    {
+        if (s == null) return "";
+        var needs = s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r');
+        if (!needs) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/bimestral-visitante", async (HttpContext http) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    var res = await QueryBimestralVisitanteAsync(cn, http.RequestAborted);
+    if (!res.Ok)
+    {
+        return Results.Problem(title: "Erro ao consultar bimestral visitante", detail: res.Error, statusCode: 500);
+    }
+    var items = new List<object>();
+    foreach (var x in res.Rows)
+    {
+        items.Add(new
+        {
+            CardNumber = x.CardNumber,
+            NomeCompleto = x.NomeCompleto,
+            Matricula = x.Matricula,
+            CpfDocumento = x.CpfDocumento,
+            StatusCadastro = x.StatusCadastro,
+            NivelAcesso = x.NivelAcesso,
+            ComentarioNivel = x.ComentarioNivel,
+            DataExpiracaoNivel = x.DataExpiracaoNivel,
+            Empresa = x.Empresa,
+            Tipo = x.Tipo
+        });
+    }
+    return Results.Ok(items);
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/bimestral-visitante/export", async (HttpContext http, string format = "csv", string? tipo = null, string? status = null, string? nivel = null, string? empresa = null) =>
+{
+    using var cn = new SqlConnection(GetConn("CMS"));
+    await cn.OpenAsync(http.RequestAborted);
+    var res = await QueryBimestralVisitanteAsync(cn, http.RequestAborted);
+    if (!res.Ok)
+    {
+        return Results.Problem(title: "Erro ao consultar bimestral visitante", detail: res.Error, statusCode: 500);
+    }
+    var rows = res.Rows
+        .Where(x => MatchTipoCadastro(x.Tipo, tipo))
+        .Where(x => MatchIgual(x.StatusCadastro, status))
+        .Where(x => MatchContem(x.NivelAcesso, nivel))
+        .Where(x => MatchContem(x.Empresa, empresa))
+        .ToList();
+
+    var fmt = (format ?? "csv").Trim().ToLowerInvariant();
+    if (fmt == "excel") fmt = "xlsx";
+    var fileName = $"bimestral-visitante.{fmt}";
+
+    if (fmt == "csv")
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("CRACHÁ,NOME,MATRÍCULA,CPF/DOCUMENTO,STATUS CADASTRO,NÍVEL DE ACESSO,COMENTÁRIO,EXPIRAÇÃO NÍVEL,EMPRESA,TIPO");
+        foreach (var x in rows)
+        {
+            sb.AppendLine(string.Join(",",
+                Csv(x.CardNumber),
+                Csv(x.NomeCompleto),
+                Csv(x.Matricula),
+                Csv(x.CpfDocumento),
+                Csv(x.StatusCadastro),
+                Csv(x.NivelAcesso),
+                Csv(x.ComentarioNivel),
+                x.DataExpiracaoNivel?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",
+                Csv(x.Empresa),
+                Csv(x.Tipo)));
+        }
+        return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv; charset=utf-8", fileName);
+    }
+
+    var clientInfo = await GetReportClientInfoAsync(http);
+    var criteria = "Todos os cadastros ativos";
+    if (fmt == "xlsx")
+    {
+        var bytesX = AddXlsxChrome(BuildBimestralFuncionarioXlsx(clientInfo.Name, "Bimestral Visitante", DateTime.Now, DateTime.Now, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Bimestral Visitante", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
+        return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Bimestral Visitante", null, null, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "MATRÍCULA", "CPF/DOCUMENTO", "STATUS CADASTRO", "NÍVEL DE ACESSO", "COMENTÁRIO", "EXPIRAÇÃO NÍVEL", "EMPRESA", "TIPO" },
+            rows.Select(x => new string?[] { x.CardNumber, x.NomeCompleto, x.Matricula, x.CpfDocumento, x.StatusCadastro, x.NivelAcesso, x.ComentarioNivel, x.DataExpiracaoNivel?.ToString("dd/MM/yyyy HH:mm:ss"), x.Empresa, x.Tipo }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "bimestral-visitante.docx");
+    }
+    if (fmt == "pdf")
+    {
+        var (cp, rp) = GetPdfOrientationFlags(http);
+        var bytesP = BuildBimestralFuncionarioPdf(clientInfo.Name, clientInfo.Logo, "Bimestral Visitante", DateTime.Now, DateTime.Now, rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
         return Results.File(bytesP, "application/pdf", fileName);
     }
     return Results.BadRequest(new { error = "Formato inválido" });
@@ -3379,7 +3884,7 @@ app.MapGet("/api/reports/eventos-claviculario", async (HttpContext http, string 
     cmd.Parameters.Add(new SqlParameter("@nome", SqlDbType.VarChar) { Value = (object?)nome ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = (object?)matricula ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@chave", SqlDbType.VarChar) { Value = (object?)chave ?? DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
+    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue.Trim().Trim('%') });
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     var src = await ResolveClavicularioSourceAsync(cn, http.RequestAborted);
@@ -3398,14 +3903,20 @@ SELECT
     responsavelCartao AS Matricula,
     codigoChave,
     chaveDescricao,
-    descricao
+    descricao,
+    operador
 FROM {src}
 WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
     AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
-    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
-    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%')
+    AND (@chave IS NULL OR @chave = '' OR chaveDescricao LIKE '%' + @chave + '%')
+    AND codigoChave IS NOT NULL
+    AND (
+        @dc = ''
+        OR (@dc IN ('DC', 'DCS', 'DCN') AND codigoChave LIKE '%' + @dc + '%' AND chaveDescricao NOT LIKE 'SUB ESTACAO%')
+        OR (@dc = 'SUB' AND chaveDescricao LIKE 'SUB ESTACAO%')
+    )
 ORDER BY DataHora
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 
@@ -3415,8 +3926,13 @@ WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
     AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
-    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
-    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%');
+    AND (@chave IS NULL OR @chave = '' OR chaveDescricao LIKE '%' + @chave + '%')
+    AND codigoChave IS NOT NULL
+    AND (
+        @dc = ''
+        OR (@dc IN ('DC', 'DCS', 'DCN') AND codigoChave LIKE '%' + @dc + '%' AND chaveDescricao NOT LIKE 'SUB ESTACAO%')
+        OR (@dc = 'SUB' AND chaveDescricao LIKE 'SUB ESTACAO%')
+    );
 ";
     SqlDataReader r;
     try
@@ -3454,7 +3970,8 @@ WHERE
             Matricula = _r.IsDBNull(2) ? null : _r.GetString(2),
             CodigoChave = _r.IsDBNull(3) ? null : _r.GetString(3),
             ChaveDescricao = _r.IsDBNull(4) ? null : _r.GetString(4),
-            Descricao = _r.IsDBNull(5) ? null : _r.GetString(5)
+            Descricao = _r.IsDBNull(5) ? null : _r.GetString(5),
+            Operador = _r.IsDBNull(6) ? null : Convert.ToString(_r.GetValue(6))
         });
     }
     int total = 0;
@@ -3477,6 +3994,7 @@ WHERE
     AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'codigoChave')
     AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'chaveDescricao')
     AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'descricao')
+    AND EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = o.object_id AND c.name = 'operador')
 ORDER BY
     CASE
         WHEN o.name = 'eventos' THEN 0
@@ -3538,7 +4056,7 @@ app.MapGet("/api/reports/eventos-claviculario/export", async (HttpContext http, 
     cmd.Parameters.Add(new SqlParameter("@nome", SqlDbType.VarChar) { Value = (object?)nome ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = (object?)matricula ?? DBNull.Value });
     cmd.Parameters.Add(new SqlParameter("@chave", SqlDbType.VarChar) { Value = (object?)chave ?? DBNull.Value });
-    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue });
+    cmd.Parameters.Add(new SqlParameter("@dc", SqlDbType.VarChar) { Value = dcValue.Trim().Trim('%') });
     var src = await ResolveClavicularioSourceAsync(cn, http.RequestAborted);
     if (string.IsNullOrWhiteSpace(src))
     {
@@ -3555,14 +4073,20 @@ SELECT TOP 20000
     responsavelCartao AS Matricula,
     codigoChave,
     chaveDescricao,
-    descricao
+    descricao,
+    operador
 FROM {src}
 WHERE
     DataHora BETWEEN @start AND @end
     AND (@nome IS NULL OR @nome = '' OR responsavelNome LIKE '%' + @nome + '%')
     AND (@matricula IS NULL OR @matricula = '' OR responsavelCartao = @matricula)
-    AND (@chave IS NULL OR @chave = '' OR codigoChave = @chave)
-    AND (@dc = '' OR codigoChave LIKE '%' + @dc + '%')
+    AND (@chave IS NULL OR @chave = '' OR chaveDescricao LIKE '%' + @chave + '%')
+    AND codigoChave IS NOT NULL
+    AND (
+        @dc = ''
+        OR (@dc IN ('DC', 'DCS', 'DCN') AND codigoChave LIKE '%' + @dc + '%' AND chaveDescricao NOT LIKE 'SUB ESTACAO%')
+        OR (@dc = 'SUB' AND chaveDescricao LIKE 'SUB ESTACAO%')
+    )
 ORDER BY DataHora;";
 
     SqlDataReader r;
@@ -3584,7 +4108,7 @@ ORDER BY DataHora;";
     }
 
     using var _rAll = r;
-    var rows = new List<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)>();
+    var rows = new List<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao, string? Operador)>();
     while (await _rAll.ReadAsync(http.RequestAborted))
     {
         rows.Add((
@@ -3593,7 +4117,8 @@ ORDER BY DataHora;";
             _rAll.IsDBNull(2) ? null : _rAll.GetString(2),
             _rAll.IsDBNull(3) ? null : _rAll.GetString(3),
             _rAll.IsDBNull(4) ? null : _rAll.GetString(4),
-            _rAll.IsDBNull(5) ? null : _rAll.GetString(5)
+            _rAll.IsDBNull(5) ? null : _rAll.GetString(5),
+            _rAll.IsDBNull(6) ? null : Convert.ToString(_rAll.GetValue(6))
         ));
     }
 
@@ -3620,7 +4145,7 @@ ORDER BY DataHora;";
     if (fmt == "csv")
     {
         var sb = new StringBuilder();
-        sb.AppendLine("DATA_HORA,RESPONSAVEL,MATRICULA,COD_CHAVE,CHAVE,DESCRICAO");
+        sb.AppendLine("DATA_HORA,RESPONSAVEL,MATRICULA,COD_CHAVE,CHAVE,DESCRICAO,OPERADOR");
         foreach (var x in rows)
         {
             sb.AppendLine(string.Join(",", new[]
@@ -3630,7 +4155,8 @@ ORDER BY DataHora;";
                 Csv(x.Matricula),
                 Csv(x.CodigoChave),
                 Csv(x.ChaveDescricao),
-                Csv(x.Descricao)
+                Csv(x.Descricao),
+                Csv(x.Operador)
             }));
         }
         return Results.File(Encoding.UTF8.GetBytes(sb.ToString()), "text/csv", fileName);
@@ -3639,8 +4165,16 @@ ORDER BY DataHora;";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildClavicularioXlsx(clientInfo.Name, "Eventos_Claviculario", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildClavicularioXlsx(clientInfo.Name, "Eventos_Claviculario", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Eventos Claviculário", startDt, endDt, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Eventos Claviculário", startDt, endDt, GetReportUser(http), criteria,
+            new[] { "DATA/HORA", "RESPONSÁVEL", "MATRÍCULA", "CÓD. CHAVE", "CHAVE", "DESCRIÇÃO", "OPERADOR" },
+            rows.Select(x => new string?[] { x.DataHora?.ToString("dd/MM/yyyy HH:mm:ss"), x.ResponsavelNome, x.Matricula, x.CodigoChave, x.ChaveDescricao, x.Descricao, x.Operador }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "eventos-claviculario.docx");
     }
     if (fmt == "pdf")
     {
@@ -3678,8 +4212,17 @@ ORDER BY b.BEHAVIOR_ID";
     if (string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
     {
         var clientInfo = await GetReportClientInfoAsync(ctx);
-        var bytesX = BuildAccessAggXlsx(clientInfo.Name, "Acessos Agregados", rows.Select(x => (x.id, x.level, x.total)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), null);
+        var bytesX = AddXlsxChrome(BuildAccessAggXlsx(clientInfo.Name, "Acessos Agregados", rows.Select(x => (x.id, x.level, x.total)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), null), clientInfo.Name, "Acessos Agregados", null, null, GetReportUser(ctx), null, ShouldIncludeCover(ctx));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "access-by-level.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var clientInfoW = await GetReportClientInfoAsync(ctx);
+        var bytesW = BuildDocxReport(clientInfoW.Name, "Acessos Agregados", null, null, GetReportUser(ctx), null,
+            new[] { "LEVEL ID", "NÍVEL", "TOTAL" },
+            rows.Select(x => new string?[] { x.id.ToString(), x.level, x.total.ToString() }).ToList(),
+            ShouldIncludeCover(ctx));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "access-by-level.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -3703,7 +4246,7 @@ app.MapGet("/api/reports/transit/aggregated", async (string start, string end, s
     cmd.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
     if (!string.IsNullOrWhiteSpace(empresa))
     {
-        where += " AND u.UF2 = @empresa";
+        where += " AND u.UF2 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI";
         cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     }
     cmd.CommandText = $@"
@@ -3739,8 +4282,8 @@ string DoorGeneralCacheKey(DateTime start, DateTime end, string? sourceList) =>
 
 var doorGeneralByNameCache = new Dictionary<string, DoorQueryCacheEntry>(StringComparer.OrdinalIgnoreCase);
 var doorGeneralByNameCacheLock = new object();
-string DoorGeneralByNameCacheKey(DateTime start, DateTime end, string? sourceList, string? name) =>
-    $"{start:O}|{end:O}|{sourceList ?? ""}|{name ?? ""}";
+string DoorGeneralByNameCacheKey(DateTime start, DateTime end, string? sourceList, string? name, string? documento) =>
+    $"{start:O}|{end:O}|{sourceList ?? ""}|{name ?? ""}|{documento ?? ""}";
 
 HashSet<string>? BuildDoorAllowSet(string? sourceList)
 {
@@ -3774,18 +4317,25 @@ bool DoorTagAllowed(HashSet<string>? allow, string? tag) =>
 
 void AddDoorRow(DoorQueryCacheEntry entry, (long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso) row)
 {
+    int count;
     lock (entry.SyncRoot)
     {
         entry.Items.Add(row);
+        count = entry.Items.Count;
     }
+    // Andamento real: a cada 50 registros lidos atualiza a barra de progresso.
+    if (count % 50 == 0) ProgressTick(entry.ProgressId, count, null, "reading");
 }
 
 void CompleteDoorEntry(DoorQueryCacheEntry entry)
 {
+    int count;
     lock (entry.SyncRoot)
     {
         entry.IsComplete = true;
+        count = entry.Items.Count;
     }
+    ProgressDone(entry.ProgressId, count);
 }
 
 void FailDoorEntry(DoorQueryCacheEntry entry, Exception ex)
@@ -3795,6 +4345,29 @@ void FailDoorEntry(DoorQueryCacheEntry entry, Exception ex)
         entry.Error = ex.Message;
         entry.IsComplete = true;
     }
+    ProgressFail(entry.ProgressId, ex.Message);
+}
+
+// Registra o progresso (header X-Progress-Id) da consulta de porta já no início da requisição,
+// considerando o estado atual do cache. Sem isto, o estado só existia após o primeiro tick
+// (a cada 200 linhas) ou no fim — e em cache-hit nunca era criado (polling retornava "unknown").
+void RegisterDoorProgress(DoorQueryCacheEntry entry, string? progressId)
+{
+    if (string.IsNullOrWhiteSpace(progressId)) return;
+    entry.ProgressId = progressId;
+    int count;
+    bool complete;
+    string? error;
+    lock (entry.SyncRoot)
+    {
+        count = entry.Items.Count;
+        complete = entry.IsComplete;
+        error = entry.Error;
+    }
+    if (!string.IsNullOrWhiteSpace(error)) { ProgressFail(progressId, error); return; }
+    if (complete) { ProgressDone(progressId, count); return; }
+    ProgressBegin(progressId, "reading");
+    ProgressTick(progressId, count, null, "reading");
 }
 
 async Task WaitForDoorCachePageAsync(DoorQueryCacheEntry entry, int requiredCount)
@@ -3827,7 +4400,7 @@ async Task WaitForDoorCacheCompleteAsync(DoorQueryCacheEntry entry)
     }
 }
 
-DoorQueryCacheEntry GetOrStartDoorCriticalCacheEntry(DateTime startDt, DateTime endDt, string? sourceList)
+DoorQueryCacheEntry GetOrStartDoorCriticalCacheEntry(DateTime startDt, DateTime endDt, string? sourceList, string? progressId)
 {
     var cacheKey = DoorCriticalCacheKey(startDt, endDt, sourceList);
     lock (doorCriticalCacheLock)
@@ -3835,6 +4408,7 @@ DoorQueryCacheEntry GetOrStartDoorCriticalCacheEntry(DateTime startDt, DateTime 
         if (!doorCriticalCache.TryGetValue(cacheKey, out var entry))
         {
             entry = new DoorQueryCacheEntry();
+            entry.ProgressId = progressId;
             var allow = BuildDoorAllowSet(sourceList);
             entry.LoadTask = Task.Run(async () =>
             {
@@ -3864,28 +4438,36 @@ DoorQueryCacheEntry GetOrStartDoorCriticalCacheEntry(DateTime startDt, DateTime 
                         using var cmd2 = cn2.CreateCommand();
                         cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
                         cmd2.CommandText = @"
-SELECT
-    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
-    t.TRANSIT_DATE AS TimeOrder,
-    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
-    ISNULL(v.DESCRIPTION,'') AS Acesso,
-    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
-    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
-    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
-    ISNULL(c.CardNumber,'') AS Cartao,
-    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
-    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
-    CAST(NULL AS varchar(50)) AS StatusAcesso,
-    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
-FROM HA_TRANSIT t
-LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
-LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
-LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
-LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
-LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+SELECT EventID, TimeOrder, DataHora, TAG, Acesso, Evento, NomeCompleto, DocumentoMatricula, Cartao, Tipo, Empresa, StatusAcesso, DetalheStatusAcesso
+FROM (
+    SELECT
+        ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+        t.TRANSIT_DATE AS TimeOrder,
+        FORMAT(t.TRANSIT_DATE, 'dd/MM/yyyy HH:mm:ss.fff') AS DataHora,
+        ISNULL(CAST(t.TERMINAL AS varchar(200)), '') AS TAG,
+        ISNULL(v.DESCRIPTION, '') AS Acesso,
+        CASE t.STR_DIRECTION WHEN 'Entry' THEN 'Entrada' WHEN 'Exit' THEN 'Saída' ELSE '-' END AS Evento,
+        ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname, '')) AS NomeCompleto,
+        ISNULL(e.Identifier, ISNULL(x.Identifier, '')) AS DocumentoMatricula,
+        ISNULL(c.CardNumber, '') AS Cartao,
+        CASE t.USER_TYPE WHEN 'External Personnel' THEN 'Visitante' ELSE 'Residente' END AS Tipo,
+        ISNULL(ue.uf5, ISNULL(ec.Name, '')) AS Empresa,
+        'Liberado' AS StatusAcesso,
+        '' AS DetalheStatusAcesso,
+        LAG(t.TRANSIT_DATE) OVER (PARTITION BY ISNULL(CAST(c.CardNumber AS varchar(50)), 'SEM_CARTAO'), ISNULL(CAST(t.TERMINAL AS varchar(200)), '') ORDER BY t.TRANSIT_DATE) AS PrevEvent
+    FROM HA_TRANSIT t
+    LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+    LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+WHERE
+    LTRIM(RTRIM(q.NomeCompleto)) <> ''
+    AND LTRIM(RTRIM(q.Empresa)) <> ''
+    AND (q.PrevEvent IS NULL OR DATEDIFF(SECOND, q.PrevEvent, q.TimeOrder) > 1)
 ";
                         cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
                         cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
@@ -3910,7 +4492,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     }
 }
 
-DoorQueryCacheEntry GetOrStartDoorGeneralCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList)
+DoorQueryCacheEntry GetOrStartDoorGeneralCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList, string? progressId)
 {
     var cacheKey = DoorGeneralCacheKey(startDt, endDt, effectiveSourceList);
     lock (doorGeneralCacheLock)
@@ -3918,6 +4500,7 @@ DoorQueryCacheEntry GetOrStartDoorGeneralCacheEntry(DateTime startDt, DateTime e
         if (!doorGeneralCache.TryGetValue(cacheKey, out var entry))
         {
             entry = new DoorQueryCacheEntry();
+            entry.ProgressId = progressId;
             var allow = BuildDoorAllowSet(effectiveSourceList);
             entry.LoadTask = Task.Run(async () =>
             {
@@ -3948,28 +4531,36 @@ DoorQueryCacheEntry GetOrStartDoorGeneralCacheEntry(DateTime startDt, DateTime e
                         using var cmd2 = cn2.CreateCommand();
                         cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
                         cmd2.CommandText = @"
-SELECT
-    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
-    t.TRANSIT_DATE AS TimeOrder,
-    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
-    ISNULL(v.DESCRIPTION,'') AS Acesso,
-    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
-    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
-    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
-    ISNULL(c.CardNumber,'') AS Cartao,
-    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
-    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
-    CAST(NULL AS varchar(50)) AS StatusAcesso,
-    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
-FROM HA_TRANSIT t
-LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
-LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
-LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
-LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
-LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+SELECT EventID, TimeOrder, DataHora, TAG, Acesso, Evento, NomeCompleto, DocumentoMatricula, Cartao, Tipo, Empresa, StatusAcesso, DetalheStatusAcesso
+FROM (
+    SELECT
+        ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+        t.TRANSIT_DATE AS TimeOrder,
+        FORMAT(t.TRANSIT_DATE, 'dd/MM/yyyy HH:mm:ss.fff') AS DataHora,
+        ISNULL(CAST(t.TERMINAL AS varchar(200)), '') AS TAG,
+        ISNULL(v.DESCRIPTION, '') AS Acesso,
+        CASE t.STR_DIRECTION WHEN 'Entry' THEN 'Entrada' WHEN 'Exit' THEN 'Saída' ELSE '-' END AS Evento,
+        ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname, '')) AS NomeCompleto,
+        ISNULL(e.Identifier, ISNULL(x.Identifier, '')) AS DocumentoMatricula,
+        ISNULL(c.CardNumber, '') AS Cartao,
+        CASE t.USER_TYPE WHEN 'External Personnel' THEN 'Visitante' ELSE 'Residente' END AS Tipo,
+        ISNULL(ue.uf5, ISNULL(ec.Name, '')) AS Empresa,
+        'Liberado' AS StatusAcesso,
+        '' AS DetalheStatusAcesso,
+        LAG(t.TRANSIT_DATE) OVER (PARTITION BY ISNULL(CAST(c.CardNumber AS varchar(50)), 'SEM_CARTAO'), ISNULL(CAST(t.TERMINAL AS varchar(200)), '') ORDER BY t.TRANSIT_DATE) AS PrevEvent
+    FROM HA_TRANSIT t
+    LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+    LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+WHERE
+    LTRIM(RTRIM(q.NomeCompleto)) <> ''
+    AND LTRIM(RTRIM(q.Empresa)) <> ''
+    AND (q.PrevEvent IS NULL OR DATEDIFF(SECOND, q.PrevEvent, q.TimeOrder) > 1)
 ";
                         cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
                         cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
@@ -3994,14 +4585,15 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     }
 }
 
-DoorQueryCacheEntry GetOrStartDoorGeneralByNameCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList, string? name)
+DoorQueryCacheEntry GetOrStartDoorGeneralByNameCacheEntry(DateTime startDt, DateTime endDt, string? effectiveSourceList, string? name, string? documento, string? progressId)
 {
-    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name);
+    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name, documento);
     lock (doorGeneralByNameCacheLock)
     {
         if (!doorGeneralByNameCache.TryGetValue(cacheKey, out var entry))
         {
             entry = new DoorQueryCacheEntry();
+            entry.ProgressId = progressId;
             entry.LoadTask = Task.Run(async () =>
             {
                 try
@@ -4010,11 +4602,12 @@ DoorQueryCacheEntry GetOrStartDoorGeneralByNameCacheEntry(DateTime startDt, Date
                     await cn.OpenAsync();
                     using var cmd = cn.CreateCommand();
                     cmd.CommandTimeout = GetDoorProcTimeoutSeconds();
-                    cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
+                    cmd.CommandText = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name, @Documento");
                     cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
                     cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
                     cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" });
                     cmd.Parameters.Add(new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" });
+                    cmd.Parameters.Add(new SqlParameter("@Documento", SqlDbType.VarChar, 200) { Value = documento ?? "" });
                     using var r = await cmd.ExecuteReaderAsync();
                     while (await r.ReadAsync())
                     {
@@ -4033,14 +4626,16 @@ DoorQueryCacheEntry GetOrStartDoorGeneralByNameCacheEntry(DateTime startDt, Date
     }
 }
 
-app.MapGet("/api/reports/door-critical", async (string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
+app.MapGet("/api/reports/door-critical", async (HttpContext http, string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
 {
     try
     {
         var startDt = ParseDate(start);
         var endDt = ParseDate(end);
         var offset = (page - 1) * pageSize;
-        var entry = GetOrStartDoorCriticalCacheEntry(startDt, endDt, sourceList);
+        var doorPid = ProgressIdFromHeader(http);
+        var entry = GetOrStartDoorCriticalCacheEntry(startDt, endDt, sourceList, doorPid);
+        RegisterDoorProgress(entry, doorPid);
         await WaitForDoorCachePageAsync(entry, offset + pageSize);
 
         List<object> items;
@@ -4144,28 +4739,36 @@ app.MapGet("/api/reports/door-critical/export", async (HttpContext ctx, string s
             using var cmd2 = cn2.CreateCommand();
             cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
             cmd2.CommandText = @"
-SELECT
-    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
-    t.TRANSIT_DATE AS TimeOrder,
-    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
-    ISNULL(v.DESCRIPTION,'') AS Acesso,
-    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
-    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
-    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
-    ISNULL(c.CardNumber,'') AS Cartao,
-    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
-    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
-    CAST(NULL AS varchar(50)) AS StatusAcesso,
-    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
-FROM HA_TRANSIT t
-LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
-LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
-LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
-LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
-LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+SELECT EventID, TimeOrder, DataHora, TAG, Acesso, Evento, NomeCompleto, DocumentoMatricula, Cartao, Tipo, Empresa, StatusAcesso, DetalheStatusAcesso
+FROM (
+    SELECT
+        ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+        t.TRANSIT_DATE AS TimeOrder,
+        FORMAT(t.TRANSIT_DATE, 'dd/MM/yyyy HH:mm:ss.fff') AS DataHora,
+        ISNULL(CAST(t.TERMINAL AS varchar(200)), '') AS TAG,
+        ISNULL(v.DESCRIPTION, '') AS Acesso,
+        CASE t.STR_DIRECTION WHEN 'Entry' THEN 'Entrada' WHEN 'Exit' THEN 'Saída' ELSE '-' END AS Evento,
+        ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname, '')) AS NomeCompleto,
+        ISNULL(e.Identifier, ISNULL(x.Identifier, '')) AS DocumentoMatricula,
+        ISNULL(c.CardNumber, '') AS Cartao,
+        CASE t.USER_TYPE WHEN 'External Personnel' THEN 'Visitante' ELSE 'Residente' END AS Tipo,
+        ISNULL(ue.uf5, ISNULL(ec.Name, '')) AS Empresa,
+        'Liberado' AS StatusAcesso,
+        '' AS DetalheStatusAcesso,
+        LAG(t.TRANSIT_DATE) OVER (PARTITION BY ISNULL(CAST(c.CardNumber AS varchar(50)), 'SEM_CARTAO'), ISNULL(CAST(t.TERMINAL AS varchar(200)), '') ORDER BY t.TRANSIT_DATE) AS PrevEvent
+    FROM HA_TRANSIT t
+    LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+    LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+WHERE
+    LTRIM(RTRIM(q.NomeCompleto)) <> ''
+    AND LTRIM(RTRIM(q.Empresa)) <> ''
+    AND (q.PrevEvent IS NULL OR DATEDIFF(SECOND, q.PrevEvent, q.TimeOrder) > 1)
 ";
             cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
             cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
@@ -4197,6 +4800,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
         var allow = new HashSet<string>((sourceList ?? "").Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
         rows = rows.Where(x => !string.IsNullOrWhiteSpace(x.TAG) && allow.Contains(x.TAG!)).ToList();
     }
+    rows = ApplyDoorFiltros(rows, ReadDoorFiltros(ctx.Request));
     if (string.Equals(format, "excel", StringComparison.OrdinalIgnoreCase))
         format = "xlsx";
     // reuse export logic from existing endpoints
@@ -4231,10 +4835,25 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Críticos", startDt, endDt, mapped, generatedBy, includeCover, "Escopo: Eventos Críticos", coverPortrait, reportPortrait);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(clientName, "Eventos Críticos", startDt, endDt, mapped, generatedBy, includeCover, "Escopo: Eventos Críticos", coverPortrait, reportPortrait), clientName, "Eventos Críticos", startDt, endDt, generatedBy, "Escopo: Eventos Críticos", includeCover);
         var rel = SaveReportFile("door-critical.xlsx", bytesX, app.Environment);
         ctx.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-critical.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var (clientName, _) = await GetReportClientInfoAsync(ctx);
+        var generatedBy = GetReportUser(ctx);
+        var mappedW = rows.Select(x => new string?[] {
+            x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa,
+            NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        }).ToList();
+        var bytesW = BuildDocxReport(clientName, "Eventos Críticos", startDt, endDt, generatedBy, "Escopo: Eventos Críticos",
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(ctx));
+        var relW = SaveReportFile("door-critical.docx", bytesW, app.Environment);
+        ctx.Response.Headers["X-Report-Path"] = relW;
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "door-critical.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -4298,6 +4917,55 @@ static string ResolveAssetRoot(string contentRootPath)
     return contentRootPath;
 }
 
+// ---- Filtros de cadastro aplicados na exportação (mesma semântica da tela) ----
+// tipo: "funcionario" | "prestador"  |  status: "ativo" | "inativo"  |  nivel/empresa: texto (contém)
+static bool MatchTipoCadastro(string? valor, string? tipo)
+{
+    if (string.IsNullOrWhiteSpace(tipo)) return true;
+    var v = (valor ?? "").ToUpperInvariant();
+    return tipo.Equals("prestador", StringComparison.OrdinalIgnoreCase) ? v.Contains("PRESTADOR") : v.Contains("FUNCION");
+}
+
+static bool MatchIgual(string? valor, string? esperado)
+{
+    if (string.IsNullOrWhiteSpace(esperado)) return true;
+    return string.Equals((valor ?? "").Trim(), esperado.Trim(), StringComparison.OrdinalIgnoreCase);
+}
+
+// ---- Filtros da barra de "Eventos de Porta" (aplicados na tela e na exportação) ----
+static (string? Tag, string? Acesso, string? Evento, string? Nome, string? Matricula, string? Cracha, string? TipoPessoa, string? Status) ReadDoorFiltros(HttpRequest req) => (
+    req.Query["tag"].ToString(),
+    req.Query["acesso"].ToString(),
+    req.Query["evento"].ToString(),
+    req.Query["nome"].ToString(),
+    req.Query["matricula"].ToString(),
+    req.Query["cracha"].ToString(),
+    req.Query["tipoPessoa"].ToString(),
+    req.Query["status"].ToString());
+
+static bool MatchDoorFiltros(
+    (long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso) x,
+    (string? Tag, string? Acesso, string? Evento, string? Nome, string? Matricula, string? Cracha, string? TipoPessoa, string? Status) f)
+    => MatchContem(x.TAG, f.Tag)
+        && MatchIgual(x.Acesso, f.Acesso)
+        && MatchIgual(x.Evento, f.Evento)
+        && MatchContem(x.NomeCompleto, f.Nome)
+        && MatchContem(x.DocumentoMatricula, f.Matricula)
+        && MatchContem(x.Cartao, f.Cracha)
+        && MatchIgual(x.Tipo, f.TipoPessoa)
+        && MatchIgual(NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso), f.Status);
+
+static List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> ApplyDoorFiltros(
+    List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows,
+    (string? Tag, string? Acesso, string? Evento, string? Nome, string? Matricula, string? Cracha, string? TipoPessoa, string? Status) f)
+    => rows.Where(x => MatchDoorFiltros(x, f)).ToList();
+
+static bool MatchContem(string? valor, string? termo)
+{
+    if (string.IsNullOrWhiteSpace(termo)) return true;
+    return (valor ?? "").Contains(termo.Trim(), StringComparison.OrdinalIgnoreCase);
+}
+
 static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>, string? error) ExecDoorProc(SqlConnection cn, string procText, IEnumerable<SqlParameter> parameters)
 {
     try
@@ -4332,6 +5000,483 @@ static (List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, 
     {
         return (new List<(long, DateTime?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?, string?)>(), ex.Message);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Capa + cabeçalho + rodapé de impressão dos XLSX (mesma identidade visual do PDF).
+// É aplicado como pós-processamento no byte[] devolvido pelos builders Build*Xlsx,
+// evitando ter que reimplementar isso em cada builder.
+// ---------------------------------------------------------------------------
+byte[] AddXlsxChrome(byte[]? xlsx, string clientName, string title, DateTime? start, DateTime? end, string generatedBy, string? criteria, bool includeCover)
+{
+    if (xlsx == null || xlsx.Length == 0) return xlsx ?? Array.Empty<byte>();
+    try
+    {
+        var isAllData = start.HasValue && end.HasValue &&
+            start.Value.Date <= new DateTime(1900, 1, 1) && end.Value.Date >= new DateTime(2100, 1, 1);
+        var periodText = (start.HasValue && end.HasValue && !isAllData)
+            ? $"Período: {start.Value:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}"
+            : "";
+
+        byte[]? honeywellLogo = null;
+        try
+        {
+            var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
+            var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+            if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        }
+        catch { }
+
+        using var ms = new MemoryStream();
+        ms.Write(xlsx, 0, xlsx.Length);
+        ms.Position = 0;
+        using (var doc = SpreadsheetDocument.Open(ms, true))
+        {
+            var wbPart = doc.WorkbookPart;
+            var workbook = wbPart?.Workbook;
+            if (wbPart == null || workbook == null) return xlsx;
+
+            var sheets = workbook.GetFirstChild<Sheets>();
+            if (sheets == null)
+            {
+                sheets = new Sheets();
+                workbook.AppendChild(sheets);
+            }
+
+            // ---- estilos extras (usados somente na capa) ----
+            var stylesPart = wbPart.WorkbookStylesPart;
+            if (stylesPart == null)
+            {
+                stylesPart = wbPart.AddNewPart<WorkbookStylesPart>();
+                stylesPart.Stylesheet = new Stylesheet(
+                    new Fonts(new Font()),
+                    new Fills(new Fill(), new Fill()),
+                    new Borders(new Border()),
+                    new CellStyleFormats(new CellFormat()),
+                    new CellFormats(new CellFormat()));
+            }
+            var stylesheet = stylesPart.Stylesheet!;
+            var fonts = stylesheet.GetFirstChild<Fonts>();
+            if (fonts == null) { fonts = new Fonts(new Font()); stylesheet.InsertAt(fonts, 0); }
+            var cellFormats = stylesheet.GetFirstChild<CellFormats>();
+            if (cellFormats == null) { cellFormats = new CellFormats(new CellFormat()); stylesheet.AppendChild(cellFormats); }
+
+            var fontBase = (uint)fonts.ChildElements.Count;
+            fonts.Append(
+                new Font(new Bold(), new FontSize { Val = 22D }, new DocumentFormat.OpenXml.Spreadsheet.Color { Rgb = new HexBinaryValue("FF0B3D2E") }, new Underline()),
+                new Font(new Bold(), new FontSize { Val = 12D }),
+                new Font(new FontSize { Val = 10D }, new DocumentFormat.OpenXml.Spreadsheet.Color { Rgb = new HexBinaryValue("FF374151") }),
+                new Font(new Bold(), new FontSize { Val = 11D }, new DocumentFormat.OpenXml.Spreadsheet.Color { Rgb = new HexBinaryValue("FF374151") }));
+            fonts.Count = (uint)fonts.ChildElements.Count;
+
+            var xfBase = (uint)cellFormats.ChildElements.Count;
+            cellFormats.Append(
+                new CellFormat { FontId = fontBase + 0, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center, Vertical = VerticalAlignmentValues.Center, WrapText = true }, ApplyAlignment = true },
+                new CellFormat { FontId = fontBase + 1, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { FontId = fontBase + 2, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center }, ApplyAlignment = true },
+                new CellFormat { FontId = fontBase + 3, ApplyFont = true, Alignment = new Alignment { Horizontal = HorizontalAlignmentValues.Center }, ApplyAlignment = true });
+            cellFormats.Count = (uint)cellFormats.ChildElements.Count;
+            stylesheet.Save();
+
+            uint styleTitle = xfBase, styleInfo = xfBase + 1, styleSmall = xfBase + 2, styleBrand = xfBase + 3;
+
+            WorksheetPart? coverPart = null;
+            if (includeCover)
+            {
+                coverPart = wbPart.AddNewPart<WorksheetPart>();
+                var coverData = new SheetData();
+                var coverMerges = new MergeCells();
+                coverPart.Worksheet = new Worksheet(
+                    new Columns(new Column { Min = 1, Max = 10, Width = 18D, CustomWidth = true }),
+                    coverData,
+                    coverMerges);
+
+                uint rowIdx = 1;
+                void CoverRow(string? text, uint style, uint toCol, double? height = null)
+                {
+                    var row = new Row { RowIndex = rowIdx };
+                    if (height.HasValue) { row.Height = height.Value; row.CustomHeight = true; }
+                    row.Append(new Cell
+                    {
+                        CellReference = $"{GetExcelCol(1)}{rowIdx}",
+                        DataType = CellValues.String,
+                        CellValue = new CellValue(text ?? ""),
+                        StyleIndex = style
+                    });
+                    coverData.Append(row);
+                    if (toCol > 1)
+                        coverMerges.Append(new MergeCell { Reference = new StringValue($"{GetExcelCol(1)}{rowIdx}:{GetExcelCol(toCol)}{rowIdx}") });
+                    rowIdx++;
+                }
+
+                CoverRow("", 0U, 1U, 12D);   // respiro no topo (a logomarca é ancorada aqui)
+                CoverRow("", 0U, 1U, 26D);
+                CoverRow("", 0U, 1U, 10D);
+                CoverRow(title, styleTitle, 10U, 36D);
+                CoverRow("", 0U, 10U, 8D);
+                if (!string.IsNullOrWhiteSpace(periodText)) CoverRow(periodText, styleInfo, 10U, 16D);
+                if (!string.IsNullOrWhiteSpace(criteria))
+                    foreach (var line in criteria!.Split('\n'))
+                        if (!string.IsNullOrWhiteSpace(line)) CoverRow(line.Trim(), styleInfo, 10U, 16D);
+                CoverRow("", 0U, 10U, 8D);
+                CoverRow($"Cliente: {clientName}", styleInfo, 10U, 16D);
+                CoverRow($"Gerado por: {generatedBy}", styleSmall, 10U, 16D);
+                CoverRow($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", styleSmall, 10U, 16D);
+                CoverRow("", 0U, 10U, 16D);
+                CoverRow("Relatório by JumperFour", styleBrand, 10U, 20D);
+
+                if (honeywellLogo != null)
+                {
+                    try
+                    {
+                        var drawingsPart = coverPart.AddNewPart<DrawingsPart>();
+                        coverPart.Worksheet.Append(new Drawing { Id = coverPart.GetIdOfPart(drawingsPart) });
+                        drawingsPart.WorksheetDrawing = new DocumentFormat.OpenXml.Drawing.Spreadsheet.WorksheetDrawing();
+                        var imgPart = drawingsPart.AddImagePart(ImagePartType.Png);
+                        using (var img = new MemoryStream(honeywellLogo)) imgPart.FeedData(img);
+                        var rid = drawingsPart.GetIdOfPart(imgPart);
+                        long cx = 200L * 9525L, cy = 40L * 9525L;
+                        drawingsPart.WorksheetDrawing.Append(new DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor(
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.FromMarker(
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnId("6"),
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.ColumnOffset("0"),
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowId("0"),
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.RowOffset("0")),
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.Extent { Cx = cx, Cy = cy },
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.Picture(
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureProperties(
+                                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualDrawingProperties { Id = 1U, Name = "Honeywell" },
+                                    new DocumentFormat.OpenXml.Drawing.Spreadsheet.NonVisualPictureDrawingProperties(
+                                        new DocumentFormat.OpenXml.Drawing.PictureLocks { NoChangeAspect = true })),
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.BlipFill(
+                                    new DocumentFormat.OpenXml.Drawing.Blip { Embed = rid, CompressionState = DocumentFormat.OpenXml.Drawing.BlipCompressionValues.Print },
+                                    new DocumentFormat.OpenXml.Drawing.Stretch(new DocumentFormat.OpenXml.Drawing.FillRectangle())),
+                                new DocumentFormat.OpenXml.Drawing.Spreadsheet.ShapeProperties(
+                                    new DocumentFormat.OpenXml.Drawing.Transform2D(
+                                        new DocumentFormat.OpenXml.Drawing.Offset { X = 0, Y = 0 },
+                                        new DocumentFormat.OpenXml.Drawing.Extents { Cx = cx, Cy = cy }),
+                                    new DocumentFormat.OpenXml.Drawing.PresetGeometry(new DocumentFormat.OpenXml.Drawing.AdjustValueList()) { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle })),
+                            new DocumentFormat.OpenXml.Drawing.Spreadsheet.ClientData()));
+                        drawingsPart.WorksheetDrawing.Save();
+                    }
+                    catch { }
+                }
+
+                coverPart.Worksheet.Save();
+
+                uint maxSheetId = 1;
+                foreach (var sh in sheets.Elements<Sheet>())
+                    if (sh.SheetId != null && sh.SheetId.Value > maxSheetId) maxSheetId = sh.SheetId.Value;
+                sheets.InsertAt(new Sheet { Id = wbPart.GetIdOfPart(coverPart), SheetId = maxSheetId + 1, Name = "Capa" }, 0);
+
+                var firstView = workbook.GetFirstChild<BookViews>()?.GetFirstChild<WorkbookView>();
+                if (firstView != null) firstView.ActiveTab = 0U;
+            }
+
+            // ---- cabeçalho e rodapé de impressão nas abas de relatório ----
+            var headerText = string.IsNullOrWhiteSpace(periodText) ? title : $"{title}   |   {periodText}";
+            foreach (var wsPart in wbPart.WorksheetParts)
+            {
+                if (coverPart != null && ReferenceEquals(wsPart, coverPart)) continue;
+                try { ApplyXlsxPrintChrome(wsPart.Worksheet, clientName, headerText); } catch { }
+            }
+
+            try { ApplyXlsxBorders(wbPart, coverPart); } catch { }
+
+            workbook.Save();
+        }
+        return ms.ToArray();
+    }
+    catch
+    {
+        // Nunca deixa a exportação falhar por causa da capa/cabeçalho: devolve o XLSX original.
+        return xlsx;
+    }
+}
+
+static void ApplyXlsxPrintChrome(Worksheet worksheet, string clientName, string headerText)
+{
+    var margins = new PageMargins { Left = 0.6D, Right = 0.6D, Top = 0.8D, Bottom = 0.8D, Header = 0.3D, Footer = 0.3D };
+    var pageSetup = worksheet.GetFirstChild<PageSetup>();
+    if (pageSetup != null) worksheet.InsertBefore(margins, pageSetup); else worksheet.Append(margins);
+
+    worksheet.GetFirstChild<HeaderFooter>()?.Remove();
+    var headerFooter = new HeaderFooter(
+        new OddHeader($"&L{headerText}&R{clientName}"),
+        new OddFooter($"&LPágina &P de &N&CRelatório by JumperFour&R{clientName}"));
+    var drawing = worksheet.GetFirstChild<Drawing>();
+    if (drawing != null) worksheet.InsertBefore(headerFooter, drawing); else worksheet.Append(headerFooter);
+}
+
+// Borda fina em todas as células já preenchidas das abas de dados.
+// A borda não substitui o estilo de cada célula: é criado um CellFormat novo
+// (clone do original + BorderId) e o índice do cell é trocado, preservando
+// cores/fontes/align que os builders definiram.
+static void ApplyXlsxBorders(WorkbookPart wbPart, WorksheetPart? coverPart)
+{
+    var stylesheet = wbPart.WorkbookStylesPart?.Stylesheet;
+    if (stylesheet == null) return;
+
+    var borders = stylesheet.GetFirstChild<Borders>();
+    if (borders == null)
+    {
+        borders = new Borders(new Border());
+        var anchor = stylesheet.GetFirstChild<CellStyleFormats>() ?? (OpenXmlElement?)stylesheet.GetFirstChild<CellFormats>();
+        if (anchor != null) stylesheet.InsertBefore(borders, anchor); else stylesheet.AppendChild(borders);
+    }
+
+    DocumentFormat.OpenXml.Spreadsheet.Color LineColor()
+        => new DocumentFormat.OpenXml.Spreadsheet.Color { Rgb = new HexBinaryValue("FFD1D5DB") };
+
+    var borderIdx = (uint)borders.ChildElements.Count;
+    borders.Append(new Border(
+        new LeftBorder { Style = BorderStyleValues.Thin, Color = LineColor() },
+        new RightBorder { Style = BorderStyleValues.Thin, Color = LineColor() },
+        new TopBorder { Style = BorderStyleValues.Thin, Color = LineColor() },
+        new BottomBorder { Style = BorderStyleValues.Thin, Color = LineColor() },
+        new DiagonalBorder()));
+    borders.Count = (uint)borders.ChildElements.Count;
+
+    var cellFormats = stylesheet.GetFirstChild<CellFormats>();
+    if (cellFormats == null) return;
+
+    var map = new Dictionary<uint, uint>();
+    uint MapXf(uint original)
+    {
+        if (map.TryGetValue(original, out var mapped)) return mapped;
+        var src = cellFormats.Elements<CellFormat>().ElementAtOrDefault((int)original);
+        var clone = src == null ? new CellFormat() : (CellFormat)src.CloneNode(true);
+        clone.BorderId = borderIdx;
+        clone.ApplyBorder = true;
+        cellFormats.Append(clone);
+        var newIdx = (uint)(cellFormats.ChildElements.Count - 1);
+        map[original] = newIdx;
+        return newIdx;
+    }
+
+    foreach (var wsPart in wbPart.WorksheetParts)
+    {
+        if (coverPart != null && ReferenceEquals(wsPart, coverPart)) continue;
+        var sheetData = wsPart.Worksheet?.GetFirstChild<SheetData>();
+        if (sheetData == null) continue;
+        foreach (var row in sheetData.Elements<Row>())
+            foreach (var cell in row.Elements<Cell>())
+                cell.StyleIndex = MapXf(cell.StyleIndex?.Value ?? 0U);
+    }
+
+    cellFormats.Count = (uint)cellFormats.ChildElements.Count;
+    stylesheet.Save();
+}
+
+// ---------------------------------------------------------------------------
+// Word (.docx) com a mesma identidade do PDF: capa, cabeçalho e rodapé.
+// Builder genérico: recebe os títulos das colunas e as linhas já em texto.
+// ---------------------------------------------------------------------------
+byte[] BuildDocxReport(string clientName, string title, DateTime? start, DateTime? end, string generatedBy, string? criteria, IReadOnlyList<string> columns, IReadOnlyList<string?[]> rows, bool includeCover = true)
+{
+    var isAllData = start.HasValue && end.HasValue &&
+        start.Value.Date <= new DateTime(1900, 1, 1) && end.Value.Date >= new DateTime(2100, 1, 1);
+    var periodText = (start.HasValue && end.HasValue && !isAllData)
+        ? $"Período: {start.Value:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start.Value, end.Value):dd/MM/yyyy HH:mm:ss}"
+        : "";
+    const string accent = "0B3D2E";
+    const string headerBg = "0B3D2E";
+    const string rowAlt = "F4F7F5";
+    const string borderColor = "D1D5DB";
+
+    byte[]? honeywellLogo = null;
+    try
+    {
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+    }
+    catch { }
+
+    using var ms = new MemoryStream();
+    using (var doc = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
+    {
+        var main = doc.AddMainDocumentPart();
+        main.Document = new W.Document();
+        var body = new W.Body();
+        main.Document.Append(body);
+
+        // A ordem dos filhos de w:rPr é fixada pelo schema (rFonts, b, color, sz, u).
+        // Fora dessa ordem o OpenXmlValidator acusa erro e o Word recusa o arquivo.
+        W.RunProperties MakeRunProps(int sizePt, bool bold, bool underline, string colorHex)
+        {
+            var props = new W.RunProperties(
+                new W.RunFonts { Ascii = "Segoe UI", HighAnsi = "Segoe UI" });
+            if (bold) props.Append(new W.Bold());
+            props.Append(new W.Color { Val = colorHex });
+            props.Append(new W.FontSize { Val = (sizePt * 2).ToString() });
+            if (underline) props.Append(new W.Underline { Val = W.UnderlineValues.Single });
+            return props;
+        }
+
+        W.Run MakeRun(string? text, int sizePt, bool bold, bool underline, string colorHex)
+            => new W.Run(MakeRunProps(sizePt, bold, underline, colorHex), new W.Text(text ?? "") { Space = SpaceProcessingModeValues.Preserve });
+
+        W.Paragraph SimpleParagraph(string? text, int sizePt, bool bold, bool underline, string colorHex, W.JustificationValues justify)
+            => new W.Paragraph(
+                new W.ParagraphProperties(new W.Justification { Val = justify }),
+                MakeRun(text, sizePt, bold, underline, colorHex));
+
+        // ---- cabeçalho e rodapé de impressão ----
+        var headerPart = main.AddNewPart<HeaderPart>();
+        headerPart.Header = new W.Header(
+            new W.Paragraph(
+                new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Right }),
+                MakeRun(string.IsNullOrWhiteSpace(periodText) ? title : $"{title}   |   {periodText}", 9, true, false, "374151")));
+        headerPart.Header.Save();
+
+        var footerPart = main.AddNewPart<FooterPart>();
+        var footerPara = new W.Paragraph(
+            new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Left }),
+            MakeRun("Página ", 9, false, false, "374151"));
+
+        // Campo do Word = begin + instrText + separate + resultado + end, um por run.
+        // Sem o "separate" o Word não renderiza o número da página.
+        void AppendField(W.Paragraph p, string instruction)
+        {
+            p.Append(new W.Run(MakeRunProps(9, false, false, "374151"), new W.FieldChar { FieldCharType = W.FieldCharValues.Begin }));
+            p.Append(new W.Run(MakeRunProps(9, false, false, "374151"), new W.FieldCode { Space = SpaceProcessingModeValues.Preserve, Text = instruction }));
+            p.Append(new W.Run(MakeRunProps(9, false, false, "374151"), new W.FieldChar { FieldCharType = W.FieldCharValues.Separate }));
+            p.Append(new W.Run(MakeRunProps(9, false, false, "374151"), new W.Text("1")));
+            p.Append(new W.Run(MakeRunProps(9, false, false, "374151"), new W.FieldChar { FieldCharType = W.FieldCharValues.End }));
+        }
+
+        AppendField(footerPara, "PAGE");
+        footerPara.Append(MakeRun(" de ", 9, false, false, "374151"));
+        AppendField(footerPara, "NUMPAGES");
+        footerPara.Append(MakeRun($"      Relatório by JumperFour      {clientName}", 9, false, false, "374151"));
+        footerPart.Footer = new W.Footer(footerPara);
+        footerPart.Footer.Save();
+
+        // ---- capa ----
+        if (includeCover)
+        {
+            if (honeywellLogo != null)
+            {
+                try
+                {
+                    var imagePart = main.AddImagePart(ImagePartType.Png);
+                    using (var img = new MemoryStream(honeywellLogo)) imagePart.FeedData(img);
+                    var rid = main.GetIdOfPart(imagePart);
+                    long cx = 200L * 9525L, cy = 40L * 9525L;
+                    var imgPara = new W.Paragraph(new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Right }));
+                    imgPara.Append(new W.Run(new W.Drawing(new DocumentFormat.OpenXml.Drawing.Wordprocessing.Inline(
+                        new DocumentFormat.OpenXml.Drawing.Wordprocessing.Extent { Cx = cx, Cy = cy },
+                        new DocumentFormat.OpenXml.Drawing.Wordprocessing.EffectExtent { LeftEdge = 0L, TopEdge = 0L, RightEdge = 0L, BottomEdge = 0L },
+                        new DocumentFormat.OpenXml.Drawing.Wordprocessing.DocProperties { Id = 1U, Name = "Honeywell" },
+                        new DocumentFormat.OpenXml.Drawing.Wordprocessing.NonVisualGraphicFrameDrawingProperties(new DocumentFormat.OpenXml.Drawing.GraphicFrameLocks { NoChangeAspect = true }),
+                        new DocumentFormat.OpenXml.Drawing.Graphic(
+                            new DocumentFormat.OpenXml.Drawing.GraphicData(
+                                new DocumentFormat.OpenXml.Drawing.Pictures.Picture(
+                                    new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualPictureProperties(
+                                        new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualDrawingProperties { Id = 0U, Name = "Honeywell" },
+                                        new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualPictureDrawingProperties()),
+                                    new DocumentFormat.OpenXml.Drawing.Pictures.BlipFill(
+                                        new DocumentFormat.OpenXml.Drawing.Blip { Embed = rid },
+                                        new DocumentFormat.OpenXml.Drawing.Stretch(new DocumentFormat.OpenXml.Drawing.FillRectangle())),
+                                    new DocumentFormat.OpenXml.Drawing.Pictures.ShapeProperties(
+                                        new DocumentFormat.OpenXml.Drawing.Transform2D(
+                                            new DocumentFormat.OpenXml.Drawing.Offset { X = 0L, Y = 0L },
+                                            new DocumentFormat.OpenXml.Drawing.Extents { Cx = cx, Cy = cy }),
+                                        new DocumentFormat.OpenXml.Drawing.PresetGeometry(new DocumentFormat.OpenXml.Drawing.AdjustValueList()) { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle })))
+                            { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
+                    ))));
+                    body.Append(imgPara);
+                }
+                catch { }
+            }
+
+            body.Append(SimpleParagraph("", 12, false, false, "000000", W.JustificationValues.Center));
+            body.Append(SimpleParagraph(title, 26, true, true, accent, W.JustificationValues.Center));
+            body.Append(SimpleParagraph("", 12, false, false, "000000", W.JustificationValues.Center));
+            if (!string.IsNullOrWhiteSpace(periodText))
+                body.Append(SimpleParagraph(periodText, 12, false, false, "000000", W.JustificationValues.Center));
+            if (!string.IsNullOrWhiteSpace(criteria))
+                foreach (var line in criteria!.Split('\n'))
+                    if (!string.IsNullOrWhiteSpace(line))
+                        body.Append(SimpleParagraph(line.Trim(), 12, false, false, "000000", W.JustificationValues.Center));
+            body.Append(SimpleParagraph($"Cliente: {clientName}", 11, false, false, "000000", W.JustificationValues.Center));
+            body.Append(SimpleParagraph($"Gerado por: {generatedBy}", 10, false, false, "374151", W.JustificationValues.Center));
+            body.Append(SimpleParagraph($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}", 10, false, false, "374151", W.JustificationValues.Center));
+            body.Append(SimpleParagraph("", 10, false, false, "000000", W.JustificationValues.Center));
+            body.Append(SimpleParagraph("Relatório by JumperFour", 11, true, false, "374151", W.JustificationValues.Center));
+            body.Append(new W.Paragraph(new W.Run(new W.Break { Type = W.BreakValues.Page })));
+        }
+
+        // ---- tabela de dados ----
+        var table = new W.Table();
+        // Ordem exigida pelo schema em w:tblPr: tblW, tblBorders, tblLayout.
+        table.AppendChild(new W.TableProperties(
+            new W.TableWidth { Width = "5000", Type = W.TableWidthUnitValues.Pct },
+            new W.TableBorders(
+                new W.TopBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor },
+                new W.LeftBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor },
+                new W.BottomBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor },
+                new W.RightBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor },
+                new W.InsideHorizontalBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor },
+                new W.InsideVerticalBorder { Val = W.BorderValues.Single, Size = 4U, Color = borderColor }),
+            new W.TableLayout { Type = W.TableLayoutValues.Autofit }));
+
+        var colCount = Math.Max(columns.Count, 1);
+        var grid = new W.TableGrid();
+        var colWidth = (15000 / colCount).ToString();
+        for (var i = 0; i < colCount; i++) grid.Append(new W.GridColumn { Width = colWidth });
+        table.AppendChild(grid);
+
+        W.TableCell HeaderCell(string? text)
+            => new W.TableCell(
+                new W.TableCellProperties(
+                    new W.Shading { Val = W.ShadingPatternValues.Clear, Fill = headerBg },
+                    new W.TableCellVerticalAlignment { Val = W.TableVerticalAlignmentValues.Center }),
+                new W.Paragraph(
+                    new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Center }),
+                    MakeRun(text, 8, true, false, "FFFFFF")));
+
+        W.TableCell DataCell(string? text, bool alt)
+        {
+            var cell = new W.TableCell(
+                new W.TableCellProperties(
+                    new W.TableCellVerticalAlignment { Val = W.TableVerticalAlignmentValues.Center }),
+                new W.Paragraph(
+                    new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Left }),
+                    MakeRun(text ?? "", 8, false, false, "111827")));
+            if (alt) cell.TableCellProperties!.PrependChild(new W.Shading { Val = W.ShadingPatternValues.Clear, Fill = rowAlt });
+            return cell;
+        }
+
+        var headerRow = new W.TableRow();
+        foreach (var col in columns) headerRow.Append(HeaderCell(col));
+        table.Append(headerRow);
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = new W.TableRow();
+            var values = rows[i];
+            for (var c = 0; c < colCount; c++)
+                row.Append(DataCell(c < values.Length ? values[c] : "", i % 2 == 1));
+            table.Append(row);
+        }
+
+        body.Append(table);
+
+        var sectionProps = new W.SectionProperties();
+        sectionProps.Append(
+            new W.HeaderReference { Type = W.HeaderFooterValues.Default, Id = main.GetIdOfPart(headerPart) },
+            new W.FooterReference { Type = W.HeaderFooterValues.Default, Id = main.GetIdOfPart(footerPart) },
+            new W.PageSize { Width = 16838, Height = 11906, Orient = W.PageOrientationValues.Landscape },
+            new W.PageMargin { Top = 567, Right = 567U, Bottom = 567, Left = 567U, Header = 284U, Footer = 284U, Gutter = 0U });
+        // w:titlePg fecha a sequência do schema — precisa ser o último filho de w:sectPr.
+        if (includeCover) sectionProps.Append(new W.TitlePage());
+        body.Append(sectionProps);
+
+        main.Document.Save();
+    }
+    return ms.ToArray();
 }
 
 byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? Cartao, string? NomeCompleto, string? Tipo, string? DataHora, string? Evento, string? Acesso, string? DocumentoMatricula, string? StatusDisplay, string? Empresa, string? TAG)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
@@ -4549,7 +5694,7 @@ byte[] BuildDoorPdf(string clientName, byte[]? clientLogo, string title, DateTim
 
 byte[] BuildDoorXlsx(string clientName, string title, DateTime? start, DateTime? end, IReadOnlyList<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)> rows, string generatedBy, bool includeCover, string? criteria, bool coverPortrait, bool reportPortrait)
 {
-    includeCover = false; // XLSX deve sair apenas com a aba de relatorio; a capa permanece exclusiva do PDF.
+    includeCover = false; // A capa do XLSX é montada por AddXlsxChrome (aba "Capa"); aqui fica desligada para não duplicar.
     byte[]? honeywellLogo = null;
     byte[]? jumperBrand = null;
     try
@@ -5028,7 +6173,7 @@ ORDER BY CAST(CASE WHEN vmE.Source LIKE 'Merc%' THEN ISNULL(JMT.MercDescription,
     return list;
 }
 
-static async Task<string> GetAllDoorSourcesCsvAsync(string cmsConnStr)
+async Task<string> GetAllDoorSourcesCsvAsync(string cmsConnStr)
 {
     try
     {
@@ -5353,7 +6498,7 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
 
             var proc = string.IsNullOrWhiteSpace(req.Name)
                 ? ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList")
-                : ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
+                : ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name, @Documento");
 
             using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync(job.Cts!.Token);
@@ -5364,7 +6509,10 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
             cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
             cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" });
             if (!string.IsNullOrWhiteSpace(req.Name))
+            {
                 cmd.Parameters.Add(new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = req.Name ?? "" });
+                cmd.Parameters.Add(new SqlParameter("@Documento", SqlDbType.VarChar, 200) { Value = req.Documento ?? "" });
+            }
 
             var (absPath, relPath) = PrepareReportFilePath("jobs", fileName, app.Environment);
             await using var fs = new FileStream(absPath, FileMode.Create, FileAccess.Write, FileShare.Read);
@@ -5372,8 +6520,25 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
             await sw.WriteLineAsync("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
 
             using var r = await cmd.ExecuteReaderAsync(job.Cts.Token);
+            var doorFiltrosJob = ReadDoorFiltros(http.Request);
             while (await r.ReadAsync(job.Cts.Token))
             {
+                var row = (
+                    EventID: r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+                    TimeOrder: r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                    DataHora: r.IsDBNull(2) ? null : r.GetString(2),
+                    TAG: r.IsDBNull(3) ? null : r.GetString(3),
+                    Acesso: r.IsDBNull(4) ? null : r.GetString(4),
+                    Evento: r.IsDBNull(5) ? null : r.GetString(5),
+                    NomeCompleto: r.IsDBNull(6) ? null : r.GetString(6),
+                    DocumentoMatricula: r.IsDBNull(7) ? null : r.GetString(7),
+                    Cartao: r.IsDBNull(8) ? null : r.GetString(8),
+                    Tipo: r.IsDBNull(9) ? null : r.GetString(9),
+                    Empresa: r.IsDBNull(10) ? null : r.GetString(10),
+                    StatusAcesso: r.IsDBNull(11) ? null : r.GetString(11),
+                    DetalheStatusAcesso: r.IsDBNull(12) ? null : r.GetString(12)
+                );
+                if (!MatchDoorFiltros(row, doorFiltrosJob)) continue;
                 var line = string.Join(",", new[]
                 {
                     r.IsDBNull(0) ? "" : Convert.ToInt64(r.GetValue(0)).ToString(),
@@ -5429,7 +6594,7 @@ app.MapGet("/api/cache/clear", () =>
     return Results.Ok(new { success = true });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general", async (string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
+app.MapGet("/api/reports/door-general", async (HttpContext http, string start, string end, string? sourceList, int page = 1, int pageSize = 200) =>
 {
     try
     {
@@ -5440,7 +6605,8 @@ app.MapGet("/api/reports/door-general", async (string start, string end, string?
         var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList) 
             ? await GetAllDoorSourcesCsvAsync(cmsConn)
             : sourceList;
-        var entry = GetOrStartDoorGeneralCacheEntry(startDt, endDt, effectiveSourceList);
+        var entry = GetOrStartDoorGeneralCacheEntry(startDt, endDt, effectiveSourceList, ProgressIdFromHeader(http));
+        RegisterDoorProgress(entry, ProgressIdFromHeader(http));
         await WaitForDoorCachePageAsync(entry, offset + pageSize);
 
         List<object> items;
@@ -5553,28 +6719,36 @@ app.MapGet("/api/reports/door-general/export", async (HttpContext http, string s
             using var cmd2 = cn2.CreateCommand();
             cmd2.CommandTimeout = GetDoorProcTimeoutSeconds();
             cmd2.CommandText = @"
-SELECT
-    ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
-    t.TRANSIT_DATE AS TimeOrder,
-    CONVERT(varchar(19), t.TRANSIT_DATE, 120) AS DataHora,
-    ISNULL(CAST(t.TERMINAL AS varchar(200)),'') AS TAG,
-    ISNULL(v.DESCRIPTION,'') AS Acesso,
-    CASE t.STR_DIRECTION WHEN 'Entry' THEN 'ENTRADA' WHEN 'Exit' THEN 'SAÍDA' ELSE ISNULL(t.STR_DIRECTION,'') END AS Evento,
-    ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname,'')) AS NomeCompleto,
-    ISNULL(e.Identifier, ISNULL(x.Identifier,'')) AS DocumentoMatricula,
-    ISNULL(c.CardNumber,'') AS Cartao,
-    CASE t.USER_TYPE WHEN 'Employee' THEN 'FUNCIONÁRIO' WHEN 'External Personnel' THEN 'TERCEIRO' ELSE ISNULL(t.USER_TYPE,'') END AS Tipo,
-    ISNULL(ue.UF2, ISNULL(ux.UF2,'')) AS Empresa,
-    CAST(NULL AS varchar(50)) AS StatusAcesso,
-    CAST(NULL AS varchar(100)) AS DetalheStatusAcesso
-FROM HA_TRANSIT t
-LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
-LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
-LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
-LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
-LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
-LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
-WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+SELECT EventID, TimeOrder, DataHora, TAG, Acesso, Evento, NomeCompleto, DocumentoMatricula, Cartao, Tipo, Empresa, StatusAcesso, DetalheStatusAcesso
+FROM (
+    SELECT
+        ROW_NUMBER() OVER (ORDER BY t.TRANSIT_DATE) AS EventID,
+        t.TRANSIT_DATE AS TimeOrder,
+        FORMAT(t.TRANSIT_DATE, 'dd/MM/yyyy HH:mm:ss.fff') AS DataHora,
+        ISNULL(CAST(t.TERMINAL AS varchar(200)), '') AS TAG,
+        ISNULL(v.DESCRIPTION, '') AS Acesso,
+        CASE t.STR_DIRECTION WHEN 'Entry' THEN 'Entrada' WHEN 'Exit' THEN 'Saída' ELSE '-' END AS Evento,
+        ISNULL(e.Name + ' ' + e.Surname, ISNULL(x.Name + ' ' + x.Surname, '')) AS NomeCompleto,
+        ISNULL(e.Identifier, ISNULL(x.Identifier, '')) AS DocumentoMatricula,
+        ISNULL(c.CardNumber, '') AS Cartao,
+        CASE t.USER_TYPE WHEN 'External Personnel' THEN 'Visitante' ELSE 'Residente' END AS Tipo,
+        ISNULL(ue.uf5, ISNULL(ec.Name, '')) AS Empresa,
+        'Liberado' AS StatusAcesso,
+        '' AS DetalheStatusAcesso,
+        LAG(t.TRANSIT_DATE) OVER (PARTITION BY ISNULL(CAST(c.CardNumber AS varchar(50)), 'SEM_CARTAO'), ISNULL(CAST(t.TERMINAL AS varchar(200)), '') ORDER BY t.TRANSIT_DATE) AS PrevEvent
+    FROM HA_TRANSIT t
+    LEFT JOIN Employee e ON e.SbiID = t.SBI_ID
+    LEFT JOIN EmployeeUserFields ue ON ue.SbiID = e.SbiID
+    LEFT JOIN ExternalRegular x ON x.SbiID = t.SBI_ID
+    LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
+    LEFT JOIN Card c ON c.SbiID = ISNULL(e.SbiID, x.SbiID)
+    LEFT JOIN AC_VTERMINAL v ON v.VTERMINAL_KEY = t.TERMINAL
+    WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
+) q
+WHERE
+    LTRIM(RTRIM(q.NomeCompleto)) <> ''
+    AND LTRIM(RTRIM(q.Empresa)) <> ''
+    AND (q.PrevEvent IS NULL OR DATEDIFF(SECOND, q.PrevEvent, q.TimeOrder) > 1)
 ";
             cmd2.Parameters.Add(new SqlParameter("@start", SqlDbType.DateTime) { Value = startDt });
             cmd2.Parameters.Add(new SqlParameter("@end", SqlDbType.DateTime) { Value = endDt });
@@ -5609,6 +6783,8 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
         }
     }
 
+    rows = ApplyDoorFiltros(rows, ReadDoorFiltros(http.Request));
+
     // reuse export logic from critical
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
@@ -5639,10 +6815,27 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
         var criteria = string.IsNullOrWhiteSpace(effectiveSourceList) ? "Portas: todas no período" : "Portas: selecionadas";
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), coverPortrait, reportPortrait);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(clientName, "Eventos Gerais", startDt, endDt, mapped, generatedBy, includeCover, BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), coverPortrait, reportPortrait), clientName, "Eventos Gerais", startDt, endDt, generatedBy, BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)))), includeCover);
         var rel = SaveReportFile("door-general.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var criteriaW = (string.IsNullOrWhiteSpace(effectiveSourceList) ? "Portas: todas no período" : "Portas: selecionadas") + "\n" +
+            BuildPortasCriteria(effectiveSourceList ?? BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s))));
+        var mappedW = rows.Select(x => new string?[] {
+            x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa,
+            NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        }).ToList();
+        var bytesW = BuildDocxReport(clientName, "Eventos Gerais", startDt, endDt, generatedBy, criteriaW,
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(http));
+        var relW = SaveReportFile("door-general.docx", bytesW, app.Environment);
+        http.Response.Headers["X-Report-Path"] = relW;
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "door-general.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -5673,7 +6866,7 @@ WHERE t.TRANSIT_DATE >= @start AND t.TRANSIT_DATE < @end
     return Results.BadRequest(new { error = "Formato inválido" });
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name", async (string start, string end, string name, string? sourceList, int page = 1, int pageSize = 200) =>
+app.MapGet("/api/reports/door-general/by-name", async (HttpContext http, string start, string end, string? name, string? documento, string? sourceList, int page = 1, int pageSize = 200) =>
 {
     try
     {
@@ -5684,7 +6877,8 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
         var effectiveSourceList = string.IsNullOrWhiteSpace(sourceList)
             ? await GetAllDoorSourcesCsvAsync(cmsConn)
             : sourceList;
-        var entry = GetOrStartDoorGeneralByNameCacheEntry(startDt, endDt, effectiveSourceList, name);
+        var entry = GetOrStartDoorGeneralByNameCacheEntry(startDt, endDt, effectiveSourceList, name, documento, ProgressIdFromHeader(http));
+        RegisterDoorProgress(entry, ProgressIdFromHeader(http));
         await WaitForDoorCachePageAsync(entry, offset + pageSize);
 
         List<object> items;
@@ -5722,7 +6916,7 @@ app.MapGet("/api/reports/door-general/by-name", async (string start, string end,
     }
 }).RequireAuthorization();
 
-app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, string start, string end, string name, string format, string? sourceList) =>
+app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, string start, string end, string? name, string? documento, string format, string? sourceList) =>
 {
     var startDt = ParseDate(start);
     var endDt = ParseDate(end);
@@ -5733,7 +6927,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         ? await GetAllDoorSourcesCsvAsync(cmsConn)
         : sourceList;
     List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)> rows;
-    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name);
+    var cacheKey = DoorGeneralByNameCacheKey(startDt, endDt, effectiveSourceList, name, documento);
     DoorQueryCacheEntry? cachedEntry;
     lock (doorGeneralByNameCacheLock)
     {
@@ -5751,17 +6945,19 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
     {
         using var cn = new SqlConnection(GetConn("HWR"));
         await cn.OpenAsync();
-        var proc = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name");
+        var proc = ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name, @Documento");
         var (fallbackRows, err) = ExecDoorProc(cn, proc, new[]
         {
             new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") },
             new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") },
             new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = effectiveSourceList ?? "" },
-            new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" }
+            new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = name ?? "" },
+            new SqlParameter("@Documento", SqlDbType.VarChar, 200) { Value = documento ?? "" }
         });
         if (err != null) return Results.BadRequest(new { error = err });
         rows = fallbackRows;
     }
+    rows = ApplyDoorFiltros(rows, ReadDoorFiltros(http.Request));
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
@@ -5787,11 +6983,27 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
             Empresa: x.Empresa,
             Status: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
         )).ToList();
-        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(effectiveSourceList);
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait);
+        var criteria = $"Filtro: Nome = {name}\n" + (string.IsNullOrWhiteSpace(documento) ? "" : $"• Documento: {documento}\n") + BuildPortasCriteria(effectiveSourceList);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(clientName, "Eventos Gerais por Nome", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait), clientName, "Eventos Gerais por Nome", startDt, endDt, generatedBy, criteria, includeCover);
         var rel = SaveReportFile("door-general-by-name.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-name.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var criteriaW = $"Filtro: Nome = {name}\n" + (string.IsNullOrWhiteSpace(documento) ? "" : $"• Documento: {documento}\n") + BuildPortasCriteria(effectiveSourceList);
+        var mappedW = rows.Select(x => new string?[] {
+            x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa,
+            NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        }).ToList();
+        var bytesW = BuildDocxReport(clientName, "Eventos Gerais por Nome", startDt, endDt, generatedBy, criteriaW,
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(http));
+        var relW = SaveReportFile("door-general-by-name.docx", bytesW, app.Environment);
+        http.Response.Headers["X-Report-Path"] = relW;
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "door-general-by-name.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -5811,7 +7023,7 @@ app.MapGet("/api/reports/door-general/by-name/export", async (HttpContext http, 
         )).ToList();
         var includeCover = ShouldIncludeCover(http);
         var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var criteria = $"Filtro: Nome = {name}\n" + BuildPortasCriteria(effectiveSourceList);
+        var criteria = $"Filtro: Nome = {name}\n" + (string.IsNullOrWhiteSpace(documento) ? "" : $"• Documento: {documento}\n") + BuildPortasCriteria(effectiveSourceList);
         byte[] bytes;
         try { bytes = BuildDoorPdf(clientName, clientLogo, "Eventos Gerais por Nome", ParseDate(start), ParseDate(end), mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait); }
         catch (Exception ex) { return Results.BadRequest(new { error = includeCover ? "Falha ao gerar PDF com capa" : "Falha ao gerar PDF", detail = ex.Message }); }
@@ -5866,6 +7078,7 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         new SqlParameter("@DC", SqlDbType.VarChar, 10) { Value = site ?? "" }
     });
     if (err != null) return Results.BadRequest(new { error = err });
+    rows = ApplyDoorFiltros(rows, ReadDoorFiltros(http.Request));
     if (string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
     {
         var sb = new StringBuilder();
@@ -5893,10 +7106,26 @@ app.MapGet("/api/reports/door-general/by-site/export", async (HttpContext http, 
         )).ToList();
         var portasCsvX = BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s)));
         var criteria = $"Filtro: Site = {site}\n" + BuildPortasCriteria(portasCsvX);
-        var bytesX = BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(clientName, "Eventos Gerais por Site", startDt, endDt, mapped, generatedBy, includeCover, criteria, coverPortrait, reportPortrait), clientName, "Eventos Gerais por Site", startDt, endDt, generatedBy, criteria, includeCover);
         var rel = SaveReportFile("door-general-by-site.xlsx", bytesX, app.Environment);
         http.Response.Headers["X-Report-Path"] = rel;
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "door-general-by-site.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var (clientName, _) = await GetReportClientInfoAsync(http);
+        var generatedBy = GetReportUser(http);
+        var criteriaW = $"Filtro: Site = {site}\n" + BuildPortasCriteria(BuildSourceListCsv(rows.Select(x => x.TAG ?? "").Where(s => !string.IsNullOrWhiteSpace(s))));
+        var mappedW = rows.Select(x => new string?[] {
+            x.DataHora, x.TAG, x.Acesso, x.Evento, x.NomeCompleto, x.DocumentoMatricula, x.Cartao, x.Tipo, x.Empresa,
+            NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso)
+        }).ToList();
+        var bytesW = BuildDocxReport(clientName, "Eventos Gerais por Site", startDt, endDt, generatedBy, criteriaW,
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(http));
+        var relW = SaveReportFile("door-general-by-site.docx", bytesW, app.Environment);
+        http.Response.Headers["X-Report-Path"] = relW;
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "door-general-by-site.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -7167,16 +8396,72 @@ app.MapGet("/api/login/tokens", async (HttpRequest req) =>
     return Results.Ok(list);
 }).RequireAuthorization("AdminsOnly");
 
-app.MapGet("/api/cms/employees/search", async (string? matricula, string? empresa, int page, int pageSize, string? sort, string? dir) =>
+// Busca de documento por aproximação: divide o termo em tokens e exige que cada token
+// apareça em Identifier ou AlternateIdentifier (ex.: "X336968    RG648327930" acha por
+// "X336968", "RG648327930", "336968" ou "648327930").
+static List<string> BuildDocumentoFilter(SqlCommand cmd, string alias, string paramBase, string? termo)
 {
-    var defaultEmpresa = await GetDefaultClientNameAsync();
+    var list = new List<string>();
+    if (string.IsNullOrWhiteSpace(termo)) return list;
+    var tokens = termo.Split(new[] { ' ', '\t', '\r', '\n', ',', ';', '/' }, StringSplitOptions.RemoveEmptyEntries);
+    for (int i = 0; i < tokens.Length; i++)
+    {
+        var p = "@" + paramBase + i;
+        list.Add($"({alias}.Identifier COLLATE Latin1_General_CI_AI LIKE {p} OR {alias}.AlternateIdentifier COLLATE Latin1_General_CI_AI LIKE {p})");
+        cmd.Parameters.Add(new SqlParameter(p, SqlDbType.VarChar) { Value = "%" + tokens[i] + "%" });
+    }
+    return list;
+}
+
+// Filtros compartilhados da consulta de Funcionários (usados na busca e na exportação)
+static List<string> BuildEmployeeFilters(SqlCommand cmd, string? matricula, string? empresa, string? q, string? tipo, string? status)
+{
+    const string tipoExpr = "CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END";
+    const string statusExpr = "CASE WHEN (e.CommencementDateTime IS NOT NULL AND e.CommencementDateTime > GETDATE()) OR (e.ExpiryDateTime IS NOT NULL AND e.ExpiryDateTime < GETDATE()) THEN 'INATIVO' ELSE 'ATIVO' END";
+    var where = new List<string>();
+    if (!string.IsNullOrWhiteSpace(matricula)) where.AddRange(BuildDocumentoFilter(cmd, "e", "matricula", matricula));
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF5 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    if (!string.IsNullOrWhiteSpace(tipo))
+    {
+        var t = tipo.Trim().ToUpperInvariant();
+        if (t.StartsWith("FUNC")) where.Add("TRY_CONVERT(int, uf.UF6) = 20001");
+        else if (t.StartsWith("PREST")) where.Add("TRY_CONVERT(int, uf.UF6) = 20002");
+    }
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        var s = status.Trim().ToUpperInvariant();
+        if (s.StartsWith("INATIV")) where.Add($"{statusExpr} = 'INATIVO'");
+        else if (s.StartsWith("ATIV")) where.Add($"{statusExpr} = 'ATIVO'");
+    }
+    if (!string.IsNullOrWhiteSpace(q))
+    {
+        where.Add($@"(
+    e.Name COLLATE Latin1_General_CI_AI LIKE @q
+    OR e.Surname COLLATE Latin1_General_CI_AI LIKE @q
+    OR e.PreferredName COLLATE Latin1_General_CI_AI LIKE @q
+    OR e.Identifier COLLATE Latin1_General_CI_AI LIKE @q
+    OR uf.UF5 COLLATE Latin1_General_CI_AI LIKE @q
+    OR CAST(c.CardNumber AS varchar(100)) COLLATE Latin1_General_CI_AI LIKE @q
+    OR {tipoExpr} COLLATE Latin1_General_CI_AI LIKE @q
+    OR {statusExpr} COLLATE Latin1_General_CI_AI LIKE @q
+    OR CONVERT(varchar(10), e.CommencementDateTime, 103) LIKE @q
+    OR CONVERT(varchar(10), e.ExpiryDateTime, 103) LIKE @q
+    OR CONVERT(varchar(10), la.LastAccess, 103) LIKE @q
+)");
+        cmd.Parameters.Add(new SqlParameter("@q", SqlDbType.VarChar) { Value = "%" + q.Trim() + "%" });
+    }
+    return where;
+}
+
+app.MapGet("/api/cms/employees/search", async (string? matricula, string? empresa, string? q, string? tipo, string? status, int page, int pageSize, string? sort, string? dir) =>
+{
     var sortMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["Name"] = "e.Name",
         ["SbiID"] = "e.SbiID",
         ["CardNumber"] = "c.CardNumber",
         ["Matricula"] = "e.Identifier",
-        ["Empresa"] = "uf.UF2",
+        ["Empresa"] = "uf.UF5",
         ["Cadastro"] = "e.CommencementDateTime",
         ["Expira"] = "e.ExpiryDateTime",
         ["UltimoAcesso"] = "la.LastAccess"
@@ -7189,19 +8474,29 @@ app.MapGet("/api/cms/employees/search", async (string? matricula, string? empres
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
-    var where = new List<string>();
-    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("e.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); }
-    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    var fromSql = @"
+FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
+OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
+LEFT JOIN (
+    SELECT
+        t0.CardHolderID AS SBI_ID,
+        MAX(DATEADD(HOUR, -3, emsevents.dbo.UTCFILETIMEToDateTime(t0.[Time]))) AS LastAccess
+    FROM [EMSEVENTS].dbo.Events t0
+    WHERE t0.Category = 16 AND t0.CardHolderID IS NOT NULL
+    GROUP BY t0.CardHolderID
+) la ON la.SBI_ID = e.SbiID";
+    var where = BuildEmployeeFilters(cmd, matricula, empresa, q, tipo, status);
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-    cmd.CommandText = $@"
+    cmd.CommandText = ApplyDbObjectMappings($@"
 SELECT
     e.SbiID,
     e.Name,
     e.Surname,
     e.PreferredName,
     e.Identifier,
-    uf.UF2,
-    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'TERCEIRO' ELSE 'FUNCIONÁRIO' END AS Tipo,
+    uf.UF5,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     COALESCE(TRY_CONVERT(int, uf.UF6), 20001) AS CodigoTipo,
     CAST(c.CardNumber AS varchar(100)) AS CardNumber,
     e.CommencementDateTime AS Cadastro,
@@ -7215,14 +8510,20 @@ SELECT
 FROM Employee e
 LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
 OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
-OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = e.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+LEFT JOIN (
+    SELECT
+        t0.CardHolderID AS SBI_ID,
+        MAX(DATEADD(HOUR, -3, emsevents.dbo.UTCFILETIMEToDateTime(t0.[Time]))) AS LastAccess
+    FROM [EMSEVENTS].dbo.Events t0
+    WHERE t0.Category = 16 AND t0.CardHolderID IS NOT NULL
+    GROUP BY t0.CardHolderID
+) la ON la.SBI_ID = e.SbiID
 {whereSql}
 ORDER BY {orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
-FROM Employee e
-LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
-{whereSql}";
+{fromSql}
+{whereSql}");
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     using var r = await cmd.ExecuteReaderAsync();
@@ -7230,7 +8531,6 @@ LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     while (await r.ReadAsync())
     {
         var empresaRow = r.IsDBNull(5) ? null : r.GetString(5);
-        if (string.IsNullOrWhiteSpace(empresaRow)) empresaRow = defaultEmpresa;
         items.Add(new
         {
             CardNumber = r.IsDBNull(8) ? null : r.GetString(8),
@@ -7252,24 +8552,24 @@ LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
     return Results.Ok(new { page, pageSize, total, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/cms/external/search/export", async (HttpContext http, string? matricula, string? empresa, string format = "csv") =>
+app.MapGet("/api/cms/external/search/export", async (HttpContext http, string? matricula, string? empresa, string format = "csv", string? status = null) =>
 {
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     var where = new List<string>();
     var criteriaList = new List<string>();
-    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("x.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); criteriaList.Add($"Matrícula: {matricula}"); }
-    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name = @empresa OR ux.UF2 = @empresa)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); criteriaList.Add($"Empresa: {empresa}"); }
+    if (!string.IsNullOrWhiteSpace(matricula)) { where.AddRange(BuildDocumentoFilter(cmd, "x", "matricula", matricula)); criteriaList.Add($"Matrícula: {matricula}"); }
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI OR ux.UF2 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); criteriaList.Add($"Empresa: {empresa}"); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
     var criteria = criteriaList.Count > 0 ? string.Join(" | ", criteriaList) : "Todos os Externos";
 
-    cmd.CommandText = $@"
+    cmd.CommandText = ApplyDbObjectMappings($@"
 SELECT
     x.Name,
     x.Identifier,
     COALESCE(ec.Name, ux.UF2) as Empresa,
-    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
+    COALESCE(CAST(c.CardNumber AS varchar(100)), la.CardEv) AS CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira,
     CASE
@@ -7288,15 +8588,28 @@ LEFT JOIN (
 ) c ON c.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 LEFT JOIN (
-    SELECT t0.SBI_ID, MAX(t0.TRANSIT_DATE) AS LastAccess
-    FROM HA_TRANSIT t0
-    GROUP BY t0.SBI_ID
+    SELECT
+        t0.CardHolderID AS SBI_ID,
+        MAX(DATEADD(HOUR, -3, emsevents.dbo.UTCFILETIMEToDateTime(t0.[Time]))) AS LastAccess,
+        MAX(CAST(t0.CardNumber AS varchar(100))) AS CardEv
+    FROM [EMSEVENTS].dbo.Events t0
+    WHERE t0.Category = 16 AND t0.CardHolderID IS NOT NULL
+    GROUP BY t0.CardHolderID
 ) la ON la.SBI_ID = x.SbiID
 {whereSql}
-ORDER BY x.Name ASC";
+ORDER BY (
+    CASE WHEN c.CardNumber IS NULL AND la.CardEv IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(x.Name)),'') IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(x.Identifier)),'') IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN x.CommencementDateTime IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN x.ExpiryDateTime IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN la.LastAccess IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(COALESCE(ec.Name, ux.UF2, ''))),'') IS NULL THEN 1 ELSE 0 END
+) ASC,
+x.Name ASC");
     
     using var r = await cmd.ExecuteReaderAsync();
-    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)>();
+    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa, string? Tipo)>();
     while (await r.ReadAsync())
     {
         rows.Add((
@@ -7307,9 +8620,12 @@ ORDER BY x.Name ASC";
             Cadastro: r.IsDBNull(4) ? (DateTime?)null : r.GetDateTime(4),
             Expira: r.IsDBNull(5) ? (DateTime?)null : r.GetDateTime(5),
             UltimoAcesso: r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
-            Empresa: r.IsDBNull(2) ? null : r.GetString(2)
+            Empresa: r.IsDBNull(2) ? null : r.GetString(2),
+            Tipo: null
         ));
     }
+
+    rows = rows.Where(x => MatchIgual(x.Status, status)).ToList();
 
     if (format == "csv")
     {
@@ -7323,8 +8639,16 @@ ORDER BY x.Name ASC";
 
     if (format == "xlsx")
     {
-        var bytesX = BuildEmployeesXlsx(clientInfo.Name, "Externos", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildEmployeesXlsx(clientInfo.Name, "Externos", rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Externos", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "externos.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Externos", null, null, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "MATRÍCULA", "STATUS", "CADASTRO", "EXPIRAÇÃO", "ÚLTIMO ACESSO", "EMPRESA" },
+            rows.Select(x => new string?[] { x.Cracha, x.Nome, x.Matricula, x.Status, x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"), x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"), x.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss"), x.Empresa }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "externos.docx");
     }
     
     if (format == "pdf")
@@ -7336,26 +8660,24 @@ ORDER BY x.Name ASC";
     return Results.BadRequest("Formato inválido");
 }).RequireAuthorization();
 
-app.MapGet("/api/cms/employees/search/export", async (HttpContext http, string? matricula, string? empresa, string format = "csv") =>
+app.MapGet("/api/cms/employees/search/export", async (HttpContext http, string? matricula, string? empresa, string? q, string? tipo, string? status, string format = "csv") =>
 {
-    var defaultEmpresa = await GetDefaultClientNameAsync();
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync(http.RequestAborted);
     using var cmd = cn.CreateCommand();
     cmd.CommandTimeout = 300;
-    var where = new List<string>();
-    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("e.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); }
-    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("uf.UF2 = @empresa"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    var where = BuildEmployeeFilters(cmd, matricula, empresa, q, tipo, status);
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-    cmd.CommandText = $@"
+    cmd.CommandText = ApplyDbObjectMappings($@"
 SELECT TOP 20000
     CAST(c.CardNumber AS varchar(100)) AS CardNumber,
     e.Name,
     e.Identifier,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     CASE
         WHEN e.CommencementDateTime IS NOT NULL AND e.CommencementDateTime > GETDATE() THEN 'INATIVO'
         WHEN e.ExpiryDateTime IS NOT NULL AND e.ExpiryDateTime < GETDATE() THEN 'INATIVO'
@@ -7364,28 +8686,35 @@ SELECT TOP 20000
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira,
     la.LastAccess AS UltimoAcesso,
-    uf.UF2 AS Empresa
+    uf.UF5 AS Empresa
 FROM Employee e
 LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
 OUTER APPLY (SELECT TOP 1 CardNumber FROM Card c WHERE c.SbiID = e.SbiID AND c.CardNumber IS NOT NULL ORDER BY c.CardNumber DESC) c
-OUTER APPLY (SELECT TOP 1 t.TRANSIT_DATE AS LastAccess FROM HA_TRANSIT t WHERE t.SBI_ID = e.SbiID ORDER BY t.TRANSIT_DATE DESC) la
+LEFT JOIN (
+    SELECT
+        t0.CardHolderID AS SBI_ID,
+        MAX(DATEADD(HOUR, -3, emsevents.dbo.UTCFILETIMEToDateTime(t0.[Time]))) AS LastAccess
+    FROM [EMSEVENTS].dbo.Events t0
+    WHERE t0.Category = 16 AND t0.CardHolderID IS NOT NULL
+    GROUP BY t0.CardHolderID
+) la ON la.SBI_ID = e.SbiID
 {whereSql}
-ORDER BY c.CardNumber ASC;";
+ORDER BY c.CardNumber ASC;");
     using var r = await cmd.ExecuteReaderAsync(http.RequestAborted);
-    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)>();
+    var rows = new List<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa, string? Tipo)>();
     while (await r.ReadAsync(http.RequestAborted))
     {
-        var emp = r.IsDBNull(7) ? null : r.GetString(7);
-        if (string.IsNullOrWhiteSpace(emp)) emp = defaultEmpresa;
+        var emp = r.IsDBNull(8) ? null : r.GetString(8);
         rows.Add((
             r.IsDBNull(0) ? null : r.GetString(0),
             r.IsDBNull(1) ? null : r.GetString(1),
             r.IsDBNull(2) ? null : r.GetString(2),
-            r.IsDBNull(3) ? null : r.GetString(3),
-            r.IsDBNull(4) ? (DateTime?)null : r.GetDateTime(4),
+            r.IsDBNull(4) ? null : r.GetString(4),
             r.IsDBNull(5) ? (DateTime?)null : r.GetDateTime(5),
             r.IsDBNull(6) ? (DateTime?)null : r.GetDateTime(6),
-            emp
+            r.IsDBNull(7) ? (DateTime?)null : r.GetDateTime(7),
+            emp,
+            r.IsDBNull(3) ? null : r.GetString(3)
         ));
     }
 
@@ -7406,7 +8735,7 @@ ORDER BY c.CardNumber ASC;";
     if (fmt == "csv")
     {
         var sb = new StringBuilder();
-        sb.AppendLine("CRACHA,NOME,MATRICULA,STATUS,CADASTRO,EXPIRACAO,ULTIMO_ACESSO,EMPRESA");
+        sb.AppendLine("CRACHA,NOME,MATRICULA,TIPO,STATUS,CADASTRO,EXPIRACAO,ULTIMO_ACESSO,EMPRESA");
         foreach (var x in rows)
         {
             sb.AppendLine(string.Join(",", new[]
@@ -7414,6 +8743,7 @@ ORDER BY c.CardNumber ASC;";
                 Csv(x.Cracha),
                 Csv(x.Nome),
                 Csv(x.Matricula),
+                Csv(x.Tipo),
                 Csv(x.Status),
                 Csv(x.Cadastro?.ToString("yyyy-MM-dd HH:mm:ss")),
                 Csv(x.Expira?.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -7427,11 +8757,19 @@ ORDER BY c.CardNumber ASC;";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildEmployeesXlsx(clientInfo.Name, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildEmployeesXlsx(clientInfo.Name, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, includeTipo: true), clientInfo.Name, "Funcionários", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Funcionários", null, null, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "MATRÍCULA", "TIPO", "STATUS", "CADASTRO", "EXPIRAÇÃO", "ÚLTIMO ACESSO", "EMPRESA" },
+            rows.Select(x => new string?[] { x.Cracha, x.Nome, x.Matricula, x.Tipo, x.Status, x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"), x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"), x.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss"), x.Empresa }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "funcionarios.docx");
+    }
     var (cp, rp) = GetPdfOrientationFlags(http);
-    var bytesP = BuildEmployeesPdf(clientInfo.Name, clientInfo.Logo, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp);
+    var bytesP = BuildEmployeesPdf(clientInfo.Name, clientInfo.Logo, "Funcionários", rows, GetReportUser(http), ShouldIncludeCover(http), criteria, cp, rp, includeTipo: true);
     return Results.File(bytesP, "application/pdf", fileName);
 }).RequireAuthorization();
 
@@ -7454,7 +8792,7 @@ app.MapGet("/api/reports/transit", async (string start, string end, string? empr
     }
     if (!string.IsNullOrWhiteSpace(empresa))
     {
-        where += " AND u.UF2 = @empresa";
+        where += " AND u.UF2 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI";
         cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     }
     cmd.CommandText = $@"
@@ -7510,7 +8848,7 @@ app.MapGet("/api/reports/transit/export", async (HttpContext ctx, string start, 
     }
     if (!string.IsNullOrWhiteSpace(empresa))
     {
-        where += " AND u.UF2 = @empresa";
+        where += " AND u.UF2 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI";
         cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa });
     }
     cmd.CommandText = $@"
@@ -7543,8 +8881,21 @@ ORDER BY c.CardNumber ASC, t.TRANSIT_DATE DESC";
         if (!string.IsNullOrWhiteSpace(empresa)) criteriaParts.Add($"Empresa: {empresa}");
         if (!string.IsNullOrWhiteSpace(terminal)) criteriaParts.Add($"Terminal: {terminal}");
         var criteria = criteriaParts.Count > 0 ? string.Join(" • ", criteriaParts) : null;
-        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Período", startDt, endDt, rows.Select(x => (x.card, x.name, x.empresa, x.terminal, x.termDesc, x.date)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), criteria);
+        var bytesX = AddXlsxChrome(BuildTransitXlsx(clientInfo.Name, "Trânsito por Período", startDt, endDt, rows.Select(x => (x.card, x.name, x.empresa, x.terminal, x.termDesc, x.date)).ToList(), GetReportUser(ctx), ShouldIncludeCover(ctx), criteria), clientInfo.Name, "Trânsito por Período", startDt, endDt, GetReportUser(ctx), criteria, ShouldIncludeCover(ctx));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "transit.xlsx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var clientInfoW = await GetReportClientInfoAsync(ctx);
+        var criteriaPartsW = new List<string>();
+        if (!string.IsNullOrWhiteSpace(empresa)) criteriaPartsW.Add($"Empresa: {empresa}");
+        if (!string.IsNullOrWhiteSpace(terminal)) criteriaPartsW.Add($"Terminal: {terminal}");
+        var criteriaW = criteriaPartsW.Count > 0 ? string.Join(" • ", criteriaPartsW) : null;
+        var bytesW = BuildDocxReport(clientInfoW.Name, "Trânsito por Período", startDt, endDt, GetReportUser(ctx), criteriaW,
+            new[] { "CRACHÁ", "NOME", "EMPRESA", "TERMINAL", "TERMINAL DESC.", "DATA/HORA" },
+            rows.Select(x => new string?[] { x.card, x.name, x.empresa, x.terminal, x.termDesc, x.date.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(ctx));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "transito-periodo.docx");
     }
     if (string.Equals(format, "pdf", StringComparison.OrdinalIgnoreCase))
     {
@@ -7637,20 +8988,30 @@ SELECT DISTINCT
     e.SbiID,
     e.Name + ' ' + e.Surname AS Name,
     c.CardNumber,
-    'Employee' AS UserType
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS UserType
 FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
 INNER JOIN Card c ON c.SbiID = e.SbiID
-WHERE e.PreferredName = @cpf
+WHERE
+    e.PreferredName = @cpf OR e.Identifier = @cpf OR e.AlternateIdentifier = @cpf
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
 UNION
 SELECT DISTINCT
     x.SbiID,
     x.Name + ' ' + x.Surname AS Name,
     c.CardNumber,
-    'External' AS UserType
+    'VISITANTE' AS UserType
 FROM ExternalRegular x
 INNER JOIN Card c ON c.SbiID = x.SbiID
-WHERE x.PreferredName = @cpf";
+WHERE
+    x.PreferredName = @cpf OR x.Identifier = @cpf OR x.AlternateIdentifier = @cpf
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)";
     cmd.Parameters.Add(new SqlParameter("@cpf", SqlDbType.VarChar) { Value = cpf });
+    cmd.Parameters.Add(new SqlParameter("@cpfDigits", SqlDbType.VarChar) { Value = DigitsOnly(cpf ?? "") });
     using var r = await cmd.ExecuteReaderAsync();
     var list = new List<object>();
     while (await r.ReadAsync())
@@ -7669,7 +9030,7 @@ app.MapGet("/api/cms/card/by-cpf/export", async (HttpContext http, string cpf, s
 {
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -7679,21 +9040,31 @@ SELECT DISTINCT
     e.SbiID,
     e.Name + ' ' + e.Surname AS Name,
     c.CardNumber,
-    'Employee' AS UserType
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS UserType
 FROM Employee e
+LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
 INNER JOIN Card c ON c.SbiID = e.SbiID
-WHERE e.PreferredName = @cpf
+WHERE
+    e.PreferredName = @cpf OR e.Identifier = @cpf OR e.AlternateIdentifier = @cpf
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.PreferredName, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.Identifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(e.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
 UNION
 SELECT DISTINCT
     x.SbiID,
     x.Name + ' ' + x.Surname AS Name,
     c.CardNumber,
-    'External' AS UserType
+    'VISITANTE' AS UserType
 FROM ExternalRegular x
 INNER JOIN Card c ON c.SbiID = x.SbiID
-WHERE x.PreferredName = @cpf
+WHERE
+    x.PreferredName = @cpf OR x.Identifier = @cpf OR x.AlternateIdentifier = @cpf
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.PreferredName, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.Identifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
+    OR (@cpfDigits <> '' AND REPLACE(REPLACE(REPLACE(x.AlternateIdentifier, '.', ''), '-', ''), ' ', '') = @cpfDigits)
 ORDER BY CardNumber, Name";
     cmd.Parameters.Add(new SqlParameter("@cpf", SqlDbType.VarChar) { Value = cpf });
+    cmd.Parameters.Add(new SqlParameter("@cpfDigits", SqlDbType.VarChar) { Value = DigitsOnly(cpf ?? "") });
     using var r = await cmd.ExecuteReaderAsync();
     var rows = new List<(string? Nome, string? Cracha, string? Tipo)>();
     while (await r.ReadAsync())
@@ -7732,8 +9103,16 @@ ORDER BY CardNumber, Name";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildCardByCpfXlsx(clientInfo.Name, "Buscar Crachá por CPF", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildCardByCpfXlsx(clientInfo.Name, "Buscar Crachá por CPF", rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Buscar Crachá por CPF", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Buscar Crachá por CPF", null, null, GetReportUser(http), criteria,
+            new[] { "NOME", "CRACHÁ", "TIPO" },
+            rows.Select(x => new string?[] { x.Nome, x.Cracha, x.Tipo }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "cracha-por-cpf.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -7932,7 +9311,7 @@ static string NormalizeOrientationSetting(string? value, string fallback = "land
     return fallback;
 }
 
-static OrientationValues GetConfiguredWorksheetOrientation(string envKey, string fallback = "landscape")
+OrientationValues GetConfiguredWorksheetOrientation(string envKey, string fallback = "landscape")
 {
     try
     {
@@ -8435,7 +9814,7 @@ byte[] BuildVisitorsPdf(string clientName, byte[]? clientLogo, string title, Dat
     }).GeneratePdf();
 }
 
-byte[] BuildEmployeesXlsx(string clientName, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)> rows, string generatedBy, bool includeCover, string? criteria)
+byte[] BuildEmployeesXlsx(string clientName, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa, string? Tipo)> rows, string generatedBy, bool includeCover, string? criteria, bool includeTipo = false)
 {
     using var ms = new MemoryStream();
     using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
@@ -8462,19 +9841,24 @@ byte[] BuildEmployeesXlsx(string clientName, string title, IReadOnlyList<(string
         AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
         AddRow();
 
-        AddRow("CRACHÁ", "NOME", "MATRÍCULA", "STATUS", "CADASTRO", "EXPIRAÇÃO", "ÚLTIMO ACESSO", "EMPRESA");
+        var header = new List<string?> { "CRACHÁ", "NOME", "MATRÍCULA" };
+        if (includeTipo) header.Add("TIPO");
+        header.Add("STATUS");
+        header.Add("CADASTRO");
+        header.Add("EXPIRAÇÃO");
+        header.Add("ÚLTIMO ACESSO");
+        header.Add("EMPRESA");
+        AddRow(header.ToArray());
         foreach (var x in rows)
         {
-            AddRow(
-                x.Cracha,
-                x.Nome,
-                x.Matricula,
-                x.Status,
-                x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"),
-                x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"),
-                x.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss"),
-                x.Empresa
-            );
+            var cells = new List<string?> { x.Cracha, x.Nome, x.Matricula };
+            if (includeTipo) cells.Add(x.Tipo);
+            cells.Add(x.Status);
+            cells.Add(x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"));
+            cells.Add(x.Expira?.ToString("dd/MM/yyyy HH:mm:ss"));
+            cells.Add(x.UltimoAcesso?.ToString("dd/MM/yyyy HH:mm:ss"));
+            cells.Add(x.Empresa);
+            AddRow(cells.ToArray());
         }
 
         ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
@@ -9417,7 +10801,7 @@ byte[] BuildMatriculaInfoPdf(string clientName, byte[]? clientLogo, string title
     }).GeneratePdf();
 }
 
-byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IReadOnlyList<(string? Cracha, string? Nome, string? Matricula, string? Status, DateTime? Cadastro, DateTime? Expira, DateTime? UltimoAcesso, string? Empresa, string? Tipo)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false, bool includeTipo = false)
 {
     QuestPDF.Settings.License = LicenseType.Community;
     var headerBg = "#0b3d2e";
@@ -9533,6 +10917,7 @@ byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IR
                         c.RelativeColumn(0.9f);
                         c.RelativeColumn(1.9f);
                         c.RelativeColumn(1.0f);
+                        if (includeTipo) c.RelativeColumn(1.2f);
                         c.RelativeColumn(0.8f);
                         c.RelativeColumn(1.1f);
                         c.RelativeColumn(1.1f);
@@ -9556,6 +10941,7 @@ byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IR
                         h.Cell().Element(HeaderCell).Text("CRACHÁ");
                         h.Cell().Element(HeaderCell).Text("NOME");
                         h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        if (includeTipo) h.Cell().Element(HeaderCell).Text("TIPO");
                         h.Cell().Element(HeaderCell).Text("STATUS");
                         h.Cell().Element(HeaderCell).Text("CADASTRO");
                         h.Cell().Element(HeaderCell).Text("EXPIRAÇÃO");
@@ -9570,6 +10956,7 @@ byte[] BuildEmployeesPdf(string clientName, byte[]? clientLogo, string title, IR
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Cracha ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Nome ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        if (includeTipo) table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Status ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Expira?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
@@ -10051,7 +11438,262 @@ byte[] BuildPopulationPdf(string clientName, byte[]? clientLogo, string title, D
     }).GeneratePdf();
 }
 
-byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)> rows, string generatedBy, bool includeCover, string? criteria)
+byte[] BuildBimestralFuncionarioXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)> rows, string generatedBy, bool includeCover, string? criteria)
+{
+    using var ms = new MemoryStream();
+    using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+    {
+        var wb = doc.AddWorkbookPart();
+        wb.Workbook = new Workbook();
+        var wsPart = wb.AddNewPart<WorksheetPart>();
+        wsPart.Worksheet = new Worksheet(new SheetData());
+        var sheets = doc.WorkbookPart!.Workbook!.AppendChild(new Sheets());
+        sheets.Append(new Sheet() { Id = doc.WorkbookPart!.GetIdOfPart(wsPart), SheetId = 1, Name = "Bimestral Funcionário" });
+        var sheetData = wsPart.Worksheet.GetFirstChild<SheetData>()!;
+
+        void AddRow(params string?[] cells)
+        {
+            var row = new Row();
+            foreach (var c in cells) row.Append(new Cell() { DataType = CellValues.String, CellValue = new CellValue(c ?? "") });
+            sheetData.Append(row);
+        }
+
+        AddRow("RELATÓRIO", title);
+        AddRow("CLIENTE", clientName);
+        if (!string.IsNullOrWhiteSpace(criteria)) AddRow("CRITÉRIOS", criteria);
+        AddRow("GERADO POR", generatedBy);
+        AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
+        AddRow();
+
+        AddRow("CRACHÁ", "NOME", "MATRÍCULA", "CPF/DOCUMENTO", "STATUS CADASTRO", "NÍVEL DE ACESSO", "COMENTÁRIO", "EXPIRAÇÃO NÍVEL", "EMPRESA", "TIPO");
+        foreach (var x in rows)
+        {
+            AddRow(
+                x.CardNumber,
+                x.NomeCompleto,
+                x.Matricula,
+                x.CpfDocumento,
+                x.StatusCadastro,
+                x.NivelAcesso,
+                x.ComentarioNivel,
+                x.DataExpiracaoNivel?.ToString("dd/MM/yyyy HH:mm:ss"),
+                x.Empresa,
+                x.Tipo
+            );
+        }
+
+        ApplyWorksheetPageSetupToSheet(wsPart.Worksheet, GetConfiguredWorksheetOrientation("REPORT_PDF_ORIENTATION"), 1U, 0U);
+        wsPart.Worksheet.Save();
+        wb.Workbook.Save();
+    }
+    return ms.ToArray();
+}
+
+byte[] BuildBimestralFuncionarioPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(string? CardNumber, string? NomeCompleto, string? Matricula, string? CpfDocumento, string? StatusCadastro, string? NivelAcesso, string? ComentarioNivel, DateTime? DataExpiracaoNivel, string? Empresa, string? Tipo)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+{
+    QuestPDF.Settings.License = LicenseType.Community;
+    var headerBg = "#0b3d2e";
+    var rowAlt = "#f4f7f5";
+    var border = "#d1d5db";
+    var accent = "#0b3d2e";
+    var baseBodyLandscape = new QuestPDF.Helpers.PageSize(1190.88f, 841.68f);
+    var reportSize = reportPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+    var coverSize = coverPortrait ? new QuestPDF.Helpers.PageSize(baseBodyLandscape.Height, baseBodyLandscape.Width) : baseBodyLandscape;
+
+    byte[]? rightLogo = clientLogo;
+    byte[]? honeywellLogo = null;
+    byte[]? jumperBrand = null;
+    try
+    {
+        var repoRoot = ResolveAssetRoot(app.Environment.ContentRootPath);
+        var honeyRepo = Path.Combine(repoRoot, "img", "Honeywell_logo.png");
+        if (System.IO.File.Exists(honeyRepo)) honeywellLogo = System.IO.File.ReadAllBytes(honeyRepo);
+        var jumper4Repo = Path.Combine(repoRoot, "img", "Jumperfour_logo.png");
+        if (System.IO.File.Exists(jumper4Repo)) jumperBrand = System.IO.File.ReadAllBytes(jumper4Repo);
+
+        var env = LoadEnv();
+        if (rightLogo == null && env.TryGetValue("REPORT_LOGO_RIGHT", out var rp) && !string.IsNullOrWhiteSpace(rp))
+        {
+            var full = rp.StartsWith("/") ? Path.Combine(app.Environment.ContentRootPath, "wwwroot", rp.TrimStart('/')) : rp;
+            if (System.IO.File.Exists(full)) rightLogo = System.IO.File.ReadAllBytes(full);
+        }
+    }
+    catch { }
+
+    var criteriaLine = criteria;
+    if (string.IsNullOrWhiteSpace(criteriaLine))
+        criteriaLine = $"Período: {start:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(start, end):dd/MM/yyyy HH:mm:ss}";
+
+    return Document.Create(container =>
+    {
+        if (includeCover)
+        {
+            container.Page(page =>
+            {
+                page.Margin(36);
+                page.Size(coverSize);
+                page.Header().Column(h =>
+                {
+                    h.Item().Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.ConstantItem(220).AlignRight().Element(e =>
+                        {
+                            if (honeywellLogo != null)
+                            {
+                                try { e.Width(200).Height(40).Image(honeywellLogo, ImageScaling.FitArea); }
+                                catch { e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B"); }
+                            }
+                            else e.Text("Honeywell").FontSize(18).SemiBold().FontColor("#E4002B");
+                        });
+                    });
+                    h.Item().PaddingTop(6).LineHorizontal(2).LineColor("#E4002B");
+                });
+                page.Content().AlignMiddle().AlignCenter().Column(col =>
+                {
+                    col.Spacing(10);
+                    col.Item().Text(title).FontSize(26).SemiBold().Underline().FontColor(accent);
+                    col.Item().PaddingTop(6).Column(info =>
+                    {
+                        info.Spacing(4);
+                        info.Item().Text(criteriaLine).FontSize(12);
+                        info.Item().Text($"Cliente: {clientName}").FontSize(11);
+                        info.Item().Text($"Gerado por: {generatedBy}").FontSize(10).FontColor("#374151");
+                        info.Item().Text($"Gerado em: {DateTime.Now:dd/MM/yyyy HH:mm:ss}").FontSize(10).FontColor("#374151");
+                    });
+                });
+                page.Footer().Column(col =>
+                {
+                    col.Item().LineHorizontal(2).LineColor("#E4002B");
+                    col.Item().PaddingTop(6).Row(row =>
+                    {
+                        row.RelativeItem().Text("");
+                        row.RelativeItem().AlignCenter().Row(r =>
+                        {
+                            r.AutoItem().Text("Relatório by ").FontSize(12).FontColor("#374151");
+                            r.AutoItem().Element(e =>
+                            {
+                                if (jumperBrand != null)
+                                {
+                                    try { e.Width(120).Height(22).Image(jumperBrand, ImageScaling.FitArea); }
+                                    catch { e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151"); }
+                                }
+                                else e.Text("JumperFour").FontSize(12).SemiBold().FontColor("#374151");
+                            });
+                        });
+                        row.RelativeItem().Text("");
+                    });
+                });
+            });
+        }
+
+        container.Page(page =>
+        {
+            page.Size(reportSize);
+            page.Margin(18);
+            page.DefaultTextStyle(x => x.FontSize(9));
+
+            page.Content().Column(col =>
+            {
+                col.Item().PaddingBottom(8).Column(h =>
+                {
+                    h.Item().Text(title).FontSize(12).SemiBold().FontColor("#111827");
+                    h.Item().Text(criteriaLine).FontSize(9).FontColor("#374151");
+                    h.Item().PaddingTop(6).LineHorizontal(1).LineColor("#E5E7EB");
+                });
+
+                col.Item().Table(table =>
+                {
+                    table.ColumnsDefinition(c =>
+                    {
+                        c.RelativeColumn(0.7f);
+                        c.RelativeColumn(1.6f);
+                        c.RelativeColumn(1.0f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(0.9f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.4f);
+                        c.RelativeColumn(1.2f);
+                        c.RelativeColumn(1.1f);
+                        c.RelativeColumn(1.1f);
+                    });
+
+                    IContainer HeaderCell(IContainer x) => x
+                        .Background(headerBg)
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(4).PaddingHorizontal(6)
+                        .DefaultTextStyle(s => s.FontColor("#ffffff").SemiBold().FontSize(9));
+
+                    IContainer Cell(IContainer x, bool alt) => x
+                        .Background(alt ? rowAlt : "#ffffff")
+                        .Border(0.5f).BorderColor(border)
+                        .PaddingVertical(3).PaddingHorizontal(6);
+
+                    table.Header(h =>
+                    {
+                        h.Cell().Element(HeaderCell).Text("CRACHÁ");
+                        h.Cell().Element(HeaderCell).Text("NOME");
+                        h.Cell().Element(HeaderCell).Text("MATRÍCULA");
+                        h.Cell().Element(HeaderCell).Text("CPF/DOCUMENTO");
+                        h.Cell().Element(HeaderCell).Text("STATUS CADASTRO");
+                        h.Cell().Element(HeaderCell).Text("NÍVEL DE ACESSO");
+                        h.Cell().Element(HeaderCell).Text("COMENTÁRIO");
+                        h.Cell().Element(HeaderCell).Text("EXPIRAÇÃO NÍVEL");
+                        h.Cell().Element(HeaderCell).Text("EMPRESA");
+                        h.Cell().Element(HeaderCell).Text("TIPO");
+                    });
+
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        var r = rows[i];
+                        var alt = i % 2 == 1;
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.CardNumber ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.NomeCompleto ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Matricula ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.CpfDocumento ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.StatusCadastro ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.NivelAcesso ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.ComentarioNivel ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.DataExpiracaoNivel?.ToString("dd/MM/yyyy HH:mm:ss") ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Empresa ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Tipo ?? "");
+                    }
+                });
+            });
+
+            page.Footer().Column(col =>
+            {
+                col.Item().PaddingTop(4).LineHorizontal(1).LineColor("#E5E7EB");
+                col.Item().PaddingTop(6).Row(row =>
+                {
+                    row.RelativeItem().AlignLeft().DefaultTextStyle(s => s.FontSize(9).FontColor("#374151")).Text(t =>
+                    {
+                        t.Span("Página ");
+                        t.CurrentPageNumber();
+                        t.Span(" de ");
+                        t.TotalPages();
+                    });
+                    row.RelativeItem().AlignCenter().Row(r =>
+                    {
+                        r.AutoItem().Text("Relatório by ").FontSize(10).FontColor("#374151");
+                        r.AutoItem().Element(e =>
+                        {
+                            if (jumperBrand != null)
+                            {
+                                try { e.Width(110).Height(20).Image(jumperBrand, ImageScaling.FitArea); }
+                                catch { e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151"); }
+                            }
+                            else e.Text("JumperFour").FontSize(10).SemiBold().FontColor("#374151");
+                        });
+                    });
+                    row.RelativeItem().AlignRight().Text(clientName).FontSize(9).FontColor("#374151");
+                });
+            });
+        });
+    }).GeneratePdf();
+}
+
+byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao, string? Operador)> rows, string generatedBy, bool includeCover, string? criteria)
 {
     using var ms = new MemoryStream();
     using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
@@ -10079,7 +11721,7 @@ byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, Da
         AddRow("GERADO EM", DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"));
         AddRow();
 
-        AddRow("DATA/HORA", "RESPONSÁVEL", "MATRÍCULA", "CÓD. CHAVE", "CHAVE", "DESCRIÇÃO");
+        AddRow("DATA/HORA", "RESPONSÁVEL", "MATRÍCULA", "CÓD. CHAVE", "CHAVE", "DESCRIÇÃO", "OPERADOR");
         foreach (var x in rows)
         {
             AddRow(
@@ -10088,7 +11730,8 @@ byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, Da
                 x.Matricula,
                 x.CodigoChave,
                 x.ChaveDescricao,
-                x.Descricao
+                x.Descricao,
+                x.Operador
             );
         }
 
@@ -10099,7 +11742,7 @@ byte[] BuildClavicularioXlsx(string clientName, string title, DateTime start, Da
     return ms.ToArray();
 }
 
-byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
+byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title, DateTime start, DateTime end, IReadOnlyList<(DateTime? DataHora, string? ResponsavelNome, string? Matricula, string? CodigoChave, string? ChaveDescricao, string? Descricao, string? Operador)> rows, string generatedBy, bool includeCover = true, string? criteria = null, bool coverPortrait = false, bool reportPortrait = false)
 {
     QuestPDF.Settings.License = LicenseType.Community;
     var headerBg = "#0b3d2e";
@@ -10222,6 +11865,7 @@ byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title,
                         c.RelativeColumn(0.8f);
                         c.RelativeColumn(1.4f);
                         c.RelativeColumn(2.2f);
+                        c.RelativeColumn(1.4f);
                     });
 
                     IContainer HeaderCell(IContainer x) => x
@@ -10243,6 +11887,7 @@ byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title,
                         h.Cell().Element(HeaderCell).Text("CÓD. CHAVE");
                         h.Cell().Element(HeaderCell).Text("CHAVE");
                         h.Cell().Element(HeaderCell).Text("DESCRIÇÃO");
+                        h.Cell().Element(HeaderCell).Text("OPERADOR");
                     });
 
                     for (int i = 0; i < rows.Count; i++)
@@ -10255,6 +11900,7 @@ byte[] BuildClavicularioPdf(string clientName, byte[]? clientLogo, string title,
                         table.Cell().Element(x => Cell(x, alt)).Text(r.CodigoChave ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.ChaveDescricao ?? "");
                         table.Cell().Element(x => Cell(x, alt)).Text(r.Descricao ?? "");
+                        table.Cell().Element(x => Cell(x, alt)).Text(r.Operador ?? "");
                     }
                 });
             });
@@ -10556,7 +12202,7 @@ WITH Persons AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-        'FUNCIONÁRIO' AS Tipo,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
         c.CardNumber AS CardNumber,
         NULLIF(LTRIM(RTRIM(uf.UF33)), '') AS Placa,
         NULLIF(LTRIM(RTRIM(uf.UF35)), '') AS Modelo,
@@ -10577,7 +12223,7 @@ WITH Persons AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
-        'TERCEIRO' AS Tipo,
+        'VISITANTE' AS Tipo,
         c.CardNumber AS CardNumber,
         NULL AS Placa,
         NULL AS Modelo,
@@ -10615,7 +12261,7 @@ ORDER BY CardNumber, Name;");
     {
         var tipo = r.IsDBNull(5) ? null : r.GetString(5);
         var empresa = r.IsDBNull(4) ? null : r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         list.Add(new
         {
@@ -10684,7 +12330,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -10701,7 +12347,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -10824,7 +12470,7 @@ WHERE
     {
         var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
         var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         items.Add(new
         {
@@ -10878,7 +12524,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -10895,7 +12541,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -11015,7 +12661,7 @@ WHERE
     {
         var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
         var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         items.Add(new
         {
@@ -11051,7 +12697,7 @@ app.MapGet("/api/access/by-document/export", async (HttpContext http, string doc
     var connStr = GetConn("CMS");
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
     string fileName = $"acessos-{docDigits}.{fmt}";
 
     static string Csv(string? s)
@@ -11099,7 +12745,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -11116,7 +12762,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -11195,7 +12841,7 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
                 {
                     var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
                     var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
-                    if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+                    if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
                         empresa = defaultEmpresa;
                     var line =
                         Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
@@ -11306,7 +12952,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -11323,7 +12969,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -11393,7 +13039,7 @@ ORDER BY TimeTicks DESC;
             {
                 var tipo = rAll.IsDBNull(7) ? null : rAll.GetString(7);
                 var empresa = rAll.IsDBNull(4) ? null : rAll.GetString(4);
-                if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
                     empresa = defaultEmpresa;
                 rows.Add((
                     rAll.GetInt32(0),
@@ -11416,6 +13062,10 @@ ORDER BY TimeTicks DESC;
         }
     }
 
+    // Filtro de tipo (Funcionários/Prestadores). Lido do query string porque o loop
+    // acima já usa uma variável local chamada "tipo".
+    rows = rows.Where(x => MatchTipoCadastro(x.Tipo, http.Request.Query["tipo"].ToString())).ToList();
+
     if (fmt == "xlsx")
     {
         var cliInfoX = await GetReportClientInfoAsync(http);
@@ -11436,9 +13086,22 @@ ORDER BY TimeTicks DESC;
             ));
         }
         var criteria = $"Documento: {docRaw} • Tipo: {modeNorm} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
-        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", startDt, endDt, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, coverPortrait, reportPortrait);
+        var (cpX, rpX) = GetPdfOrientationFlags(http);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", startDt, endDt, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, cpX, rpX), cliInfoX.Name, "CPF (Cadastro/Acessos)", startDt, endDt, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "docx" || fmt == "word")
+    {
+        var cliInfoW = await GetReportClientInfoAsync(http);
+        var criteriaW = $"Documento: {docRaw} • Tipo: {modeNorm} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
+        var mappedW = rows.Select(r => new string?[] {
+            r.Transito.ToString("dd/MM/yyyy HH:mm:ss"), r.Terminal, r.Direcao, r.Descricao, r.Nome,
+            string.IsNullOrWhiteSpace(r.Matricula) ? r.CPF : r.Matricula, r.Cartao, r.Tipo, r.Empresa, "GRANTED"
+        }).ToList();
+        var bytesW = BuildDocxReport(cliInfoW.Name, "CPF (Cadastro/Acessos)", startDt, endDt, GetReportUser(http), criteriaW,
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "cpf-cadastro-acessos.docx");
     }
     var cliInfoPdf = await GetReportClientInfoAsync(http);
     var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
@@ -11457,7 +13120,7 @@ app.MapGet("/api/access/by-document/all/export", async (HttpContext http, string
     var connStr = GetConn("CMS");
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
     string fileName = $"acessos-{docDigits}-all.{fmt}";
 
     static string Csv(string? s)
@@ -11567,7 +13230,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -11584,7 +13247,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         uf.UF2 AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -11660,7 +13323,7 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
                 {
                 var tipo = _r.IsDBNull(7) ? null : _r.GetString(7);
                 var empresa = _r.IsDBNull(4) ? null : _r.GetString(4);
-                if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
                     empresa = defaultEmpresa;
                     var line =
                         Csv(_r.IsDBNull(5) ? null : _r.GetString(5)) + "," +
@@ -11820,9 +13483,17 @@ WHERE
         if (fmt == "xlsx")
         {
             var clientInfoEmpty = await GetReportClientInfoAsync(http);
-            var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-            var bytesX = BuildDoorXlsx(clientInfoEmpty.Name, "CPF (Cadastro/Acessos)", null, null, Array.Empty<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)>(), GetReportUser(http), ShouldIncludeCover(http), "Documento sem eventos no período", coverPortrait, reportPortrait);
+            var (cpY, rpY) = GetPdfOrientationFlags(http);
+            var bytesX = AddXlsxChrome(BuildDoorXlsx(clientInfoEmpty.Name, "CPF (Cadastro/Acessos)", null, null, Array.Empty<(string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? Status)>(), GetReportUser(http), ShouldIncludeCover(http), "Documento sem eventos no período", cpY, rpY), clientInfoEmpty.Name, "CPF (Cadastro/Acessos)", null, null, GetReportUser(http), "Documento sem eventos no período", ShouldIncludeCover(http));
             return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+        if (fmt == "docx" || fmt == "word")
+        {
+            var cliInfoW = await GetReportClientInfoAsync(http);
+            var bytesW = BuildDocxReport(cliInfoW.Name, "CPF (Cadastro/Acessos)", null, null, GetReportUser(http), "Documento sem eventos no período",
+                new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+                new List<string?[]>(), ShouldIncludeCover(http));
+            return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "cpf-cadastro-acessos.docx");
         }
         var reportClientInfo = await GetReportClientInfoAsync(http);
         var (cp, rp) = GetPdfOrientationFlags(http);
@@ -11847,7 +13518,7 @@ WITH People AS (
         e.PreferredName AS CPF,
         e.Identifier AS Matricula,
         NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-        'FUNCIONÁRIO' AS TipoPessoa,
+        CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM Employee e
     LEFT JOIN EmployeeUserFields uf ON uf.SbiID = e.SbiID
@@ -11864,7 +13535,7 @@ WITH People AS (
         x.PreferredName AS CPF,
         x.Identifier AS Matricula,
         COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(uf.UF2)), '')) AS Empresa,
-        'TERCEIRO' AS TipoPessoa,
+        'VISITANTE' AS TipoPessoa,
         c.CardNumber AS CardNumber
     FROM ExternalRegular x
     LEFT JOIN ExternalRegularUserFields uf ON uf.SbiID = x.SbiID
@@ -11935,7 +13606,7 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
             {
                 var tipo = rAll.IsDBNull(7) ? null : rAll.GetString(7);
                 var empresa = rAll.IsDBNull(4) ? null : rAll.GetString(4);
-                if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
                     empresa = defaultEmpresa;
                 rows.Add((
                     rAll.GetInt32(0),
@@ -11958,6 +13629,10 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
         }
     }
 
+    // Filtro de tipo (Funcionários/Prestadores). Lido do query string porque o loop
+    // acima já usa uma variável local chamada "tipo".
+    rows = rows.Where(x => MatchTipoCadastro(x.Tipo, http.Request.Query["tipo"].ToString())).ToList();
+
     if (fmt == "xlsx")
     {
         var cliInfoX = await GetReportClientInfoAsync(http);
@@ -11978,9 +13653,22 @@ ORDER BY CardNumber ASC, TimeTicks DESC;
             ));
         }
         var criteria = $"Documento: {docRaw} • Tipo: {modeNorm} • Todos os períodos";
-        var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
-        var bytesX = BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", null, null, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, coverPortrait, reportPortrait);
+        var (cpZ, rpZ) = GetPdfOrientationFlags(http);
+        var bytesX = AddXlsxChrome(BuildDoorXlsx(cliInfoX.Name, "CPF (Cadastro/Acessos)", null, null, mapped, GetReportUser(http), ShouldIncludeCover(http), criteria, cpZ, rpZ), cliInfoX.Name, "CPF (Cadastro/Acessos)", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (fmt == "docx" || fmt == "word")
+    {
+        var cliInfoW = await GetReportClientInfoAsync(http);
+        var criteriaW = $"Documento: {docRaw} • Tipo: {modeNorm} • Todos os períodos";
+        var mappedW = rows.Select(r => new string?[] {
+            r.Transito.ToString("dd/MM/yyyy HH:mm:ss"), r.Terminal, r.Direcao, r.Descricao, r.Nome,
+            string.IsNullOrWhiteSpace(r.Matricula) ? r.CPF : r.Matricula, r.Cartao, r.Tipo, r.Empresa, "GRANTED"
+        }).ToList();
+        var bytesW = BuildDocxReport(cliInfoW.Name, "CPF (Cadastro/Acessos)", null, null, GetReportUser(http), criteriaW,
+            new[] { "DATA/HORA", "TAG", "ACESSO", "EVENTO", "NOME COMPLETO", "MATRÍCULA", "CARTÃO", "TIPO", "EMPRESA", "STATUS" },
+            mappedW, ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "cpf-cadastro-acessos.docx");
     }
 
     var clientInfo = await GetReportClientInfoAsync(http);
@@ -12004,7 +13692,7 @@ SELECT DISTINCT
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
     NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-    'FUNCIONÁRIO' AS Tipo,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -12019,7 +13707,7 @@ SELECT DISTINCT
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
     COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
-    'TERCEIRO' AS Tipo,
+    'VISITANTE' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
@@ -12035,7 +13723,7 @@ WHERE c.CardNumber = @card";
     {
         var tipo = r.IsDBNull(5) ? null : r.GetString(5);
         var empresa = r.IsDBNull(4) ? null : r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         list.Add(new
         {
@@ -12057,7 +13745,7 @@ app.MapGet("/api/cms/person/by-card-info/export", async (HttpContext http, strin
     var defaultEmpresa = await GetDefaultClientNameAsync();
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -12069,7 +13757,7 @@ SELECT DISTINCT
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
     NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-    'FUNCIONÁRIO' AS Tipo,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -12084,7 +13772,7 @@ SELECT DISTINCT
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
     COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
-    'TERCEIRO' AS Tipo,
+    'VISITANTE' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
@@ -12101,7 +13789,7 @@ ORDER BY CardNumber, Name";
     {
         var tipo = r.IsDBNull(5) ? null : r.GetString(5);
         var empresa = r.IsDBNull(4) ? null : r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         rows.Add((
             Nome: r.IsDBNull(1) ? null : r.GetString(1),
@@ -12114,6 +13802,10 @@ ORDER BY CardNumber, Name";
             Expira: r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
         ));
     }
+
+    // Filtro de tipo (Funcionários/Prestadores). Lido do query string porque o loop
+    // acima já usa uma variável local chamada "tipo".
+    rows = rows.Where(x => MatchTipoCadastro(x.Tipo, http.Request.Query["tipo"].ToString())).ToList();
 
     var fileCard = DigitsOnly(card);
     var fileName = $"cracha-info-{(string.IsNullOrWhiteSpace(fileCard) ? "cracha" : fileCard)}.{fmt}";
@@ -12138,8 +13830,16 @@ ORDER BY CardNumber, Name";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildCardInfoXlsx(clientInfo.Name, "Crachá - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildCardInfoXlsx(clientInfo.Name, "Crachá - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Crachá - Informação de Cadastro", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Crachá - Informação de Cadastro", null, null, GetReportUser(http), criteria,
+            new[] { "NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ", "CADASTRO", "EXPIRAÇÃO" },
+            rows.Select(x => new string?[] { x.Nome, x.Cpf, x.Matricula, x.Empresa, x.Tipo, x.Cracha, x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"), x.Expira?.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "cracha-info.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -12160,7 +13860,7 @@ SELECT DISTINCT
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
     NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-    'FUNCIONÁRIO' AS Tipo,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -12175,7 +13875,7 @@ SELECT DISTINCT
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
     COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
-    'TERCEIRO' AS Tipo,
+    'VISITANTE' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
@@ -12191,7 +13891,7 @@ WHERE x.Identifier = @matricula";
     {
         var tipo = r.IsDBNull(5) ? null : r.GetString(5);
         var empresa = r.IsDBNull(4) ? null : r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         list.Add(new
         {
@@ -12213,7 +13913,7 @@ app.MapGet("/api/cms/person/by-matricula-info/export", async (HttpContext http, 
     var defaultEmpresa = await GetDefaultClientNameAsync();
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -12225,7 +13925,7 @@ SELECT DISTINCT
     e.PreferredName AS CPF,
     e.Identifier AS Matricula,
     NULLIF(LTRIM(RTRIM(uf.UF2)), '') AS Empresa,
-    'FUNCIONÁRIO' AS Tipo,
+    CASE WHEN TRY_CONVERT(int, uf.UF6) = 20001 THEN 'FUNCIONÁRIO' WHEN TRY_CONVERT(int, uf.UF6) = 20002 THEN 'PRESTADOR DE SERVIÇO' ELSE 'NÃO CLASSIFICADO' END AS Tipo,
     c.CardNumber,
     e.CommencementDateTime AS Cadastro,
     e.ExpiryDateTime AS Expira
@@ -12240,7 +13940,7 @@ SELECT DISTINCT
     x.PreferredName AS CPF,
     x.Identifier AS Matricula,
     COALESCE(ec.Name, NULLIF(LTRIM(RTRIM(ux.UF2)), '')) AS Empresa,
-    'TERCEIRO' AS Tipo,
+    'VISITANTE' AS Tipo,
     c.CardNumber,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira
@@ -12257,7 +13957,7 @@ ORDER BY Matricula, Name, CardNumber";
     {
         var tipo = r.IsDBNull(5) ? null : r.GetString(5);
         var empresa = r.IsDBNull(4) ? null : r.GetString(4);
-        if (string.IsNullOrWhiteSpace(empresa) && string.Equals(tipo, "FUNCIONÁRIO", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(empresa) && !string.Equals(tipo, "VISITANTE", StringComparison.OrdinalIgnoreCase))
             empresa = defaultEmpresa;
         rows.Add((
             Nome: r.IsDBNull(1) ? null : r.GetString(1),
@@ -12270,6 +13970,10 @@ ORDER BY Matricula, Name, CardNumber";
             Expira: r.IsDBNull(8) ? (DateTime?)null : r.GetDateTime(8)
         ));
     }
+
+    // Filtro de tipo (Funcionários/Prestadores). Lido do query string porque o loop
+    // acima já usa uma variável local chamada "tipo".
+    rows = rows.Where(x => MatchTipoCadastro(x.Tipo, http.Request.Query["tipo"].ToString())).ToList();
 
     var fileMat = DigitsOnly(matricula);
     var fileName = $"matricula-info-{(string.IsNullOrWhiteSpace(fileMat) ? "matricula" : fileMat)}.{fmt}";
@@ -12296,8 +14000,16 @@ ORDER BY Matricula, Name, CardNumber";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildMatriculaInfoXlsx(clientInfo.Name, "Matrícula - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildMatriculaInfoXlsx(clientInfo.Name, "Matrícula - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Matrícula - Informação de Cadastro", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Matrícula - Informação de Cadastro", null, null, GetReportUser(http), criteria,
+            new[] { "NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ", "CADASTRO", "EXPIRAÇÃO" },
+            rows.Select(x => new string?[] { x.Nome, x.Cpf, x.Matricula, x.Empresa, x.Tipo, x.Cracha, x.Cadastro?.ToString("dd/MM/yyyy HH:mm:ss"), x.Expira?.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "matricula-info.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -12402,7 +14114,7 @@ app.MapGet("/api/cms/transit/by-matricula/export", async (HttpContext http, stri
 {
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -12488,8 +14200,16 @@ ORDER BY q.TRANSIT_DATE DESC";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Matrícula", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildTransitXlsx(clientInfo.Name, "Trânsito por Matrícula", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Trânsito por Matrícula", start, end, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Trânsito por Matrícula", start, end, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "EMPRESA", "TERMINAL", "TERMINAL DESC.", "DATA/HORA" },
+            rows.Select(x => new string?[] { x.Cracha, x.Nome, x.Empresa, x.Terminal, x.TerminalDescription, x.DataHora.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "transito-matricula.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -12596,7 +14316,7 @@ app.MapGet("/api/cms/transit/by-card-period/export", async (HttpContext http, st
 {
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -12682,8 +14402,16 @@ ORDER BY q.TRANSIT_DATE DESC";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Crachá", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildTransitXlsx(clientInfo.Name, "Trânsito por Crachá", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Trânsito por Crachá", start, end, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Trânsito por Crachá", start, end, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "EMPRESA", "TERMINAL", "TERMINAL DESC.", "DATA/HORA" },
+            rows.Select(x => new string?[] { x.Cracha, x.Nome, x.Empresa, x.Terminal, x.TerminalDescription, x.DataHora.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "transito-cracha.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -12854,7 +14582,7 @@ app.MapGet("/api/cms/company/by-name-info/export", async (HttpContext http, stri
 {
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -12927,8 +14655,16 @@ ORDER BY Empresa, Matricula, Name, CardNumber";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildCompanyInfoXlsx(clientInfo.Name, "Empresa - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildCompanyInfoXlsx(clientInfo.Name, "Empresa - Informação de Cadastro", rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Empresa - Informação de Cadastro", null, null, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Empresa - Informação de Cadastro", null, null, GetReportUser(http), criteria,
+            new[] { "NOME", "CPF", "MATRÍCULA", "EMPRESA", "TIPO", "CRACHÁ" },
+            rows.Select(x => new string?[] { x.Nome, x.Cpf, x.Matricula, x.Empresa, x.Tipo, x.Cracha }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "empresa-info.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -13017,7 +14753,7 @@ app.MapGet("/api/cms/transit/by-empresa/export", async (HttpContext http, string
 {
     var fmt = (format ?? "csv").Trim().ToLowerInvariant();
     if (fmt == "excel") fmt = "xlsx";
-    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf") return Results.BadRequest(new { error = "Formato inválido" });
+    if (fmt != "csv" && fmt != "xlsx" && fmt != "pdf" && fmt != "docx" && fmt != "word") return Results.BadRequest(new { error = "Formato inválido" });
 
     using var cn = new SqlConnection(GetConn("CMS"));
     await cn.OpenAsync();
@@ -13094,8 +14830,16 @@ ORDER BY q.CardNumber ASC, q.TRANSIT_DATE DESC";
     var clientInfo = await GetReportClientInfoAsync(http);
     if (fmt == "xlsx")
     {
-        var bytesX = BuildTransitXlsx(clientInfo.Name, "Trânsito por Empresa", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildTransitXlsx(clientInfo.Name, "Trânsito por Empresa", start, end, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Trânsito por Empresa", start, end, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Trânsito por Empresa", start, end, GetReportUser(http), criteria,
+            new[] { "CRACHÁ", "NOME", "EMPRESA", "TERMINAL", "TERMINAL DESC.", "DATA/HORA" },
+            rows.Select(x => new string?[] { x.Cracha, x.Nome, x.Empresa, x.Terminal, x.TerminalDescription, x.DataHora.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "transito-empresa.docx");
     }
 
     var (cp, rp) = GetPdfOrientationFlags(http);
@@ -13290,8 +15034,24 @@ ORDER BY hv.VISIT_START;";
     var criteria = $"Documento: {documento} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
     if (fmt == "xlsx")
     {
-        var bytesX = BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Visitantes", startDt, endDt, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Visitantes", startDt, endDt, GetReportUser(http), criteria,
+            new[] { "NOME", "DOCUMENTO", "CONTATO", "VISITOU", "TELEFONE", "EMAIL", "ENTRADA", "SAÍDA" },
+            rows.Select(x => new string?[] { x.Nome, x.Documento, x.Contato, x.Visitou, x.Telefone, x.Email, x.Entrada?.ToString("dd/MM/yyyy HH:mm:ss"), x.Saida?.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "visitantes.docx");
+    }
+    if (string.Equals(format, "docx", StringComparison.OrdinalIgnoreCase) || string.Equals(format, "word", StringComparison.OrdinalIgnoreCase))
+    {
+        var bytesW = BuildDocxReport(clientInfo.Name, "Visitantes", startDt, endDt, GetReportUser(http), criteria,
+            new[] { "NOME", "DOCUMENTO", "CONTATO", "VISITOU", "TELEFONE", "EMAIL", "ENTRADA", "SAÍDA" },
+            rows.Select(x => new string?[] { x.Nome, x.Documento, x.Contato, x.Visitou, x.Telefone, x.Email, x.Entrada?.ToString("dd/MM/yyyy HH:mm:ss"), x.Saida?.ToString("dd/MM/yyyy HH:mm:ss") }).ToList(),
+            ShouldIncludeCover(http));
+        return Results.File(bytesW, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "visitantes.docx");
     }
     if (fmt == "pdf")
     {
@@ -13385,7 +15145,7 @@ ORDER BY hv.VISIT_START;";
     var criteria = $"Empresa: {empresa} • Período: {startDt:dd/MM/yyyy HH:mm:ss} - {NormalizeDisplayEnd(startDt, endDt):dd/MM/yyyy HH:mm:ss}";
     if (fmt == "xlsx")
     {
-        var bytesX = BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria);
+        var bytesX = AddXlsxChrome(BuildVisitorsXlsx(clientInfo.Name, "Visitantes", startDt, endDt, rows, GetReportUser(http), ShouldIncludeCover(http), criteria), clientInfo.Name, "Visitantes", startDt, endDt, GetReportUser(http), criteria, ShouldIncludeCover(http));
         return Results.File(bytesX, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
     if (fmt == "pdf")
@@ -13463,10 +15223,10 @@ app.MapGet("/api/cms/external/search", async (string? matricula, string? empresa
     await cn.OpenAsync();
     using var cmd = cn.CreateCommand();
     var where = new List<string>();
-    if (!string.IsNullOrWhiteSpace(matricula)) { where.Add("x.Identifier = @matricula"); cmd.Parameters.Add(new SqlParameter("@matricula", SqlDbType.VarChar) { Value = matricula }); }
-    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name = @empresa OR ux.UF2 = @empresa)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
+    if (!string.IsNullOrWhiteSpace(matricula)) { where.AddRange(BuildDocumentoFilter(cmd, "x", "matricula", matricula)); }
+    if (!string.IsNullOrWhiteSpace(empresa)) { where.Add("(ec.Name COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI OR ux.UF2 COLLATE Latin1_General_CI_AI = @empresa COLLATE Latin1_General_CI_AI)"); cmd.Parameters.Add(new SqlParameter("@empresa", SqlDbType.VarChar) { Value = empresa }); }
     var whereSql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-    cmd.CommandText = $@"
+    cmd.CommandText = ApplyDbObjectMappings($@"
 SELECT
     x.SbiID,
     x.Name,
@@ -13474,9 +15234,9 @@ SELECT
     x.PreferredName,
     x.Identifier,
     COALESCE(ec.Name, ux.UF2) as Empresa,
-    CAST(c.CardNumber AS varchar(100)) AS CardNumber,
-    CASE WHEN TRY_CONVERT(int, ux.UF6) = 20001 THEN 'FUNCIONÁRIO' ELSE 'TERCEIRO' END AS Tipo,
-    COALESCE(TRY_CONVERT(int, ux.UF6), 20002) AS CodigoTipo,
+    COALESCE(CAST(c.CardNumber AS varchar(100)), la.CardEv) AS CardNumber,
+    'VISITANTE' AS Tipo,
+    20002 AS CodigoTipo,
     x.CommencementDateTime AS Cadastro,
     x.ExpiryDateTime AS Expira,
     CASE
@@ -13495,18 +15255,31 @@ LEFT JOIN (
 ) c ON c.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
 LEFT JOIN (
-    SELECT t0.SBI_ID, MAX(t0.TRANSIT_DATE) AS LastAccess
-    FROM HA_TRANSIT t0
-    GROUP BY t0.SBI_ID
+    SELECT
+        t0.CardHolderID AS SBI_ID,
+        MAX(DATEADD(HOUR, -3, emsevents.dbo.UTCFILETIMEToDateTime(t0.[Time]))) AS LastAccess,
+        MAX(CAST(t0.CardNumber AS varchar(100))) AS CardEv
+    FROM [EMSEVENTS].dbo.Events t0
+    WHERE t0.Category = 16 AND t0.CardHolderID IS NOT NULL
+    GROUP BY t0.CardHolderID
 ) la ON la.SBI_ID = x.SbiID
 {whereSql}
-ORDER BY {orderCol} {orderDir}
+ORDER BY (
+    CASE WHEN c.CardNumber IS NULL AND la.CardEv IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(x.Name)),'') IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(x.Identifier)),'') IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN x.CommencementDateTime IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN x.ExpiryDateTime IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN la.LastAccess IS NULL THEN 1 ELSE 0 END
+    + CASE WHEN NULLIF(LTRIM(RTRIM(COALESCE(ec.Name, ux.UF2, ''))),'') IS NULL THEN 1 ELSE 0 END
+) ASC,
+{orderCol} {orderDir}
 OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY;
 SELECT COUNT(1)
 FROM ExternalRegular x
 LEFT JOIN ExternalRegularUserFields ux ON ux.SbiID = x.SbiID
 LEFT JOIN ExternalCompany ec ON ec.ExternalCompanyID = x.ExternalCompanyID
-{whereSql}";
+{whereSql}");
     cmd.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
     cmd.Parameters.Add(new SqlParameter("@pageSize", SqlDbType.Int) { Value = pageSize });
     using var r = await cmd.ExecuteReaderAsync();
@@ -13671,4 +15444,4 @@ sealed class ExportJob
     public CancellationTokenSource? Cts { get; set; }
 }
 
-record DoorGeneralExportJobRequest(string Start, string End, string? SourceList, string? Name, string Format);
+record DoorGeneralExportJobRequest(string Start, string End, string? SourceList, string? Name, string? Documento, string Format);

@@ -1,8 +1,14 @@
 import React, { useMemo, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, setProgressId } from '../api'
 import { DOOR_LOCATIONS } from '../doorLocations'
 
-type QuickKind = 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical'
+// Logomarcas dos formatos de exportação (troque os arquivos em ReportFlex.WebApp/img/ mantendo os nomes).
+const excelLogoUrl = new URL('../../img/excel.svg', import.meta.url).href
+const pdfLogoUrl = new URL('../../img/pdf.svg', import.meta.url).href
+const csvLogoUrl = new URL('../../img/csv.svg', import.meta.url).href
+const wordLogoUrl = new URL('../../img/word.svg', import.meta.url).href
+
+type QuickKind = 'access-agg' | 'transit-period' | 'population' | 'eventos-claviculario' | 'employees' | 'external' | 'card-by-cpf' | 'cpf' | 'matricula' | 'empresa' | 'cracha' | 'nivel' | 'visitantes' | 'door-critical' | 'bimestral-funcionario' | 'bimestral-visitante'
 type Mode = 'prontas' | 'personalizadas'
 type Dataset =
   | 'access-agg'
@@ -20,6 +26,8 @@ type Dataset =
   | 'visitors'
   | 'door-critical'
   | 'db-table'
+  | 'bimestral-funcionario'
+  | 'bimestral-visitante'
 
 function pad2(n: number){ return String(n).padStart(2, '0') }
 function pad4(n: number){ return String(n).padStart(4, '0') }
@@ -238,12 +246,14 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Matricula', label: 'MATRÍCULA' },
     { key: 'CodigoChave', label: 'CÓD. CHAVE' },
     { key: 'ChaveDescricao', label: 'CHAVE' },
-    { key: 'Descricao', label: 'DESCRIÇÃO' }
+    { key: 'Descricao', label: 'DESCRIÇÃO' },
+    { key: 'Operador', label: 'OPERADOR' }
   ],
   'employees': [
     { key: 'CardNumber', label: 'CRACHÁ' },
     { key: 'Name', label: 'NOME' },
     { key: 'Identifier', label: 'MATRÍCULA' },
+    { key: 'Tipo', label: 'TIPO' },
     { key: 'StatusCadastro', label: 'STATUS' },
     { key: 'Cadastro', label: 'CADASTRO' },
     { key: 'Expira', label: 'EXPIRAÇÃO' },
@@ -339,12 +349,55 @@ const DATASET_COLUMNS: Record<Dataset, { key: string, label: string }[]> = {
     { key: 'Empresa', label: 'EMPRESA' },
     { key: 'StatusAcessoDisplay', label: 'STATUS' }
   ],
-  'db-table': []
+  'db-table': [],
+  'bimestral-funcionario': [
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CpfDocumento', label: 'CPF/DOCUMENTO' },
+    { key: 'StatusCadastro', label: 'STATUS CADASTRO' },
+    { key: 'NivelAcesso', label: 'NÍVEL DE ACESSO' },
+    { key: 'ComentarioNivel', label: 'COMENTÁRIO' },
+    { key: 'DataExpiracaoNivel', label: 'EXPIRAÇÃO NÍVEL' },
+    { key: 'Empresa', label: 'EMPRESA' }
+  ],
+  'bimestral-visitante': [
+    { key: 'CardNumber', label: 'CRACHÁ' },
+    { key: 'NomeCompleto', label: 'NOME' },
+    { key: 'Matricula', label: 'MATRÍCULA' },
+    { key: 'Tipo', label: 'TIPO' },
+    { key: 'CpfDocumento', label: 'CPF/DOCUMENTO' },
+    { key: 'StatusCadastro', label: 'STATUS CADASTRO' },
+    { key: 'NivelAcesso', label: 'NÍVEL DE ACESSO' },
+    { key: 'ComentarioNivel', label: 'COMENTÁRIO' },
+    { key: 'DataExpiracaoNivel', label: 'EXPIRAÇÃO NÍVEL' },
+    { key: 'Empresa', label: 'EMPRESA' }
+  ]
 }
+
+const READY_OPTIONS: { key: QuickKind, label: string }[] = [
+  { key: 'access-agg', label: 'Acessos Agregados' },
+  { key: 'transit-period', label: 'Trânsito por Período' },
+  { key: 'population', label: 'População' },
+  { key: 'eventos-claviculario', label: 'Claviculário' },
+  { key: 'door-critical', label: 'Eventos de Porta' },
+  { key: 'employees', label: 'Funcionários' },
+  { key: 'external', label: 'Externos' },
+  { key: 'card-by-cpf', label: 'Buscar Crachá' },
+  { key: 'cpf', label: 'Cadastro/Acessos' },
+  { key: 'matricula', label: 'Matrícula' },
+  { key: 'empresa', label: 'Empresa' },
+  { key: 'cracha', label: 'Crachá' },
+  { key: 'nivel', label: 'Nível de Acesso' },
+  { key: 'visitantes', label: 'Visitantes' },
+  { key: 'bimestral-funcionario', label: 'Bimestral Funcionário' },
+  { key: 'bimestral-visitante', label: 'Bimestral Visitante' }
+]
 
 export function QueriesPage(){
   const [mode, setMode] = useState<Mode>('prontas')
-  const [quickKind, setQuickKind] = useState<QuickKind>('access-agg')
+  const [quickKind, setQuickKind] = useState<QuickKind | ''>('')
   const [queriesCfg, setQueriesCfg] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -352,7 +405,7 @@ export function QueriesPage(){
   const [exportMinimized, setExportMinimized] = useState(false)
   const [exportMaximized, setExportMaximized] = useState(false)
   const [exportStage, setExportStage] = useState<'generating'|'ready'|'error'|'loading-background'|'done'>('generating')
-  const [exportFmt, setExportFmt] = useState<'csv'|'xlsx'|'pdf'>('pdf')
+  const [exportFmt, setExportFmt] = useState<'csv'|'xlsx'|'pdf'|'docx'>('pdf')
   const [exportFileName, setExportFileName] = useState<string>('')
   const [exportUrl, setExportUrl] = useState<string | null>(null)
   const [exportErr, setExportErr] = useState<string | null>(null)
@@ -382,8 +435,11 @@ export function QueriesPage(){
   const [pdfExportedRun, setPdfExportedRun] = useState<number | null>(null)
   const [lastSuccessfulRun, setLastSuccessfulRun] = useState(0)
   const [progressActive, setProgressActive] = useState(false)
+  const [lockedResult, setLockedResult] = useState(false)
   const [progress, setProgress] = useState(0)
   const progressTimerRef = React.useRef<any>(null)
+  const progressIdRef = React.useRef<string>('')
+  const progressGoalRef = React.useRef<number>(0)
   const [resultTotal, setResultTotal] = useState<number | null>(null)
   const [reportOptions, setReportOptions] = useState<{ csv: boolean, xlsx: boolean, excel: boolean, pdf: boolean, txt: boolean, word: boolean, customQueries: boolean }>({ csv: false, xlsx: true, excel: true, pdf: true, txt: false, word: false, customQueries: true })
 
@@ -395,13 +451,28 @@ export function QueriesPage(){
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 50
   const maxPreview = 1000
-  const [cpfObter, setCpfObter] = useState<'info'|'todos'|'catracas-faciais'>('info')
+  const [cpfObter, setCpfObter] = useState<'info'|'todos'>('info')
   const [matriculaObter, setMatriculaObter] = useState<'info'|'todos'|'catracas'>('info')
   const [empresaObter, setEmpresaObter] = useState<'info'|'todos'>('info')
   const [crachaObter, setCrachaObter] = useState<'info'|'todos'|'catracas'>('info')
   const [nivelObter, setNivelObter] = useState<'todos'|'acessos'>('todos')
   const [visitantesObter, setVisitantesObter] = useState<'documento'|'empresa'>('documento')
   const [cpfSemPeriodo, setCpfSemPeriodo] = useState<boolean>(false)
+  const [empTipoFunc, setEmpTipoFunc] = useState<boolean>(false)
+  const [empTipoPrest, setEmpTipoPrest] = useState<boolean>(false)
+  const [empStatusAtivo, setEmpStatusAtivo] = useState<boolean>(false)
+  const [empStatusInativo, setEmpStatusInativo] = useState<boolean>(false)
+  const [filtroEmpresa, setFiltroEmpresa] = useState('')
+  const [filtroNivel, setFiltroNivel] = useState('')
+  // Filtros da barra de "Eventos de Porta" (aplicados na tabela e na exportação)
+  const [dTag, setDTag] = useState('')
+  const [dAcesso, setDAcesso] = useState('')
+  const [dEvento, setDEvento] = useState('')
+  const [dNome, setDNome] = useState('')
+  const [dMatricula, setDMatricula] = useState('')
+  const [dCracha, setDCracha] = useState('')
+  const [dTipo, setDTipo] = useState('')
+  const [dStatus, setDStatus] = useState('')
   const [dbInfo, setDbInfo] = useState<any>(null)
   const [dbInfoErr, setDbInfoErr] = useState<string | null>(null)
   const [dbTableDb, setDbTableDb] = useState<'CMS'|'Logins'|'EMS'>('CMS')
@@ -416,11 +487,14 @@ export function QueriesPage(){
   const [doorSelectedSources, setDoorSelectedSources] = useState<string[]>([])
   const [doorPickSource, setDoorPickSource] = useState<string>('')
   const [doorSourceFilter, setDoorSourceFilter] = useState<string>('')
+  const [doorSuggestOpen, setDoorSuggestOpen] = useState(false)
+  const doorSuggestRef = React.useRef<HTMLDivElement | null>(null)
   const [doorPickerOpen, setDoorPickerOpen] = useState(false)
   const [doorPickerAll, setDoorPickerAll] = useState(true)
   const [doorPickerFilter, setDoorPickerFilter] = useState('')
   const [doorPickerSelected, setDoorPickerSelected] = useState<string[]>([])
   const [doorName, setDoorName] = useState('')
+  const [doorDocumento, setDoorDocumento] = useState('')
   const [doorSite, setDoorSite] = useState('')
 
   const level = typeof window !== 'undefined' ? localStorage.getItem('rf_level') : null
@@ -459,7 +533,7 @@ export function QueriesPage(){
     }
   }
 
-  const readResultsCache = () => {
+  const readResultsCache = (): { v: 1, owner: string, day: string, items: Record<string, QueryResultsEntry> } => {
     try{
       const raw = localStorage.getItem(resultsCacheKey)
       const st = raw ? JSON.parse(raw) : null
@@ -502,6 +576,65 @@ export function QueriesPage(){
     }catch{}
   }
 
+  // Última consulta EXECUTADA na sessão: sobrevive à navegação entre páginas e a ativar
+  // outros switches sem executar; só é substituída quando outra consulta é executada.
+  type LastRunMarker = {
+    owner: string
+    ts: number
+    key: string
+    mode: 'prontas' | 'personalizadas'
+    quickKind: string
+    dataset: string
+    filters: any
+    cpfObter: string
+    cpfSemPeriodo: boolean
+    matriculaObter: string
+    empresaObter: string
+    crachaObter: string
+    nivelObter: string
+    visitantesObter: string
+    doorMode: string
+    doorName: string
+    doorDocumento: string
+    doorSite: string
+  }
+  const lastRunKey = 'rf_queries_last_run_v1'
+  const lastRunStableKey = '__last_run__'
+  const readLastRun = (): LastRunMarker | null => {
+    try{
+      const raw = sessionStorage.getItem(lastRunKey)
+      if (!raw) return null
+      const st = JSON.parse(raw) as LastRunMarker
+      if (!st || st.owner !== getResultsOwner()) return null
+      return st
+    }catch{
+      return null
+    }
+  }
+  const writeLastRun = (m: LastRunMarker) => {
+    try{ sessionStorage.setItem(lastRunKey, JSON.stringify(m)) }catch{}
+  }
+
+  // Confere se o contexto atual corresponde à última consulta executada na sessão.
+  const lastRunCtxMatches = (m: LastRunMarker) => {
+    if (m.mode !== mode) return false
+    if (mode === 'personalizadas') return m.dataset === dataset
+    return m.quickKind === quickKind
+  }
+  // Restaura o resultado da última execução. Tenta a chave do contexto atual e, se
+  // não houver, cai para a última consulta executada (a chave do contexto pode
+  // divergir após desligar/religar o switch sem executar, ou ao voltar de outra página).
+  const resolveCachedEntry = (key: string) => {
+    const direct = loadResultsEntry(key)
+    if (direct && Array.isArray(direct.data) && direct.data.length > 0) return direct
+    const lr = readLastRun()
+    if (lr && lastRunCtxMatches(lr)) {
+      const alt = loadResultsEntry(lr.key) || loadResultsEntry(lastRunStableKey)
+      if (alt && Array.isArray(alt.data) && alt.data.length > 0) return alt
+    }
+    return null
+  }
+
   const currentQueryKey = useMemo(() => {
     const normalize = (value: any): any => {
       if (value == null) return null
@@ -538,6 +671,7 @@ export function QueriesPage(){
         doorAllSources,
         doorSelectedSources: [...doorSelectedSources].sort(),
         doorName,
+        doorDocumento,
         doorSite
       })
     }
@@ -566,6 +700,7 @@ export function QueriesPage(){
     doorAllSources,
     doorSelectedSources,
     doorName,
+    doorDocumento,
     doorSite,
     cpfObter,
     cpfSemPeriodo,
@@ -576,7 +711,32 @@ export function QueriesPage(){
     visitantesObter
   ])
 
-  const lastQueryKeyRef = React.useRef<string | null>(null)
+  const lastConsultaCtxRef = React.useRef<string | null>(null)
+
+  const markLastRun = () => {
+    try{
+      writeLastRun({
+        owner: getResultsOwner(),
+        ts: Date.now(),
+        key: currentQueryKey,
+        mode,
+        quickKind,
+        dataset,
+        filters,
+        cpfObter,
+        cpfSemPeriodo,
+        matriculaObter,
+        empresaObter,
+        crachaObter,
+        nivelObter,
+        visitantesObter,
+        doorMode,
+        doorName,
+        doorDocumento,
+        doorSite
+      })
+    }catch{}
+  }
   const formatTime = (ts: number) => {
     const d = new Date(ts)
     const hh = String(d.getHours()).padStart(2, '0')
@@ -746,11 +906,10 @@ export function QueriesPage(){
         return
       }
       const raw = localStorage.getItem(cacheKey)
-      if (!raw) return
-      const st = JSON.parse(raw)
-      if (!st || (st.v !== 1 && st.v !== 2)) return
+      const st: any = raw ? JSON.parse(raw) : null
+      if (st && (st.v === 1 || st.v === 2)) {
       if (st.mode === 'prontas' || st.mode === 'personalizadas') setMode(st.mode)
-      if (typeof st.quickKind === 'string') setQuickKind(st.quickKind)
+      // quickKind não é restaurado: a tela sempre abre sem consulta selecionada
       if (typeof st.dataset === 'string') setDataset(st.dataset)
       if (Array.isArray(st.selectedCols)) setSelectedCols(st.selectedCols)
       if (typeof st.searchTerm === 'string') setSearchTerm(st.searchTerm)
@@ -758,7 +917,7 @@ export function QueriesPage(){
       if (typeof st.currentPage === 'number' && st.currentPage > 0) setCurrentPage(st.currentPage)
       if (st.filters && typeof st.filters === 'object') setFilters(st.filters)
       if (typeof st.lastSuccessfulRun === 'number' && st.lastSuccessfulRun > 0) setLastSuccessfulRun(st.lastSuccessfulRun)
-      if (typeof st.doorMode === 'string') setDoorMode(st.doorMode)
+      if (st.doorMode === 'critical' || st.doorMode === 'general' || st.doorMode === 'general-by-name') setDoorMode(st.doorMode)
       if (Array.isArray(st.doorSources)) setDoorSources(st.doorSources)
       if (typeof st.doorAllData === 'boolean') setDoorAllData(st.doorAllData)
       if (typeof st.doorAllSources === 'boolean') setDoorAllSources(st.doorAllSources)
@@ -766,6 +925,7 @@ export function QueriesPage(){
       if (typeof st.doorPickSource === 'string') setDoorPickSource(st.doorPickSource)
       if (typeof st.doorSourceFilter === 'string') setDoorSourceFilter(st.doorSourceFilter)
       if (typeof st.doorName === 'string') setDoorName(st.doorName)
+      if (typeof st.doorDocumento === 'string') setDoorDocumento(st.doorDocumento)
       if (typeof st.doorSite === 'string') setDoorSite(st.doorSite)
       if (st.exportModal === true) setExportModal(true)
       if (typeof st.exportMinimized === 'boolean') setExportMinimized(st.exportMinimized)
@@ -777,24 +937,47 @@ export function QueriesPage(){
       if (typeof st.exportUrl === 'string') setExportUrl(st.exportUrl)
       if (typeof st.exportErr === 'string') setExportErr(st.exportErr)
       if (typeof st.exportJobId === 'string') setExportJobId(st.exportJobId)
-      if (typeof st.cpfObter === 'string') setCpfObter(st.cpfObter)
+      if (st.cpfObter === 'info' || st.cpfObter === 'todos') setCpfObter(st.cpfObter)
       if (typeof st.matriculaObter === 'string') setMatriculaObter(st.matriculaObter)
       if (typeof st.empresaObter === 'string') setEmpresaObter(st.empresaObter)
       if (typeof st.crachaObter === 'string') setCrachaObter(st.crachaObter)
       if (typeof st.nivelObter === 'string') setNivelObter(st.nivelObter)
       if (typeof st.visitantesObter === 'string') setVisitantesObter(st.visitantesObter)
+      }
+
+      // Restaura a última consulta EXECUTADA na sessão (independente de navegar entre páginas)
+      const lastRun = readLastRun()
+      if (lastRun && (lastRun.quickKind || (lastRun.mode === 'personalizadas' && lastRun.dataset))){
+        if (lastRun.mode === 'prontas' || lastRun.mode === 'personalizadas') setMode(lastRun.mode)
+        if (typeof lastRun.dataset === 'string' && lastRun.dataset) setDataset(lastRun.dataset as Dataset)
+        if (lastRun.filters && typeof lastRun.filters === 'object') setFilters(lastRun.filters)
+        if (lastRun.cpfObter === 'info' || lastRun.cpfObter === 'todos') setCpfObter(lastRun.cpfObter)
+        if (typeof lastRun.cpfSemPeriodo === 'boolean') setCpfSemPeriodo(lastRun.cpfSemPeriodo)
+        if (lastRun.matriculaObter === 'info' || lastRun.matriculaObter === 'todos' || lastRun.matriculaObter === 'catracas') setMatriculaObter(lastRun.matriculaObter)
+        if (lastRun.empresaObter === 'info' || lastRun.empresaObter === 'todos') setEmpresaObter(lastRun.empresaObter)
+        if (lastRun.crachaObter === 'info' || lastRun.crachaObter === 'todos' || lastRun.crachaObter === 'catracas') setCrachaObter(lastRun.crachaObter)
+        if (lastRun.nivelObter === 'todos' || lastRun.nivelObter === 'acessos') setNivelObter(lastRun.nivelObter)
+        if (lastRun.visitantesObter === 'documento' || lastRun.visitantesObter === 'empresa') setVisitantesObter(lastRun.visitantesObter)
+        if (lastRun.doorMode === 'critical' || lastRun.doorMode === 'general' || lastRun.doorMode === 'general-by-name' || lastRun.doorMode === 'general-by-site') setDoorMode(lastRun.doorMode)
+        if (typeof lastRun.doorName === 'string') setDoorName(lastRun.doorName)
+        if (typeof lastRun.doorDocumento === 'string') setDoorDocumento(lastRun.doorDocumento)
+        if (typeof lastRun.doorSite === 'string') setDoorSite(lastRun.doorSite)
+        if (lastRun.mode === 'prontas') setQuickKind(lastRun.quickKind as QuickKind)
+      }
     }catch{}
     setTimeout(() => { setRestoredCache(true) }, 0)
   }, [])
 
+  const consultaCtx = mode === 'personalizadas' ? 'p:' + dataset : 'r:' + quickKind
+
   React.useEffect(() => {
     if (!restoredCache) return
+    if (lastConsultaCtxRef.current === consultaCtx) return
+    lastConsultaCtxRef.current = consultaCtx
     try{
       if (!localStorage.getItem('rf_token')) return
-      if (lastQueryKeyRef.current === currentQueryKey) return
-      lastQueryKeyRef.current = currentQueryKey
-      const cached = loadResultsEntry(currentQueryKey)
-      if (cached) {
+      const cached = resolveCachedEntry(currentQueryKey)
+      if (cached && Array.isArray(cached.data) && cached.data.length > 0) {
         setError(null)
         setData(Array.isArray(cached.data) ? cached.data : [])
         setResultTotal(typeof cached.resultTotal === 'number' ? cached.resultTotal : null)
@@ -803,6 +986,7 @@ export function QueriesPage(){
         if (typeof cached.lastPdfSavedPath === 'string' || cached.lastPdfSavedPath === null) setLastPdfSavedPath(cached.lastPdfSavedPath ?? null)
         if (typeof cached.lastPdfFileName === 'string') setLastPdfFileName(cached.lastPdfFileName)
         setHasCachedPdf(!!(cached.lastPdfRequestUrl || cached.lastPdfSavedPath))
+        setLockedResult(true)
       } else {
         setError(null)
         if (pdfUrl && pdfUrl.startsWith('blob:')) {
@@ -817,9 +1001,10 @@ export function QueriesPage(){
         setLastPdfSavedPath(null)
         setLastPdfFileName('')
         setHasCachedPdf(false)
+        setLockedResult(false)
       }
     }catch{}
-  }, [restoredCache, currentQueryKey])
+  }, [restoredCache, consultaCtx])
 
   React.useEffect(() => {
     if (restoredPdfOnceRef.current) return
@@ -836,7 +1021,9 @@ export function QueriesPage(){
         return
       }
       if (!lastSuccessfulRun) return
-      const dataPreview = Array.isArray(data) ? data.slice(0, maxPreview) : []
+      if (!restoredCache) return
+      if (!Array.isArray(data) || data.length === 0) return
+      const dataPreview = data.slice(0, maxPreview)
       const total = typeof resultTotal === 'number' ? resultTotal : (Array.isArray(data) ? data.length : 0)
       const snapshot = {
         v: 2,
@@ -858,6 +1045,7 @@ export function QueriesPage(){
         doorPickSource,
         doorSourceFilter,
         doorName,
+        doorDocumento,
         doorSite,
         exportModal,
         exportMinimized,
@@ -877,7 +1065,7 @@ export function QueriesPage(){
         visitantesObter
       }
       localStorage.setItem(cacheKey, JSON.stringify(snapshot))
-      saveResultsEntry(currentQueryKey, {
+      const resultEntry = {
         ts: Date.now(),
         data: dataPreview,
         resultTotal: total,
@@ -885,9 +1073,13 @@ export function QueriesPage(){
         lastPdfSavedPath,
         lastPdfFileName,
         selectedCols: mode === 'personalizadas' ? selectedCols : undefined
-      })
+      }
+      saveResultsEntry(currentQueryKey, resultEntry)
+      // Cópia estável da última execução: permite reexibir o resultado mesmo que a
+      // chave do contexto atual divirja (desligar/religar switch sem executar).
+      saveResultsEntry(lastRunStableKey, resultEntry)
     }catch{}
-  }, [lastSuccessfulRun, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal, exportMinimized, exportMaximized, exportUrl, exportProgress, exportJobId])
+  }, [lastSuccessfulRun, restoredCache, data, lastPdfRequestUrl, lastPdfSavedPath, exportStage, exportModal, exportMinimized, exportMaximized, exportUrl, exportProgress, exportJobId])
 
   React.useEffect(() => {
     if (!restoredCache) return
@@ -938,10 +1130,11 @@ export function QueriesPage(){
   const exportEnabledCsv = reportOptions.csv
   const exportEnabledXlsx = reportOptions.xlsx || reportOptions.excel
   const exportEnabledPdf = reportOptions.pdf
+  const exportEnabledWord = reportOptions.word
   const spreadsheetExportLabel = reportOptions.excel ? 'Excel' : 'XLSX'
 
   const canExport = useMemo(() => {
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) {
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees' || quickKind === 'external' || quickKind === 'card-by-cpf' || quickKind === 'matricula' || quickKind === 'empresa' || quickKind === 'cracha' || quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante')) {
       return data && data.length > 0
     }
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') {
@@ -955,7 +1148,15 @@ export function QueriesPage(){
 
   const exportAllowsPdf = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees' || quickKind === 'external' || quickKind === 'card-by-cpf' || quickKind === 'matricula' || quickKind === 'empresa' || quickKind === 'cracha' || quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante')) return true
+    if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
+    if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
+    return false
+  }, [canExport, mode, quickKind, dataset, cpfObter])
+
+  const exportAllowsWord = useMemo(() => {
+    if (!canExport) return false
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees' || quickKind === 'external' || quickKind === 'card-by-cpf' || quickKind === 'matricula' || quickKind === 'empresa' || quickKind === 'cracha' || quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -963,7 +1164,7 @@ export function QueriesPage(){
 
   const exportAllowsXlsx = useMemo(() => {
     if (!canExport) return false
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees' || quickKind === 'external' || quickKind === 'card-by-cpf' || quickKind === 'matricula' || quickKind === 'empresa' || quickKind === 'cracha' || quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante')) return true
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
@@ -972,31 +1173,14 @@ export function QueriesPage(){
   const exportAllowsCsv = useMemo(() => {
     if (!canExport) return false
     if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info') return true
-    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees')) return true
+    if (mode === 'prontas' && (quickKind === 'access-agg' || quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical' || quickKind === 'visitantes' || quickKind === 'employees' || quickKind === 'external' || quickKind === 'card-by-cpf' || quickKind === 'matricula' || quickKind === 'empresa' || quickKind === 'cracha' || quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante')) return true
     if (mode === 'personalizadas' && (dataset === 'access-agg' || dataset === 'transit')) return true
     return false
   }, [canExport, mode, quickKind, cpfObter, dataset])
 
-  const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf))
+  const showExportGroup = canExport && ((exportEnabledCsv && exportAllowsCsv) || (exportEnabledXlsx && exportAllowsXlsx) || (exportEnabledPdf && exportAllowsPdf) || (exportEnabledWord && exportAllowsWord))
   const readyQueryEnabled = mode !== 'prontas' ? true : !!queriesCfg[quickKind]
-  const enabledReadyKeys = useMemo(() => {
-    const keys: QuickKind[] = [
-      'access-agg', 'transit-period', 'population', 'eventos-claviculario', 'door-critical',
-      'employees', 'external', 'card-by-cpf',
-      'cpf', 'matricula', 'empresa', 'cracha', 'nivel', 'visitantes'
-    ]
-    return keys.filter(k => !!queriesCfg[k])
-  }, [queriesCfg])
-
-  React.useEffect(() => {
-    if (!restoredCache) return
-    if (mode !== 'prontas') return
-    if (readyQueryEnabled) return
-    if (enabledReadyKeys.length === 0) return
-    setQuickKind(enabledReadyKeys[0])
-    setData([])
-    setError(null)
-  }, [restoredCache, mode, readyQueryEnabled, enabledReadyKeys])
+  const anyReadyEnabled = useMemo(() => READY_OPTIONS.some(o => !!queriesCfg[o.key]), [queriesCfg])
 
   const exportsToday = useMemo(() => {
     const k = todayKey()
@@ -1043,24 +1227,6 @@ export function QueriesPage(){
     }
   }, [doorSelectedSources, doorAllSources])
 
-  const autoRunTimerRef = React.useRef<any>(null)
-  React.useEffect(() => {
-    if (!restoredCache) return
-    if (mode !== 'prontas') return
-    if (quickKind !== 'door-critical') return
-    const cached = loadResultsEntry(currentQueryKey)
-    if (cached) return
-    if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
-    autoRunTimerRef.current = setTimeout(() => {
-      runQuick()
-    }, 400)
-    return () => {
-      if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current)
-      autoRunTimerRef.current = null
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restoredCache, mode, quickKind, doorMode, doorAllSources, doorSelectedSources.join('|'), currentQueryKey])
-
   const doorShortKey = (key: string) => {
     const parts = (key || '').split('_').filter(Boolean)
     if (parts.length >= 3) {
@@ -1099,6 +1265,37 @@ export function QueriesPage(){
     }
     return Array.from(new Set(keys))
   }, [filteredDoorSourcesGrouped])
+
+  // Sugestões (autocomplete) do seletor de portas: até 60 itens do filtro atual.
+  const doorSuggestions = useMemo(() => {
+    const out: { key: string, label: string, group: string }[] = []
+    for (const g of filteredDoorSourcesGrouped) {
+      for (const it of g.items) {
+        out.push({ key: it.key, label: it.label, group: g.label })
+        if (out.length >= 60) return out
+      }
+    }
+    return out
+  }, [filteredDoorSourcesGrouped])
+
+  const addDoorSource = (key: string) => {
+    if (!key) return
+    setDoorAllSources(false)
+    setDoorSelectedSources(prev => prev.includes(key) ? prev : [...prev, key])
+    setDoorPickSource('')
+  }
+
+  // Badges de portas com cores alternadas (índice par = verde claro, ímpar = azul claro).
+  const doorBadgeClass = (i: number) => 'badge rounded-pill q-door-badge ' + (i % 2 === 0 ? 'q-door-badge-a' : 'q-door-badge-b')
+
+  React.useEffect(() => {
+    if (!doorSuggestOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (doorSuggestRef.current && !doorSuggestRef.current.contains(e.target as Node)) setDoorSuggestOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [doorSuggestOpen])
 
   const doorPickerFilteredGroups = useMemo(() => {
     const tokens = normalizeDoorSearch(doorPickerFilter || '').split(' ').filter(Boolean)
@@ -1148,10 +1345,12 @@ export function QueriesPage(){
       exportDragHandlersRef.current = null
     }
     exportDragRef.current = null
+    setLockedResult(false)
   }
 
-  function resetOnFilterChange(){
+  function novaConsulta(){
     resetData()
+    setResultTotal(null)
     setSearchTerm('')
     setSearchColumn('*')
     setCurrentPage(1)
@@ -1174,10 +1373,9 @@ export function QueriesPage(){
       setDoorPickSource('')
     }
     setDoorPickerOpen(false)
-    resetOnFilterChange()
   }
 
-  function mapQuickToDataset(k: QuickKind): Dataset{
+  function mapQuickToDataset(k: QuickKind | ''): Dataset{
     if (k === 'transit-period') return 'transit'
     if (k === 'population') return 'population'
     if (k === 'eventos-claviculario') return 'eventos-claviculario'
@@ -1191,28 +1389,52 @@ export function QueriesPage(){
     if (k === 'cracha') return crachaObter === 'info' ? 'cracha-info' : 'transit'
     if (k === 'nivel') return nivelObter === 'todos' ? 'access-agg' : 'transit'
     if (k === 'visitantes') return 'visitors'
+    if (k === 'bimestral-funcionario') return 'bimestral-funcionario'
+    if (k === 'bimestral-visitante') return 'bimestral-visitante'
     return 'access-agg'
   }
 
-  function startProgress(){
+  function newProgressId(){
+    try{
+      const c: any = (globalThis as any).crypto
+      if (c && typeof c.randomUUID === 'function') return c.randomUUID() as string
+    }catch{}
+    return `p-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  }
+
+  function startProgress(goal: number = 0){
     setProgressActive(true)
     setProgress(0)
     setResultTotal(null)
+    progressGoalRef.current = goal
+    const pid = newProgressId()
+    progressIdRef.current = pid
+    try{ setProgressId(pid) }catch{}
     if (progressTimerRef.current) clearInterval(progressTimerRef.current)
-    progressTimerRef.current = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 99) return 99
-        if (prev < 60) return Math.min(60, prev + 4)
-        if (prev < 80) return Math.min(80, prev + 2)
-        if (prev < 90) return Math.min(90, prev + 1)
-        return Math.min(99, prev + 1)
-      })
-    }, 800)
+    // Polling do progresso real informado pelo backend (GET /api/progress/{id}).
+    progressTimerRef.current = setInterval(async () => {
+      try{
+        const st: any = await api.getQueryProgress(pid)
+        if (!st || st.success !== true) return
+        const loaded = typeof st.loaded === 'number' ? st.loaded : 0
+        const total = typeof st.total === 'number' ? st.total : null
+        let pct: number | null = null
+        if (total != null && total > 0){
+          pct = 6 + Math.round(Math.min(1, loaded / total) * 88)
+        }else if (progressGoalRef.current > 0 && loaded > 0){
+          pct = 8 + Math.round(Math.min(1, loaded / progressGoalRef.current) * 86)
+        }
+        if (pct != null) setProgress(prev => Math.max(prev, Math.min(95, pct)))
+      }catch{}
+    }, 500)
   }
 
   function stopProgress(ok: boolean){
     if (progressTimerRef.current) clearInterval(progressTimerRef.current)
     progressTimerRef.current = null
+    progressIdRef.current = ''
+    progressGoalRef.current = 0
+    try{ setProgressId(null) }catch{}
     if (ok){
       setProgress(100)
       setTimeout(() => {
@@ -1269,7 +1491,21 @@ export function QueriesPage(){
   }, [mode, dataset, canUseDbTables, dbInfo, dbInfoErr])
 
   async function runQuick(){
-    setError(null); setLoading(true); startProgress()
+    const cachedHit = loadResultsEntry(currentQueryKey)
+    if (cachedHit && Array.isArray(cachedHit.data) && cachedHit.data.length > 0){
+      setError(null)
+      setData(cachedHit.data)
+      setResultTotal(typeof cachedHit.resultTotal === 'number' ? cachedHit.resultTotal : cachedHit.data.length)
+      setLastPdfRequestUrl(cachedHit.lastPdfRequestUrl ?? null)
+      setLastPdfSavedPath(cachedHit.lastPdfSavedPath ?? null)
+      setLastPdfFileName(cachedHit.lastPdfFileName ?? '')
+      setHasCachedPdf(!!(cachedHit.lastPdfRequestUrl || cachedHit.lastPdfSavedPath))
+      setLoading(false)
+      setLockedResult(true)
+      markLastRun()
+      return
+    }
+    setError(null); setLoading(true); startProgress(quickKind === 'door-critical' ? maxPreview : 0)
     setPdfExportedRun(null)
     if (pdfUrl) URL.revokeObjectURL(pdfUrl)
     setPdfUrl(null)
@@ -1292,6 +1528,12 @@ export function QueriesPage(){
         if(!r0){ setError('Informe início e fim'); setLoading(false); return }
         const res = await api.reportsPopulation({ start: r0.startIso, end: r0.endIso })
         setData(Array.isArray(res) ? res : [])
+      }else if (quickKind === 'bimestral-funcionario'){
+        const res = await api.bimestralFuncionario()
+        setData(Array.isArray(res) ? res : [])
+      }else if (quickKind === 'bimestral-visitante'){
+        const res = await api.bimestralVisitante()
+        setData(Array.isArray(res) ? res : [])
       }else if (quickKind === 'eventos-claviculario'){
         const { nome, matricula, chave, dc } = filters as any
         const r0 = rangeIso(filters)
@@ -1307,7 +1549,8 @@ export function QueriesPage(){
           Matricula: x?.Matricula ?? x?.matricula ?? null,
           CodigoChave: x?.CodigoChave ?? x?.codigoChave ?? null,
           ChaveDescricao: x?.ChaveDescricao ?? x?.chaveDescricao ?? null,
-          Descricao: x?.Descricao ?? x?.descricao ?? null
+          Descricao: x?.Descricao ?? x?.descricao ?? null,
+          Operador: x?.Operador ?? x?.operador ?? null
         })))
       }else if (quickKind === 'employees'){
         const { matricula, empresa } = filters as any
@@ -1325,6 +1568,7 @@ export function QueriesPage(){
             CardNumber: x?.CardNumber ?? x?.cardNumber ?? null,
             Name: name,
             Identifier: x?.Identifier ?? x?.identifier ?? null,
+            Tipo: x?.Tipo ?? x?.tipo ?? null,
             StatusCadastro: x?.StatusCadastro ?? x?.statusCadastro ?? null,
             Cadastro: formatBrDateTime(x?.Cadastro ?? x?.cadastro ?? null),
             Expira: formatBrDateTime(x?.Expira ?? x?.expira ?? null),
@@ -1351,19 +1595,19 @@ export function QueriesPage(){
         })))
       }else if (quickKind === 'card-by-cpf'){
         const { cpf } = filters as any
-        if (!cpf){ setError('Informe o CPF'); setLoading(false); return }
+        if (!cpf){ setError('Informe CPF, RG ou matrícula'); setLoading(false); return }
         const res = await api.cardByCpf(cpf)
         const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
         setData(list)
       }else if (quickKind === 'cpf'){
         const { cpf } = filters as any
-        if (!cpf){ setError('Informe o CPF'); setLoading(false); return }
+        if (!cpf){ setError('Informe o CPF ou RG'); setLoading(false); return }
         if (cpfObter === 'info'){
           const res = await api.accessInfoByDocument(cpf)
           const list = Array.isArray(res) ? res : ((res as any)?.items ?? [])
           setData(list)
         }else{
-          const mode = cpfObter === 'todos' ? 'all' : cpfObter
+          const mode = 'all'
           const toDoorLike = (x: any) => {
             const nome = x?.Name ?? x?.name ?? null
             const cpfV = x?.CPF ?? x?.cpf ?? null
@@ -1569,8 +1813,7 @@ export function QueriesPage(){
             setExportStage('done')
           }
         }else if (doorMode === 'general-by-name'){
-          if (!doorName){ setError('Informe o nome'); setLoading(false); return }
-          const first = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src, page: 1, pageSize: 200 })
+          const first = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: '', sourceList: src, page: 1, pageSize: 200 })
           const firstItems = Array.isArray((first as any)?.items) ? (first as any).items : []
           const firstMapped = firstItems.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
           const firstTotal = typeof (first as any)?.total === 'number' ? (first as any).total : null
@@ -1583,7 +1826,7 @@ export function QueriesPage(){
             const previewPages = Math.ceil(maxPreview / 200)
             for (let pg = 2; pg <= previewPages; pg++) {
               try {
-                const r = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: doorName, sourceList: src, page: pg, pageSize: 200 })
+                const r = await api.reportsDoorGeneralByName({ start: r0.startIso, end: r0.endIso, name: '', sourceList: src, page: pg, pageSize: 200 })
                 const items = Array.isArray((r as any)?.items) ? (r as any).items : []
                 if (!items.length) break
                 const extraMapped = items.map((x:any)=> ({ ...x, DataHora: formatBrDateTime(getRowValue(x, 'DataHora')), TimeOrder: formatBrDateTime(getRowValue(x, 'TimeOrder')), StatusAcessoDisplay: normalizeDoorStatusDisplay(getRowValue(x, 'StatusAcesso'), getRowValue(x, 'DetalheStatusAcesso')) }))
@@ -1621,12 +1864,26 @@ export function QueriesPage(){
     }finally{
       setLoading(false)
       setCurrentPage(1)
-      if (ok) setLastSuccessfulRun(v => v + 1)
+      if (ok){ setLastSuccessfulRun(v => v + 1); setLockedResult(true); markLastRun() }
       stopProgress(ok)
     }
   }
 
   async function runPersonalizada(){
+    const cachedHit = loadResultsEntry(currentQueryKey)
+    if (cachedHit && Array.isArray(cachedHit.data) && cachedHit.data.length > 0){
+      setError(null)
+      setData(cachedHit.data)
+      setResultTotal(typeof cachedHit.resultTotal === 'number' ? cachedHit.resultTotal : cachedHit.data.length)
+      setLastPdfRequestUrl(cachedHit.lastPdfRequestUrl ?? null)
+      setLastPdfSavedPath(cachedHit.lastPdfSavedPath ?? null)
+      setLastPdfFileName(cachedHit.lastPdfFileName ?? '')
+      setHasCachedPdf(!!(cachedHit.lastPdfRequestUrl || cachedHit.lastPdfSavedPath))
+      setLoading(false)
+      setLockedResult(true)
+      markLastRun()
+      return
+    }
     setError(null); setLoading(true); startProgress()
     setPdfExportedRun(null)
     if (pdfUrl) URL.revokeObjectURL(pdfUrl)
@@ -1707,12 +1964,12 @@ export function QueriesPage(){
     }finally{
       setLoading(false)
       setCurrentPage(1)
-      if (ok) setLastSuccessfulRun(v => v + 1)
+      if (ok){ setLastSuccessfulRun(v => v + 1); setLockedResult(true); markLastRun() }
       stopProgress(ok)
     }
   }
 
-  async function exportData(format: 'csv'|'xlsx'|'pdf'){
+  async function exportData(format: 'csv'|'xlsx'|'pdf'|'docx'){
     try{
       const h: Record<string,string> = {}
       const t = localStorage.getItem('rf_token')
@@ -1721,7 +1978,7 @@ export function QueriesPage(){
       if (cid) h['X-Client-Id'] = cid
       let url = ''
       let name = ''
-      const startDoorExportJob = async (p: { start: string, end: string, sourceList?: string, name?: string }, downloadName: string) => {
+      const startDoorExportJob = async (p: { start: string, end: string, sourceList?: string, name?: string, documento?: string, filtros?: Record<string,string> }, downloadName: string) => {
         setExportFmt('csv')
         setExportFileName(downloadName)
         setExportErr(null)
@@ -1742,10 +1999,11 @@ export function QueriesPage(){
           })
         }, 1000)
 
-        const res = await fetch('/api/reports/door-general/export-jobs', {
+        const jobQs = new URLSearchParams(p.filtros || {}).toString()
+        const res = await fetch(`/api/reports/door-general/export-jobs${jobQs ? `?${jobQs}` : ''}`, {
           method: 'POST',
           headers: { ...h, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, format: 'csv' })
+          body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, documento: p.documento, format: 'csv' })
         })
         if (exportTimerRef.current) clearInterval(exportTimerRef.current)
         exportTimerRef.current = null
@@ -1808,6 +2066,17 @@ export function QueriesPage(){
           setExportStage('error')
         }
       }
+      // Filtros de cadastro marcados na tela. Só entram os que fazem sentido na
+      // consulta atual (os mesmos que estão sendo exibidos na barra de filtros),
+      // para uma eventual marcação antiga não filtrar silenciosamente a exportação.
+      const filtrosCadastro: Record<string,string> = {}
+      if (cadastroFilterOpts.tipo && empTipoFunc && !empTipoPrest) filtrosCadastro.tipo = 'funcionario'
+      if (cadastroFilterOpts.tipo && empTipoPrest && !empTipoFunc) filtrosCadastro.tipo = 'prestador'
+      if (cadastroFilterOpts.status && empStatusAtivo && !empStatusInativo) filtrosCadastro.status = 'ativo'
+      if (cadastroFilterOpts.status && empStatusInativo && !empStatusAtivo) filtrosCadastro.status = 'inativo'
+      if (cadastroFilterOpts.empresa && filtroEmpresa.trim()) filtrosCadastro.empresa = filtroEmpresa.trim()
+      if (cadastroFilterOpts.nivel && filtroNivel.trim()) filtrosCadastro.nivel = filtroNivel.trim()
+
       if ((mode === 'prontas' && quickKind === 'access-agg') || (mode === 'personalizadas' && dataset === 'access-agg')){
         url = `/api/reports/access/aggregated/export?format=${format}`
         name = `access-aggregated.${format}`
@@ -1827,6 +2096,14 @@ export function QueriesPage(){
         const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format }).toString()
         url = `/api/reports/population/export?${qs}`
         name = `populacao.${format}`
+      }else if (mode === 'prontas' && quickKind === 'bimestral-funcionario'){
+        const qs = new URLSearchParams({ format, ...filtrosCadastro }).toString()
+        url = `/api/reports/bimestral-funcionario/export?${qs}`
+        name = 'bimestral-funcionario.' + format
+      }else if (mode === 'prontas' && quickKind === 'bimestral-visitante'){
+        const qs = new URLSearchParams({ format, ...filtrosCadastro }).toString()
+        url = `/api/reports/bimestral-visitante/export?${qs}`
+        name = 'bimestral-visitante.' + format
       }else if (mode === 'prontas' && quickKind === 'eventos-claviculario'){
         const { nome, matricula, chave, dc } = filters as any
         const r0 = rangeIso(filters)
@@ -1846,40 +2123,49 @@ export function QueriesPage(){
         const src = effectiveAllSources ? undefined : (doorSelectedSources.length ? doorSelectedSources.join(';') : undefined)
         if ((doorMode === 'general' || doorMode === 'general-by-name' || doorMode === 'critical') && !effectiveAllSources && !src) return
         const daysRange = Math.abs((new Date(r0.endIso).getTime() - new Date(r0.startIso).getTime()) / 86400000)
+        // Filtros da barra de "Eventos de Porta": vão junto para o arquivo sair filtrado.
+        const doorFiltrosParams: Record<string,string> = {}
+        if (dTag.trim()) doorFiltrosParams.tag = dTag.trim()
+        if (dAcesso) doorFiltrosParams.acesso = dAcesso
+        if (dEvento) doorFiltrosParams.evento = dEvento
+        if (dNome.trim()) doorFiltrosParams.nome = dNome.trim()
+        if (dMatricula.trim()) doorFiltrosParams.matricula = dMatricula.trim()
+        if (dCracha.trim()) doorFiltrosParams.cracha = dCracha.trim()
+        if (dTipo) doorFiltrosParams.tipoPessoa = dTipo
+        if (dStatus) doorFiltrosParams.status = dStatus
         if (doorMode === 'critical'){
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}), ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-critical/export?${qs}`
           name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
-          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
-          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src }, `portas-gerais.${format}`); return }
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}) } as any).toString()
+          if ((format === 'pdf' || format === 'docx') && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, filtros: doorFiltrosParams }, `portas-gerais.${format}`); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}), ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
           name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
-          if (!doorName) return
-          if (format === 'pdf' && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
-          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: doorName }, `portas-gerais-por-nome.${format}`); return }
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format, ...(src ? { sourceList: src } : {}) } as any).toString()
+          if ((format === 'pdf' || format === 'docx') && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: '', filtros: doorFiltrosParams }, `portas-gerais-por-nome.${format}`); return }
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: '', format, ...(src ? { sourceList: src } : {}), ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
           name = `portas-gerais-por-nome.${format}`
         }else if (doorMode === 'general-by-site'){
           if (!doorSite) return
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format } as any).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, site: doorSite, format, ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-general/by-site/export?${qs}`
           name = `portas-gerais-por-site.${format}`
         }
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
         const { cpf } = filters as any
         if (!cpf) return
-        const modeQ = cpfObter === 'todos' ? 'all' : cpfObter
+        const modeQ = 'all'
         if (cpfSemPeriodo){
-          const qs = new URLSearchParams({ documento: cpf, mode: modeQ, format }).toString()
+          const qs = new URLSearchParams({ documento: cpf, mode: modeQ, format, ...filtrosCadastro }).toString()
           url = `/api/access/by-document/all/export?${qs}`
         }else{
           const r0 = rangeIso(filters)
           if(!r0) return
-          const qs = new URLSearchParams({ documento: cpf, start: r0.startIso, end: r0.endIso, mode: modeQ, format }).toString()
+          const qs = new URLSearchParams({ documento: cpf, start: r0.startIso, end: r0.endIso, mode: modeQ, format, ...filtrosCadastro }).toString()
           url = `/api/access/by-document/export?${qs}`
         }
         name = `acessos-${cpf}.${format}`
@@ -1887,7 +2173,7 @@ export function QueriesPage(){
         const { matricula } = filters as any
         if (!matricula) return
         if (matriculaObter === 'info'){
-          const qs = new URLSearchParams({ matricula, format }).toString()
+          const qs = new URLSearchParams({ matricula, format, ...filtrosCadastro }).toString()
           url = `/api/cms/person/by-matricula-info/export?${qs}`
           name = `matricula-info-${matricula}.${format}`
         }else{
@@ -1902,7 +2188,7 @@ export function QueriesPage(){
         const { empresa } = filters as any
         if (!empresa) return
         if (empresaObter === 'info'){
-          const qs = new URLSearchParams({ empresa, format }).toString()
+          const qs = new URLSearchParams({ empresa, format, ...filtrosCadastro }).toString()
           url = `/api/cms/company/by-name-info/export?${qs}`
           name = `empresa-info-${empresa}.${format}`
         }else{
@@ -1916,7 +2202,7 @@ export function QueriesPage(){
         const { cracha } = filters as any
         if (!cracha) return
         if (crachaObter === 'info'){
-          const qs = new URLSearchParams({ card: cracha, format }).toString()
+          const qs = new URLSearchParams({ card: cracha, format, ...filtrosCadastro }).toString()
           url = `/api/cms/person/by-card-info/export?${qs}`
           name = `cracha-info-${cracha}.${format}`
         }else{
@@ -1947,12 +2233,17 @@ export function QueriesPage(){
         const p: Record<string,string> = { format }
         if (matricula) p.matricula = matricula
         if (empresa) p.empresa = empresa
+        if (searchTerm.trim()) p.q = searchTerm.trim()
+        if (empTipoFunc && !empTipoPrest) p.tipo = 'funcionario'
+        if (empTipoPrest && !empTipoFunc) p.tipo = 'prestador'
+        if (empStatusAtivo && !empStatusInativo) p.status = 'ativo'
+        if (empStatusInativo && !empStatusAtivo) p.status = 'inativo'
         const qs = new URLSearchParams(p).toString()
         url = `/api/cms/employees/search/export?${qs}`
         name = `funcionarios.${format}`
       }else if (mode === 'prontas' && quickKind === 'external'){
         const { matricula, empresa } = filters as any
-        const p: Record<string,string> = { format }
+        const p: Record<string,string> = { format, ...filtrosCadastro }
         if (matricula) p.matricula = matricula
         if (empresa) p.empresa = empresa
         const qs = new URLSearchParams(p).toString()
@@ -2072,7 +2363,7 @@ export function QueriesPage(){
           if (doorMode === 'general-by-site') return 'Eventos de Porta • Portas Gerais por Site'
           return 'Eventos de Porta'
         }
-        if (mode === 'prontas' && quickKind === 'cpf') return 'CPF (Cadastro/Acessos)'
+        if (mode === 'prontas' && quickKind === 'cpf') return 'Cadastro/Acessos'
         return 'Relatório'
       })()
       const ts = Date.now()
@@ -2168,8 +2459,7 @@ export function QueriesPage(){
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format:'pdf', ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
         }else if (doorMode === 'general-by-name'){
-          if (!doorName){ setError('Informe o nome'); return }
-          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: doorName, format:'pdf', ...(src ? { sourceList: src } : {}) } as any).toString()
+          const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: '', format:'pdf', ...(src ? { sourceList: src } : {}) } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
         }else if (doorMode === 'general-by-site'){
           if (!doorSite){ setError('Informe o site'); return }
@@ -2178,8 +2468,8 @@ export function QueriesPage(){
         }
       }else if (mode === 'prontas' && quickKind === 'cpf' && cpfObter !== 'info'){
         const { cpf } = filters as any
-        if (!cpf){ setError('Informe o CPF'); return }
-        const modeQ = cpfObter === 'todos' ? 'all' : cpfObter
+        if (!cpf){ setError('Informe o CPF ou RG'); return }
+        const modeQ = 'all'
         if (cpfSemPeriodo){
           const qs = new URLSearchParams({ documento: cpf, mode: modeQ, format:'pdf' }).toString()
           url = `/api/access/by-document/all/export?${qs}`
@@ -2474,10 +2764,99 @@ export function QueriesPage(){
     return datasetColumns
   }, [mode, quickColumns, datasetColumns])
 
+  // ---- Filtros de cadastro (Tipo / Status / Empresa / Nível) ----
+  // Aparecem só nas consultas de cadastro e apenas com as opções coerentes com
+  // o resultado: Tipo/Status só quando os valores realmente variam na lista.
+  const CADASTRO_FILTER_KINDS: QuickKind[] = ['employees','bimestral-funcionario','bimestral-visitante','external','matricula','empresa','cracha','cpf']
+  const cadastroFilterScope = mode === 'prontas' && (CADASTRO_FILTER_KINDS as string[]).includes(quickKind)
+  const cadastroFilterOpts = useMemo(() => {
+    const off = { tipo: false, status: false, empresa: false, nivel: false }
+    if (!cadastroFilterScope) return off
+    const rows = Array.isArray(data) ? data : []
+    if (rows.length === 0) return off
+    const keys = (mode === 'prontas' ? quickColumns : datasetColumns).map(c => c.key)
+    const valores = (k: string) => {
+      const s = new Set<string>()
+      for (const r of rows){
+        const v = getRowValue(r, k)
+        if (v !== undefined && v !== null && String(v).trim() !== '') s.add(String(v).trim().toUpperCase())
+      }
+      return Array.from(s)
+    }
+    // "Funcionários/Prestadores" só aparece se a lista trouxer os dois tipos, e
+    // "Ativo/Inativo" só se houver os dois status — assim nenhuma opção exibida
+    // fica sem efeito.
+    const vsTipo = valores('Tipo')
+    const vsStatus = valores('StatusCadastro')
+    const bimestral = quickKind === 'bimestral-funcionario' || quickKind === 'bimestral-visitante'
+    return {
+      tipo: keys.includes('Tipo') && vsTipo.some(v => v.includes('FUNCION')) && vsTipo.some(v => v.includes('PRESTADOR')),
+      status: keys.includes('StatusCadastro') && vsStatus.some(v => v === 'ATIVO') && vsStatus.some(v => v === 'INATIVO'),
+      // Empresa/Nível são os campos que discriminam os Bimestrais; nas outras
+      // consultas o campo já tem filtro próprio na barra de pesquisa.
+      empresa: bimestral && keys.includes('Empresa'),
+      nivel: bimestral && keys.includes('NivelAcesso')
+    }
+  }, [cadastroFilterScope, data, mode, quickColumns, datasetColumns, quickKind])
+  const showCadastroFilters = cadastroFilterOpts.tipo || cadastroFilterOpts.status || cadastroFilterOpts.empresa || cadastroFilterOpts.nivel
+
+  // ---- Barra de filtros de "Eventos de Porta" (serve as 4 modalidades) ----
+  const doorFiltrosScope = mode === 'prontas' && quickKind === 'door-critical'
+  const doorFilterOpts = useMemo(() => {
+    const rows = Array.isArray(data) ? data : []
+    const vals = (k: string) => {
+      const s = new Set<string>()
+      for (const r of rows){
+        const v = getRowValue(r, k)
+        if (v !== undefined && v !== null && String(v).trim() !== '') s.add(String(v).trim())
+      }
+      return Array.from(s).sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' }))
+    }
+    return { acesso: vals('Acesso'), evento: vals('Evento'), tipo: vals('Tipo'), status: vals('StatusAcessoDisplay') }
+  }, [data])
+  const doorFiltrosAtivos = !!(dTag.trim() || dAcesso || dEvento || dNome.trim() || dMatricula.trim() || dCracha.trim() || dTipo || dStatus)
+  const limparDoorFiltros = () => {
+    setDTag(''); setDAcesso(''); setDEvento(''); setDNome('')
+    setDMatricula(''); setDCracha(''); setDTipo(''); setDStatus('')
+    setCurrentPage(1)
+  }
+
   const filteredData = useMemo(()=>{
-    if (mode === 'prontas' && quickKind === 'employees'){
+    const term = (searchTerm || '').toLowerCase().trim()
+    const matchesTerm = (row: any, cols: string[]) => {
+      if (!term) return true
+      for (const c of cols){
+        const v = getRowValue(row, c)
+        if (v !== undefined && v !== null){
+          if (String(v).toLowerCase().includes(term)) return true
+        }
+      }
+      return false
+    }
+    // Barra de filtros de "Eventos de Porta"
+    if (doorFiltrosScope){
+      if (!doorFiltrosAtivos) return data
+      const tagQ = dTag.trim().toLowerCase()
+      const nomeQ = dNome.trim().toLowerCase()
+      const matQ = dMatricula.trim().toLowerCase()
+      const craQ = dCracha.trim().toLowerCase()
+      const eq = (v: unknown, esperado: string) => String(v ?? '').trim().toUpperCase() === esperado.trim().toUpperCase()
+      return (Array.isArray(data) ? data : []).filter(row =>
+        (!tagQ || String(getRowValue(row, 'TAG') ?? '').toLowerCase().includes(tagQ))
+        && (!dAcesso || eq(getRowValue(row, 'Acesso'), dAcesso))
+        && (!dEvento || eq(getRowValue(row, 'Evento'), dEvento))
+        && (!nomeQ || String(getRowValue(row, 'NomeCompleto') ?? '').toLowerCase().includes(nomeQ))
+        && (!matQ || String(getRowValue(row, 'DocumentoMatricula') ?? '').toLowerCase().includes(matQ))
+        && (!craQ || String(getRowValue(row, 'Cartao') ?? '').toLowerCase().includes(craQ))
+        && (!dTipo || eq(getRowValue(row, 'Tipo'), dTipo))
+        && (!dStatus || eq(getRowValue(row, 'StatusAcessoDisplay'), dStatus))
+      )
+    }
+
+    if (showCadastroFilters){
       const list = Array.isArray(data) ? [...data] : []
-      list.sort((a: any, b: any) => {
+      const ordEmployees = mode === 'prontas' && quickKind === 'employees'
+      if (ordEmployees) list.sort((a: any, b: any) => {
         const aCard = (a?.CardNumber ?? a?.cardNumber ?? '') as any
         const bCard = (b?.CardNumber ?? b?.cardNumber ?? '') as any
         const aHas = aCard != null && String(aCard).trim() !== ''
@@ -2490,25 +2869,36 @@ export function QueriesPage(){
         const aN = String(a?.Name ?? a?.name ?? '').trim()
         const bN = String(b?.Name ?? b?.name ?? '').trim()
         return aN.localeCompare(bN, 'pt-BR', { sensitivity: 'base' })
+      });
+      const cols = (mode === 'prontas' ? quickColumns : datasetColumns).map(c=>c.key)
+        const apenasFuncionario = cadastroFilterOpts.tipo && empTipoFunc && !empTipoPrest
+        const apenasPrestador = cadastroFilterOpts.tipo && empTipoPrest && !empTipoFunc
+        const apenasAtivo = cadastroFilterOpts.status && empStatusAtivo && !empStatusInativo
+        const apenasInativo = cadastroFilterOpts.status && empStatusInativo && !empStatusAtivo
+        const empresaQ = cadastroFilterOpts.empresa ? filtroEmpresa.trim().toLowerCase() : ''
+        const nivelQ = cadastroFilterOpts.nivel ? filtroNivel.trim().toLowerCase() : ''
+      return list.filter(row => {
+        if (apenasFuncionario || apenasPrestador){
+          const tipo = String(getRowValue(row, 'Tipo') ?? '').toUpperCase()
+          if (apenasFuncionario && !tipo.includes('FUNCION')) return false
+          if (apenasPrestador && !tipo.includes('PRESTADOR')) return false
+        }
+        if (apenasAtivo || apenasInativo){
+          const st = String(getRowValue(row, 'StatusCadastro') ?? '').toUpperCase()
+          if (apenasAtivo && st !== 'ATIVO') return false
+          if (apenasInativo && st !== 'INATIVO') return false
+        }
+        if (empresaQ && !String(getRowValue(row, 'Empresa') ?? '').toLowerCase().includes(empresaQ)) return false
+        if (nivelQ && !String(getRowValue(row, 'NivelAcesso') ?? '').toLowerCase().includes(nivelQ)) return false
+        return matchesTerm(row, cols)
       })
-      return list
     }
-    const term = (searchTerm || '').toLowerCase().trim()
     if (!term) return data
     const cols = searchColumn === '*' ? (mode === 'personalizadas' ? datasetColumns.map(c=>c.key) : quickColumns.map(c=>c.key)) : [searchColumn]
-    return data.filter(row => {
-      for (const c of cols){
-        const v = getRowValue(row, c)
-        if (v !== undefined && v !== null){
-          const s = String(v).toLowerCase()
-          if (s.includes(term)) return true
-        }
-      }
-      return false
-    })
-  }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns])
+    return data.filter(row => matchesTerm(row, cols))
+  }, [data, searchTerm, searchColumn, mode, dataset, quickColumns, datasetColumns, empTipoFunc, empTipoPrest, empStatusAtivo, empStatusInativo, filtroEmpresa, filtroNivel, cadastroFilterOpts, doorFiltrosScope, doorFiltrosAtivos, dTag, dAcesso, dEvento, dNome, dMatricula, dCracha, dTipo, dStatus])
 
-  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees' || quickKind === 'card-by-cpf')
+  const hideSearchBar = mode === 'prontas' && ((quickKind === 'cpf' && cpfObter === 'info') || quickKind === 'employees' || quickKind === 'card-by-cpf' || quickKind === 'eventos-claviculario' || quickKind === 'door-critical')
 
   const previewData = useMemo(()=>{
     if (filteredData.length <= maxPreview) return filteredData
@@ -2559,7 +2949,7 @@ export function QueriesPage(){
     setShowCloseConfirm(false)
   }
 
-  if (mode === 'prontas' && enabledReadyKeys.length === 0) {
+  if (mode === 'prontas' && !anyReadyEnabled) {
     return (
       <section className="queries">
         <div className="alert alert-warning" style={{marginTop:12}}>
@@ -2568,6 +2958,59 @@ export function QueriesPage(){
       </section>
     )
   }
+
+  const readySwitchNodes = READY_OPTIONS
+    .filter(opt => !!queriesCfg[opt.key])
+    .filter(opt => quickKind === '' || opt.key === quickKind)
+    .map(opt => {
+      const id = `qsw_${opt.key}`
+      return (
+        <div key={opt.key} className="queries-ready-switch">
+          <div className="form-check form-switch d-flex align-items-center justify-content-between border rounded px-3 py-2">
+            <label className="form-check-label flex-grow-1 me-2" style={{minWidth:0}} htmlFor={id}>{opt.label}</label>
+            <input
+              id={id}
+              className="form-check-input"
+              type="checkbox"
+              role="switch"
+              disabled={loading}
+              checked={quickKind === opt.key}
+              onChange={() => {
+                if (quickKind === opt.key) {
+                  setQuickKind('')
+                  setData([])
+                  setError(null)
+                  setSearchTerm('')
+                  setSearchColumn('*')
+                  setEmpTipoFunc(false)
+                  setEmpTipoPrest(false)
+                  setEmpStatusAtivo(false)
+                  setEmpStatusInativo(false)
+                  setCurrentPage(1)
+                  setLockedResult(false)
+                  return
+                }
+                setQuickKind(opt.key)
+                setData([])
+                setError(null)
+                setSearchTerm('')
+                setSearchColumn('*')
+                setEmpTipoFunc(false)
+                setEmpTipoPrest(false)
+                setEmpStatusAtivo(false)
+                setEmpStatusInativo(false)
+                setCurrentPage(1)
+                setLockedResult(false)
+                if (opt.key === 'door-critical' || opt.key === 'population' || opt.key === 'eventos-claviculario') {
+                  const today = todayBr()
+                  setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }))
+                }
+              }}
+            />
+          </div>
+        </div>
+      )
+    })
 
   return (
     <section className="queries">
@@ -2667,10 +3110,10 @@ export function QueriesPage(){
                               <div className="text-muted" style={{fontSize:12}}>Nenhuma porta selecionada</div>
                             ) : (
                               <div className="d-flex flex-wrap gap-1">
-                                {doorPickerSelected.map(k => (
+                                {doorPickerSelected.map((k, i) => (
                                   <span
                                     key={k}
-                                    className="badge rounded-pill text-bg-secondary"
+                                    className={doorBadgeClass(i)}
                                     title={doorSourceLabelByKey.get(k) || k}
                                     style={{cursor:'pointer'}}
                                     onClick={() => setDoorPickerSelected(prev => prev.filter(x => x !== k))}
@@ -2974,79 +3417,128 @@ export function QueriesPage(){
         </div>
         <div className="card-body">
 
+      {showExportGroup && (
+        <div className="queries-export-top">
+          <span className="q-export-label">Exportar:</span>
+          {exportEnabledCsv && exportAllowsCsv && (
+            <button type="button" className="btn-export" title="Exportar CSV" onClick={()=> exportData('csv')}>
+              <img className="q-export-logo" src={csvLogoUrl} alt="CSV" />
+              <span>CSV</span>
+            </button>
+          )}
+          {exportEnabledXlsx && exportAllowsXlsx && (
+            <button type="button" className="btn-export" title={`Exportar ${spreadsheetExportLabel}`} onClick={()=> exportData('xlsx')}>
+              <img className="q-export-logo" src={excelLogoUrl} alt="Excel" />
+              <span>{spreadsheetExportLabel}</span>
+            </button>
+          )}
+          {exportEnabledPdf && exportAllowsPdf && (
+            <button type="button" className="btn-export" title="Exportar PDF" onClick={()=> exportData('pdf')} disabled={exportStage === 'loading-background'}>
+              <img className="q-export-logo" src={pdfLogoUrl} alt="PDF" />
+              <span>PDF</span>
+            </button>
+          )}
+          {exportEnabledWord && exportAllowsWord && (
+            <button type="button" className="btn-export" title="Exportar Word" onClick={()=> exportData('docx')}>
+              <img className="q-export-logo" src={wordLogoUrl} alt="Word" />
+              <span>Word</span>
+            </button>
+          )}
+          {exportStage === 'loading-background' && (
+            <span className="text-muted d-inline-flex align-items-center" style={{fontSize:12}}>
+              <span className="spinner-border spinner-border-sm me-1" role="status" />
+              Carregando dados completos...
+            </span>
+          )}
+          {exportsToday.length > 0 && (
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={()=> setReportsModal(true)}>
+              <i className="bi bi-journal-text me-1" /> Relatórios
+            </button>
+          )}
+          {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={openLastPdf}>
+              <i className="bi bi-eye me-1" /> Visualizar PDF
+            </button>
+          )}
+        </div>
+      )}
+
       {mode === 'prontas' && (
         <>
-          <div className="queries-ready-switches" style={{marginBottom:12}}>
-            {([
-              { key:'access-agg', label:'Acessos Agregados' },
-              { key:'transit-period', label:'Trânsito por Período' },
-              { key:'population', label:'População' },
-              { key:'eventos-claviculario', label:'Eventos_Claviculario' },
-              { key:'door-critical', label:'Eventos de Porta' },
-              { key:'employees', label:'Funcionários' },
-              { key:'external', label:'Externos' },
-              { key:'card-by-cpf', label:'Buscar Crachá por CPF' },
-              { key:'cpf', label:'CPF (Cadastro/Acessos)' },
-              { key:'matricula', label:'Matrícula' },
-              { key:'empresa', label:'Empresa' },
-              { key:'cracha', label:'Crachá' },
-              { key:'nivel', label:'Nível de Acesso' },
-              { key:'visitantes', label:'Visitantes' }
-            ] as {key:QuickKind,label:string}[]).filter(opt => !!queriesCfg[opt.key]).map(opt => {
-              const id = `qsw_${opt.key}`
-              return (
-                <div key={opt.key} className="queries-ready-switch">
-                  <div className="form-check form-switch d-flex align-items-center justify-content-between border rounded px-3 py-2">
-                    <label className="form-check-label flex-grow-1 me-2" style={{minWidth:0}} htmlFor={id}>{opt.label}</label>
-                    <input
-                      id={id}
-                      className="form-check-input"
-                      type="checkbox"
-                      role="switch"
-                      disabled={loading}
-                      checked={quickKind === opt.key}
-                      onChange={() => {
-                        setQuickKind(opt.key)
-                        setData([])
-                        setError(null)
-                        setSearchTerm('')
-                        setSearchColumn('*')
-                        setCurrentPage(1)
-                        if (opt.key === 'door-critical' || opt.key === 'population' || opt.key === 'eventos-claviculario') {
-                          const today = todayBr()
-                          setFilters(prev => ({ ...prev, start: prev.start || today, end: prev.end || today }))
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          {quickKind === 'employees' ? (
+            <div className="queries-switch-inline">
+              {readySwitchNodes}
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-credit-card-2-front" /></span>
+                <input className="form-control" placeholder="Matrícula (opcional)" value={filters.matricula || ''} onChange={e=> setFilters({...filters, matricula: e.target.value})} />
+              </div>
+              <div className="input-group">
+                <span className="input-group-text"><i className="bi bi-building" /></span>
+                <input className="form-control" placeholder="Empresa (opcional)" value={filters.empresa || ''} onChange={e=> setFilters({...filters, empresa: e.target.value})} />
+              </div>
+            </div>
+          ) : quickKind === 'door-critical' ? (
+            <div className="queries-switch-inline">
+              {readySwitchNodes}
+              <div className="input-group" style={{maxWidth:260}}>
+                <span className="input-group-text"><i className="bi bi-list-task" /></span>
+                <select className="form-select" value={doorMode} onChange={e=> { setDoorMode(e.target.value as any) }}>
+                  <option value="critical">Portas Críticas</option>
+                  <option value="general">Portas Gerais</option>
+                  <option value="general-by-name">Portas Gerais por Nome</option>
+                </select>
+              </div>
+              <div className="form-check form-switch d-flex align-items-center gap-2 q-inline-switch">
+                <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> {
+                  const v = e.target.checked
+                  setDoorAllData(v)
+                  if (v && doorSelectedSources.length === 0) setDoorAllSources(true)
+                }} />
+                <label className="form-check-label">Todos os dados</label>
+              </div>
+              <div className="form-check form-switch d-flex align-items-center gap-2 q-inline-switch">
+                <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
+                <label className="form-check-label">Todas as portas</label>
+                <button
+                  type="button"
+                  className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"}
+                  style={{fontSize:11, cursor: (doorMode === 'general-by-site' || doorSourcesLoading) ? 'default' : 'pointer', border: 'none'}}
+                  onClick={() => { if (doorMode !== 'general-by-site' && !doorSourcesLoading) openDoorPicker() }}
+                  title={doorMode === 'general-by-site' ? 'Filtro por lista de portas não disponível nesta opção' : 'Selecionar portas'}
+                >
+                  {doorSourcesLoading ? "Carregando..." : doorSourceFilter.trim() ? `Portas: ${filteredDoorKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="queries-ready-switches" style={{marginBottom:12}}>
+              {readySwitchNodes}
+            </div>
+          )}
 
-          {!readyQueryEnabled && (
+          {!anyReadyEnabled && (
             <div className="alert alert-warning py-2" style={{marginBottom:8}}>
               Nenhuma consulta pronta habilitada para exibição. Ative em Consultas Config.
             </div>
           )}
 
           {readyQueryEnabled && (
-          <div className="queries-row" style={{marginBottom:8}}>
+          <div className={'queries-row' + (quickKind === 'door-critical' ? ' q-door-row' : '')} style={{marginBottom:8}}>
             {(quickKind === 'transit-period' || quickKind === 'population' || quickKind === 'eventos-claviculario') && (
               <>
-                <div className="input-group">
+                <div className={'input-group' + (quickKind === 'eventos-claviculario' ? ' q-compact-date' : '')}>
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
                   <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                 </div>
-                <div className="input-group">
+                <div className={'input-group' + (quickKind === 'eventos-claviculario' ? ' q-compact-time' : '')}>
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
                   <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
                 </div>
-                <div className="input-group">
+                <div className={'input-group' + (quickKind === 'eventos-claviculario' ? ' q-compact-date' : '')}>
                   <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
                   <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
                 </div>
-                <div className="input-group">
+                <div className={'input-group' + (quickKind === 'eventos-claviculario' ? ' q-compact-time' : '')}>
                   <span className="input-group-text"><i className="bi bi-clock" /></span>
                   <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
                 </div>
@@ -3064,21 +3556,18 @@ export function QueriesPage(){
                 )}
                 {quickKind === 'eventos-claviculario' && (
                   <>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-person" /></span>
-                      <input className="form-control" placeholder="Nome (opcional)" value={filters.nome || ''} onChange={e=> setFilters({...filters, nome: e.target.value})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-hash" /></span>
-                      <input className="form-control" placeholder="Matrícula (opcional)" value={filters.matricula || ''} onChange={e=> setFilters({...filters, matricula: e.target.value})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-key" /></span>
-                      <input className="form-control" placeholder="Chave (opcional)" value={filters.chave || ''} onChange={e=> setFilters({...filters, chave: e.target.value})} />
-                    </div>
-                    <div className="input-group">
-                      <span className="input-group-text"><i className="bi bi-filter" /></span>
-                      <input className="form-control" placeholder="DC (opcional)" value={filters.dc || ''} onChange={e=> setFilters({...filters, dc: e.target.value})} />
+                    {data.length === 0 && (
+                      <select className="form-select" style={{width:180, flex:'0 0 auto'}} value={searchColumn} onChange={e=> { setSearchColumn(e.target.value); setCurrentPage(1) }}>
+                        <option value="*">Todas as colunas</option>
+                        {searchColumnsList.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                      </select>
+                    )}
+                    <div className="input-group q-grow">
+                      <span className="input-group-text"><i className="bi bi-search" /></span>
+                      <input className="form-control" placeholder="Filtrar resultado (aproximação)" value={searchTerm} onChange={e=> { setSearchTerm(e.target.value); setCurrentPage(1) }} />
+                      {searchTerm && (
+                        <button className="btn btn-outline-secondary" type="button" onClick={()=> { setSearchTerm(''); setCurrentPage(1) }}>Limpar</button>
+                      )}
                     </div>
                   </>
                 )}
@@ -3086,41 +3575,17 @@ export function QueriesPage(){
             )}
             {(quickKind === 'door-critical') && (
               <>
-                <div className="input-group" style={{maxWidth:280}}>
-                  <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={doorMode} onChange={e=> { setDoorMode(e.target.value as any); resetOnFilterChange() }}>
-                    <option value="critical">Portas Críticas</option>
-                    <option value="general">Portas Gerais</option>
-                    <option value="general-by-name">Portas Gerais por Nome</option>
-                    <option value="general-by-site">Portas Gerais por Site</option>
-                  </select>
-                </div>
                 {doorMode === 'general-by-site' && (
-                  <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
-                    Nesta opção o filtro é pelo texto do Acesso (DC), não por lista de portas (TAG).
-                  </div>
+                  <>
+                    <div className="input-group">
+                      <span className="input-group-text"><i className="bi bi-geo-alt" /></span>
+                      <input className="form-control" placeholder="Site" value={doorSite} onChange={e=> setDoorSite(e.target.value)} />
+                    </div>
+                    <div className="text-muted" style={{fontSize:12}}>
+                      Nesta opção o filtro é pelo texto do Acesso (DC), não por lista de portas (TAG).
+                    </div>
+                  </>
                 )}
-                <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:200, paddingLeft:0, flexShrink:0, marginLeft:8}}>
-                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllData} onChange={e=> {
-                    const v = e.target.checked
-                    setDoorAllData(v)
-                    if (v && doorSelectedSources.length === 0) setDoorAllSources(true)
-                  }} />
-                  <label className="form-check-label">Todos os dados</label>
-                </div>
-                <div className="form-check form-switch d-flex align-items-center gap-2 px-2 py-1" style={{minWidth:220, paddingLeft:0, flexShrink:0, marginLeft:8}}>
-                  <input className="form-check-input" type="checkbox" style={{marginLeft:0}} checked={doorAllSources} onChange={e=> { setDoorAllSources(e.target.checked); if (e.target.checked){ setDoorSelectedSources([]); setDoorPickSource('') } }} />
-                  <label className="form-check-label">Todas as portas</label>
-                  <button
-                    type="button"
-                    className={doorSourcesLoading ? "badge text-bg-warning" : "badge text-bg-secondary"}
-                    style={{fontSize:11, cursor: (doorMode === 'general-by-site' || doorSourcesLoading) ? 'default' : 'pointer', border: 'none'}}
-                    onClick={() => { if (doorMode !== 'general-by-site' && !doorSourcesLoading) openDoorPicker() }}
-                    title={doorMode === 'general-by-site' ? 'Filtro por lista de portas não disponível nesta opção' : 'Selecionar portas'}
-                  >
-                    {doorSourcesLoading ? "Carregando..." : doorSourceFilter.trim() ? `Portas: ${filteredDoorKeys.length}/${activeDoorSources.length}` : `Portas: ${activeDoorSources.length}`}
-                  </button>
-                </div>
                 {doorAllData && doorAllSources && (doorMode === 'general' || doorMode === 'general-by-name') && (
                   <div className="text-muted" style={{fontSize:12, marginLeft:8}}>
                     Consulta em grande volume habilitada. Para obter todos os registros com segurança, use Exportação (CSV Job).
@@ -3133,118 +3598,116 @@ export function QueriesPage(){
                 )}
                 {!doorAllData && (
                   <>
-                    <div style={{display:'flex', flexDirection:'column', gap:4}}>
-                      <div className="input-group">
-                        <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                        <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" inputStyle={{maxWidth:170}} onChange={v=> setFilters({...filters, start: v})} />
-                      </div>
-                      <div className="input-group">
-                        <span className="input-group-text"><i className="bi bi-clock" /></span>
-                        <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
-                      </div>
+                    <div className="input-group q-compact-date">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <BrDateInput value={filters.start} placeholder="Início (dd/mm/aaaa)" onChange={v=> setFilters({...filters, start: v})} />
                     </div>
-                    <div style={{display:'flex', flexDirection:'column', gap:4}}>
-                      <div className="input-group">
-                        <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
-                        <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" inputStyle={{maxWidth:170}} onChange={v=> setFilters({...filters, end: v})} />
-                      </div>
-                      <div className="input-group">
-                        <span className="input-group-text"><i className="bi bi-clock" /></span>
-                        <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
-                      </div>
+                    <div className="input-group q-compact-time">
+                      <span className="input-group-text"><i className="bi bi-clock" /></span>
+                      <input className="form-control" type="time" step="1" value={filters.startTime || '00:00:00'} onChange={e=> setFilters({...filters, startTime: e.target.value})} />
+                    </div>
+                    <div className="input-group q-compact-date">
+                      <span className="input-group-text"><i className="bi bi-calendar-event" /></span>
+                      <BrDateInput value={filters.end} placeholder="Fim (dd/mm/aaaa)" onChange={v=> setFilters({...filters, end: v})} />
+                    </div>
+                    <div className="input-group q-compact-time">
+                      <span className="input-group-text"><i className="bi bi-clock" /></span>
+                      <input className="form-control" type="time" step="1" value={filters.endTime || '23:59:59'} onChange={e=> setFilters({...filters, endTime: e.target.value})} />
                     </div>
                   </>
                 )}
                 {(doorMode !== 'general-by-site') && !doorAllSources && (
-                  <div className="d-flex align-items-start" style={{gap:12, minWidth:520}}>
-                    <div style={{flex:1, minWidth:320}}>
-                      {doorSelectedSources.length === 0 && (
-                        <div className="text-muted" style={{fontSize:12, paddingBottom:6}}>Nenhuma porta selecionada</div>
-                      )}
-                      <div className="input-group mb-2">
+                  <div style={{flexBasis:'100%', minWidth:320}}>
+                    <div className="q-door-search" ref={doorSuggestRef}>
+                      <div className="input-group">
                         <span className="input-group-text"><i className="bi bi-search" /></span>
-                        <input className="form-control" placeholder="Buscar porta..." value={doorSourceFilter} onChange={e=> setDoorSourceFilter(e.target.value)} />
-                        {doorSelectedSources.length === 0 && (
-                          <button
-                            className="btn btn-outline-secondary"
-                            type="button"
-                            disabled={!doorSourceFilter.trim() || filteredDoorKeys.length === 0}
-                            onClick={() => {
-                              if (!doorSourceFilter.trim()) return
-                              setDoorAllSources(false)
-                              setDoorSelectedSources(filteredDoorKeys)
-                              setDoorPickSource('')
-                            }}
-                            title="Seleciona todas as portas visíveis no filtro"
-                          >
-                            Selecionar filtradas
-                          </button>
-                        )}
+                        <input
+                          className="form-control"
+                          placeholder="Buscar porta por nome ou TAG (aproximação)"
+                          value={doorSourceFilter}
+                          onFocus={()=> setDoorSuggestOpen(true)}
+                          onChange={e=> { setDoorSourceFilter(e.target.value); setDoorSuggestOpen(true) }}
+                        />
                         {doorSourceFilter && (
                           <button className="btn btn-outline-secondary" type="button" onClick={()=> setDoorSourceFilter('')}>Limpar</button>
                         )}
-                      </div>
-                      <div className="input-group">
-                        <span className="input-group-text"><i className="bi bi-door-open" /></span>
-                        <select
-                          className="form-select"
-                          value={doorPickSource}
-                          disabled={doorSourcesLoading || activeDoorSources.length === 0}
-                          onChange={e => {
-                            const v = e.target.value
-                            setDoorPickSource(v)
-                            if (!v) return
+                        <button
+                          className="btn btn-outline-secondary"
+                          type="button"
+                          disabled={!doorSourceFilter.trim() || filteredDoorKeys.length === 0}
+                          onClick={() => {
+                            if (!doorSourceFilter.trim()) return
                             setDoorAllSources(false)
-                            setDoorSelectedSources(prev => prev.includes(v) ? prev : [...prev, v])
+                            setDoorSelectedSources(prev => Array.from(new Set([...prev, ...filteredDoorKeys])))
+                            setDoorPickSource('')
+                            setDoorSuggestOpen(false)
                           }}
+                          title="Adiciona todas as portas visíveis no filtro"
                         >
-                          <option value="">
-                            {doorSourcesLoading ? 'Carregando portas...' : activeDoorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
-                          </option>
-                          {!doorSourcesLoading && activeDoorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
-                              <optgroup key={g.label} label={g.label}>
-                                {g.items.map(it => (
-                                  <option key={it.key} value={it.key}>{it.label}</option>
-                                ))}
-                              </optgroup>
-                            ))}
-                        </select>
-                        {doorSelectedSources.length > 0 && (
-                          <button className="btn btn-outline-secondary" type="button" onClick={()=> { setDoorSelectedSources([]); setDoorPickSource('') }}>
-                            Limpar
-                          </button>
-                        )}
+                          Adicionar filtradas
+                        </button>
                       </div>
-                    </div>
-                    <div style={{minWidth:200, maxWidth:360}}>
-                      {doorSelectedSources.length > 0 ? (
-                        <div className="d-flex flex-wrap gap-1">
-                          {doorSelectedSources.map(k => (
-                            <span key={k} className="badge rounded-pill text-bg-secondary" title={doorSourceLabelByKey.get(k) || k} style={{cursor:'pointer'}} onClick={() => setDoorSelectedSources(prev => prev.filter(x => x !== k))}>
-                              {doorShortKey(k)}
-                              <span style={{marginLeft:6}}>×</span>
-                            </span>
+                      {doorSuggestOpen && (
+                        <div className="q-door-suggest">
+                          {doorSourcesLoading ? (
+                            <div className="q-door-suggest-empty">Carregando portas...</div>
+                          ) : doorSuggestions.length === 0 ? (
+                            <div className="q-door-suggest-empty">Nenhuma porta encontrada</div>
+                          ) : doorSuggestions.map(s => (
+                            <button
+                              key={s.key}
+                              type="button"
+                              className="q-door-suggest-item"
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => { addDoorSource(s.key); setDoorSuggestOpen(false) }}
+                            >
+                              <span className="q-door-suggest-label">{s.label}</span>
+                              {s.group && <span className="q-door-suggest-group">{s.group}</span>}
+                            </button>
                           ))}
                         </div>
-                      ) : null}
+                      )}
                     </div>
-                  </div>
-                )}
-                {doorMode === 'general-by-name' && (
-                  <div className="input-group">
-                    <span className="input-group-text"><i className="bi bi-tag" /></span>
-                    <input className="form-control" placeholder="Nome da Porta/Site" value={doorName} onChange={e=> setDoorName(e.target.value)} />
-                  </div>
-                )}
-                {doorMode === 'general-by-site' && (
-                  <div className="input-group">
-                    <span className="input-group-text"><i className="bi bi-geo-alt" /></span>
-                    <input className="form-control" placeholder="Site" value={doorSite} onChange={e=> setDoorSite(e.target.value)} />
+                    <div className="input-group mb-2">
+                      <span className="input-group-text"><i className="bi bi-door-open" /></span>
+                      <select
+                        className="form-select"
+                        value={doorPickSource}
+                        disabled={doorSourcesLoading || activeDoorSources.length === 0}
+                        onChange={e => { addDoorSource(e.target.value); setDoorSuggestOpen(false) }}
+                      >
+                        <option value="">
+                          {doorSourcesLoading ? 'Carregando portas...' : activeDoorSources.length === 0 ? 'Nenhuma porta encontrada' : 'Selecionar porta...'}
+                        </option>
+                        {!doorSourcesLoading && activeDoorSources.length > 0 && filteredDoorSourcesGrouped.map(g => (
+                            <optgroup key={g.label} label={g.label}>
+                              {g.items.map(it => (
+                                <option key={it.key} value={it.key}>{it.label}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                      </select>
+                      {doorSelectedSources.length > 0 && (
+                        <button className="btn btn-outline-secondary" type="button" onClick={()=> { setDoorSelectedSources([]); setDoorPickSource('') }}>
+                          Limpar
+                        </button>
+                      )}
+                    </div>
+                    <div className="d-flex flex-wrap align-items-center gap-1">
+                      {doorSelectedSources.length === 0 ? (
+                        <span className="text-muted" style={{fontSize:12}}>Nenhuma porta selecionada</span>
+                      ) : doorSelectedSources.map((k, i) => (
+                        <span key={k} className={doorBadgeClass(i)} title={doorSourceLabelByKey.get(k) || k} style={{cursor:'pointer'}} onClick={() => setDoorSelectedSources(prev => prev.filter(x => x !== k))}>
+                          {doorSourceLabelByKey.get(k) || doorShortKey(k)}
+                          <span style={{marginLeft:6}}>×</span>
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
               </>
             )}
-            {(quickKind === 'employees' || quickKind === 'external') && (
+            {quickKind === 'external' && (
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-credit-card-2-front" /></span>
@@ -3259,7 +3722,7 @@ export function QueriesPage(){
             {quickKind === 'card-by-cpf' && (
               <div className="input-group">
                 <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
-                <input className="form-control" placeholder="CPF" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
+                <input className="form-control" placeholder="CPF, RG ou Matrícula" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
               </div>
             )}
             {quickKind === 'cpf' && (
@@ -3271,18 +3734,16 @@ export function QueriesPage(){
                       <select className="form-select" value={cpfObter} onChange={e=> {
                         const v = e.target.value as any
                         setCpfObter(v)
-                        resetOnFilterChange()
                       }}>
                         <option value="info">Informação de Cadastro</option>
                         <option value="todos">Todos os Acessos</option>
-                        <option value="catracas-faciais">Somente Catracas e Faciais</option>
                       </select>
                     </div>
                   </div>
                   <div style={{minWidth:0}}>
                     <div className="input-group" style={{width:'100%'}}>
                       <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
-                      <input className="form-control" placeholder="CPF" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
+                      <input className="form-control" placeholder="CPF ou RG" value={filters.cpf || ''} onChange={e=> setFilters({...filters, cpf: e.target.value})} />
                     </div>
                   </div>
                   <div>
@@ -3330,7 +3791,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={matriculaObter} onChange={e=> { setMatriculaObter(e.target.value as any); resetOnFilterChange() }}>
+                  <select className="form-select" value={matriculaObter} onChange={e=> { setMatriculaObter(e.target.value as any) }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -3366,7 +3827,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={empresaObter} onChange={e=> { setEmpresaObter(e.target.value as any); resetOnFilterChange() }}>
+                  <select className="form-select" value={empresaObter} onChange={e=> { setEmpresaObter(e.target.value as any) }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                   </select>
@@ -3401,7 +3862,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={crachaObter} onChange={e=> { setCrachaObter(e.target.value as any); resetOnFilterChange() }}>
+                  <select className="form-select" value={crachaObter} onChange={e=> { setCrachaObter(e.target.value as any) }}>
                     <option value="info">Informação de Cadastro</option>
                     <option value="todos">Todos os Acessos</option>
                     <option value="catracas">Somente Catracas</option>
@@ -3437,7 +3898,7 @@ export function QueriesPage(){
               <>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={nivelObter} onChange={e=> { setNivelObter(e.target.value as any); resetOnFilterChange() }}>
+                  <select className="form-select" value={nivelObter} onChange={e=> { setNivelObter(e.target.value as any) }}>
                     <option value="todos">Todos os Níveis (Agregado)</option>
                     <option value="acessos">Acessos por Nível</option>
                   </select>
@@ -3476,7 +3937,7 @@ export function QueriesPage(){
               <div>
                 <div className="input-group">
                   <span className="input-group-text"><i className="bi bi-list-task" /></span>
-                  <select className="form-select" value={visitantesObter} onChange={e=> { setVisitantesObter(e.target.value as any); resetOnFilterChange() }}>
+                  <select className="form-select" value={visitantesObter} onChange={e=> { setVisitantesObter(e.target.value as any) }}>
                     <option value="documento">Acessos por Documento</option>
                     <option value="empresa">Acessos por Empresa</option>
                   </select>
@@ -3530,54 +3991,146 @@ export function QueriesPage(){
             </div>
           )}
 
+          {showCadastroFilters && (
+            <div className="queries-row" style={{marginBottom:8, flexWrap:'wrap'}}>
+              {hideSearchBar && (
+              <div className="input-group" style={{width:300, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-search" /></span>
+                <input className="form-control" placeholder="Filtrar resultados (aproximação)" value={searchTerm} onChange={e=> { setSearchTerm(e.target.value); setCurrentPage(1) }} />
+                {searchTerm && (
+                  <button className="btn btn-outline-secondary" type="button" onClick={()=> { setSearchTerm(''); setCurrentPage(1) }}>Limpar</button>
+                )}
+              </div>
+              )}
+              <div className="d-flex align-items-center gap-3" style={{flexWrap:'wrap', marginLeft:8}}>
+                {cadastroFilterOpts.tipo && (<>
+                <div className="form-check d-flex align-items-center gap-2" style={{margin:0, flexShrink:0}}>
+                  <input className="form-check-input" type="checkbox" id="empTipoFunc" style={{marginTop:0}} checked={empTipoFunc} onChange={e=> { setEmpTipoFunc(e.target.checked); setCurrentPage(1) }} />
+                  <label className="form-check-label" htmlFor="empTipoFunc">Funcionários</label>
+                </div>
+                <div className="form-check d-flex align-items-center gap-2" style={{margin:0, flexShrink:0}}>
+                  <input className="form-check-input" type="checkbox" id="empTipoPrest" style={{marginTop:0}} checked={empTipoPrest} onChange={e=> { setEmpTipoPrest(e.target.checked); setCurrentPage(1) }} />
+                  <label className="form-check-label" htmlFor="empTipoPrest">Prestadores de Serviço</label>
+                </div>
+                </>)}
+                {cadastroFilterOpts.status && (<>
+                <div className="form-check d-flex align-items-center gap-2" style={{margin:0, flexShrink:0}}>
+                  <input className="form-check-input" type="checkbox" id="empStatusAtivo" style={{marginTop:0}} checked={empStatusAtivo} onChange={e=> { setEmpStatusAtivo(e.target.checked); setCurrentPage(1) }} />
+                  <label className="form-check-label" htmlFor="empStatusAtivo">Ativo</label>
+                </div>
+                <div className="form-check d-flex align-items-center gap-2" style={{margin:0, flexShrink:0}}>
+                  <input className="form-check-input" type="checkbox" id="empStatusInativo" style={{marginTop:0}} checked={empStatusInativo} onChange={e=> { setEmpStatusInativo(e.target.checked); setCurrentPage(1) }} />
+                  <label className="form-check-label" htmlFor="empStatusInativo">Inativo</label>
+                </div>
+                </>)}
+                {cadastroFilterOpts.empresa && (
+                  <div className="input-group" style={{width:230, flex:'0 0 auto'}}>
+                    <span className="input-group-text"><i className="bi bi-building" /></span>
+                    <input className="form-control" placeholder="Empresa (contém)" value={filtroEmpresa} onChange={e=> { setFiltroEmpresa(e.target.value); setCurrentPage(1) }} />
+                  </div>
+                )}
+                {cadastroFilterOpts.nivel && (
+                  <div className="input-group" style={{width:230, flex:'0 0 auto'}}>
+                    <span className="input-group-text"><i className="bi bi-shield-lock" /></span>
+                    <input className="form-control" placeholder="Nível de acesso (contém)" value={filtroNivel} onChange={e=> { setFiltroNivel(e.target.value); setCurrentPage(1) }} />
+                  </div>
+                )}
+              </div>
+              {(empTipoFunc || empTipoPrest || empStatusAtivo || empStatusInativo || filtroEmpresa || filtroNivel) && (
+                <button className="btn btn-outline-secondary" type="button" onClick={()=> {
+                  setEmpTipoFunc(false); setEmpTipoPrest(false); setEmpStatusAtivo(false); setEmpStatusInativo(false)
+                  setFiltroEmpresa(''); setFiltroNivel(''); setCurrentPage(1)
+                }}>Limpar filtros</button>
+              )}
+            </div>
+          )}
+
+          {doorFiltrosScope && data.length > 0 && (
+            <>
+              <div className="q-filter-legend">
+                <i className="bi bi-funnel" />
+                <span>Filtrar</span>
+              </div>
+              <div className="queries-row" style={{marginBottom:8, flexWrap:'wrap'}}>
+              <div className="input-group" style={{width:170, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-upc" /></span>
+                <input className="form-control" placeholder="TAG (contém)" value={dTag} onChange={e=> { setDTag(e.target.value); setCurrentPage(1) }} />
+              </div>
+              <div className="input-group" style={{width:170, flex:'0 0 auto'}}>
+                <select className="form-select" value={dAcesso} onChange={e=> { setDAcesso(e.target.value); setCurrentPage(1) }}>
+                  <option value="">Acesso (todos)</option>
+                  {doorFilterOpts.acesso.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className="input-group" style={{width:200, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-activity" /></span>
+                <select className="form-select" value={dEvento} onChange={e=> { setDEvento(e.target.value); setCurrentPage(1) }}>
+                  <option value="">Evento (todos)</option>
+                  {doorFilterOpts.evento.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className="input-group" style={{width:220, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-person" /></span>
+                <input className="form-control" placeholder="Nome (contém)" value={dNome} onChange={e=> { setDNome(e.target.value); setCurrentPage(1) }} />
+              </div>
+              <div className="input-group" style={{width:190, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-person-vcard" /></span>
+                <input className="form-control" placeholder="Matrícula (contém)" value={dMatricula} onChange={e=> { setDMatricula(e.target.value); setCurrentPage(1) }} />
+              </div>
+              <div className="input-group" style={{width:170, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-credit-card-2-front" /></span>
+                <input className="form-control" placeholder="Crachá (contém)" value={dCracha} onChange={e=> { setDCracha(e.target.value); setCurrentPage(1) }} />
+              </div>
+              <div className="input-group" style={{width:200, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-people" /></span>
+                <select className="form-select" value={dTipo} onChange={e=> { setDTipo(e.target.value); setCurrentPage(1) }}>
+                  <option value="">Tipo (todos)</option>
+                  {doorFilterOpts.tipo.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              <div className="input-group" style={{width:190, flex:'0 0 auto'}}>
+                <span className="input-group-text"><i className="bi bi-shield-check" /></span>
+                <select className="form-select" value={dStatus} onChange={e=> { setDStatus(e.target.value); setCurrentPage(1) }}>
+                  <option value="">Status (todos)</option>
+                  {doorFilterOpts.status.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+              {doorFiltrosAtivos && (
+                <button className="btn btn-outline-secondary" type="button" onClick={limparDoorFiltros}>Limpar filtros</button>
+              )}
+              {doorFiltrosAtivos && (
+                <span className="text-muted" style={{fontSize:12}}>{filteredData.length} de {data.length} registro(s)</span>
+              )}
+              </div>
+            </>
+          )}
+
           <div className="queries-row" style={{marginBottom:12}}>
-            <button className="btn btn-primary d-flex align-items-center" onClick={runQuick} disabled={loading}>
+            <button className="btn btn-primary d-flex align-items-center" onClick={runQuick} disabled={loading || lockedResult}>
               {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Consultando...</> : <><i className="bi bi-play-fill me-1" /> Consultar</>}
             </button>
-            {progressActive && (
-              <div className="progress" style={{width:260, height:38}}>
-                <div className={'progress-bar progress-bar-striped' + (loading ? ' progress-bar-animated' : '')} role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-                  {Math.round(progress)}%
-                </div>
-              </div>
+            {!loading && lockedResult && (
+              <>
+                <button className="btn btn-outline-secondary d-flex align-items-center ms-2" type="button" onClick={novaConsulta}>
+                  <i className="bi bi-file-earmark-plus me-1" /> Nova Consulta
+                </button>
+                <span className="ms-2 text-muted" style={{fontSize:12}}>Resultado salvo — clique em "Nova Consulta" para refazer a busca.</span>
+              </>
             )}
-            {showExportGroup && (
-              <div className="export-group">
-                <span>Exportar:</span>
-                {exportEnabledCsv && exportAllowsCsv && (
-                  <button className="btn btn-light btn-icon" title="CSV" onClick={()=> exportData('csv')}>
-                    <i className="bi bi-filetype-csv" />
-                  </button>
-                )}
-                {exportEnabledXlsx && exportAllowsXlsx && (
-                  <button className="btn btn-light btn-icon" title={spreadsheetExportLabel} onClick={()=> exportData('xlsx')}>
-                    <i className="bi bi-file-earmark-excel" />
-                  </button>
-                )}
-                {exportEnabledPdf && exportAllowsPdf && (
-                  <>
-                    <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')} disabled={exportStage === 'loading-background'}>
-                      <i className="bi bi-file-earmark-pdf" />
-                    </button>
-                    {exportStage === 'loading-background' && (
-                      <span className="text-muted ms-2" style={{fontSize:12}}>
-                        <span className="spinner-border spinner-border-sm me-1" role="status" />
-                        Carregando dados completos...
-                      </span>
-                    )}
-                    {exportsToday.length > 0 && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={()=> setReportsModal(true)}>
-                        <i className="bi bi-journal-text me-1" /> Relatórios
-                      </button>
-                    )}
-                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
-                        <i className="bi bi-eye me-1" /> Visualizar PDF
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
+            {progressActive && (
+              progress > 0 ? (
+                <div className="progress" style={{width:260, height:38}} title="Progresso da consulta">
+                  <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${progress}%`}} aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}>
+                    {Math.round(progress)}%
+                  </div>
+                </div>
+              ) : (
+                <div className="progress q-progress-indet" style={{width:260, height:38}} title="Processando consulta...">
+                  <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuemin={0} aria-valuemax={100}>
+                    Processando...
+                  </div>
+                </div>
+              )
             )}
           </div>
         </>
@@ -3669,47 +4222,31 @@ export function QueriesPage(){
               <span className="input-group-text"><i className="bi bi-search" /></span>
               <input className="form-control" placeholder="Pesquisar" value={searchTerm} onChange={e=> { setSearchTerm(e.target.value); setCurrentPage(1) }} />
             </div>
-            <button className="btn btn-primary d-flex align-items-center" onClick={runPersonalizada} disabled={loading}>
+            <button className="btn btn-primary d-flex align-items-center" onClick={runPersonalizada} disabled={loading || lockedResult}>
               {loading ? <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Consultando...</> : <><i className="bi bi-play-fill me-1" /> Consultar</>}
             </button>
-            {progressActive && (
-              <div className="progress" style={{width:260, height:38}}>
-                <div className={'progress-bar progress-bar-striped' + (loading ? ' progress-bar-animated' : '')} role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-                  {Math.round(progress)}%
-                </div>
-              </div>
+            {!loading && lockedResult && (
+              <>
+                <button className="btn btn-outline-secondary d-flex align-items-center ms-2" type="button" onClick={novaConsulta}>
+                  <i className="bi bi-file-earmark-plus me-1" /> Nova Consulta
+                </button>
+                <span className="ms-2 text-muted" style={{fontSize:12}}>Resultado salvo — clique em "Nova Consulta" para refazer a busca.</span>
+              </>
             )}
-            {showExportGroup && (
-              <div className="export-group">
-                <span>Exportar:</span>
-                {exportEnabledCsv && exportAllowsCsv && (
-                  <button className="btn btn-light btn-icon" title="CSV" onClick={()=> exportData('csv')}>
-                    <i className="bi bi-filetype-csv" />
-                  </button>
-                )}
-                {exportEnabledXlsx && exportAllowsXlsx && (
-                  <button className="btn btn-light btn-icon" title={spreadsheetExportLabel} onClick={()=> exportData('xlsx')}>
-                    <i className="bi bi-file-earmark-excel" />
-                  </button>
-                )}
-                {exportEnabledPdf && exportAllowsPdf && (
-                  <>
-                    <button className="btn btn-light btn-icon" title="PDF" onClick={()=> exportData('pdf')}>
-                      <i className="bi bi-file-earmark-pdf" />
-                    </button>
-                    {exportsToday.length > 0 && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={()=> setReportsModal(true)}>
-                        <i className="bi bi-journal-text me-1" /> Relatórios
-                      </button>
-                    )}
-                    {((lastPdfSavedPath || lastPdfRequestUrl) || (pdfUrl && exportFmt === 'pdf')) && (
-                      <button className="btn btn-outline-secondary ms-2" onClick={openLastPdf}>
-                        <i className="bi bi-eye me-1" /> Visualizar PDF
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
+            {progressActive && (
+              progress > 0 ? (
+                <div className="progress" style={{width:260, height:38}} title="Progresso da consulta">
+                  <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${progress}%`}} aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}>
+                    {Math.round(progress)}%
+                  </div>
+                </div>
+              ) : (
+                <div className="progress q-progress-indet" style={{width:260, height:38}} title="Processando consulta...">
+                  <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuemin={0} aria-valuemax={100}>
+                    Processando...
+                  </div>
+                </div>
+              )
             )}
           </div>
           <div className="queries-cols-row" style={{marginBottom:12}}>
