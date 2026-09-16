@@ -2081,6 +2081,23 @@ export function QueriesPage(){
                   a.download = downloadName
                   a.click()
                 }
+                // Registra as partes no histórico para permitir baixar cópias depois.
+                const jobLabel = doorMode === 'general-by-name' ? 'Eventos de Porta • Portas Gerais por Nome' : 'Eventos de Porta • Portas Gerais'
+                const jobBaseName = downloadName.replace(/\.pdf$/i, '')
+                const jobTs = Date.now()
+                const jobEntries = partsList.map((p, i) => ({
+                  id: `${jobTs}-${i}-${Math.random().toString(16).slice(2)}`,
+                  ts: jobTs,
+                  label: jobLabel,
+                  fileName: partsList.length === 1 ? downloadName : `${jobBaseName}-parte${i + 1}.pdf`,
+                  format: 'pdf' as const,
+                  requestUrl: p,
+                }))
+                setExportHistory(prev => {
+                  const next = [...jobEntries, ...prev].slice(0, 100)
+                  saveExportHistory(next)
+                  return next
+                })
               }else if (s?.downloadUrl){
                 setExportUrl(s.downloadUrl)
                 setExportStage('ready')
