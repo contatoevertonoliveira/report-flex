@@ -410,6 +410,9 @@ export function QueriesPage(){
   const [exportUrl, setExportUrl] = useState<string | null>(null)
   const [exportErr, setExportErr] = useState<string | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportPartTotal, setExportPartTotal] = useState(0)
+  const [exportPartDone, setExportPartDone] = useState(0)
+  const [exportParts, setExportParts] = useState<string[]>([])
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   const exportTimerRef = React.useRef<any>(null)
   const [exportJobId, setExportJobId] = useState<string | null>(null)
@@ -1102,12 +1105,31 @@ export function QueriesPage(){
             const mapped = Math.max(0, Math.min(100, Math.round(prog)))
             setExportProgress(prev => Math.max(prev, mapped))
           }
-          if (status === 'done' && s?.downloadUrl) {
+          const tp = Number(s?.totalParts ?? 0)
+          const pd = Number(s?.partsDone ?? 0)
+          if (tp > 0){
+            setExportPartTotal(tp)
+            setExportPartDone(pd)
+          }
+          if (status === 'done') {
             if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
             exportJobPollRef.current = null
-            setExportUrl(s.downloadUrl)
-            setExportStage('ready')
             setExportProgress(100)
+            const partsList: string[] = Array.isArray(s?.parts) ? s.parts : []
+            if (partsList.length > 0){
+              setExportParts(partsList)
+              setExportPartTotal(partsList.length)
+              setExportPartDone(partsList.length)
+              setExportStage('ready')
+              if (partsList.length === 1){
+                setExportUrl(partsList[0])
+                setPdfUrl(partsList[0])
+                setPdfExportedRun(lastSuccessfulRun)
+              }
+            }else if (s?.downloadUrl){
+              setExportUrl(s.downloadUrl)
+              setExportStage('ready')
+            }
           } else if (status === 'error') {
             if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
             exportJobPollRef.current = null
@@ -1978,14 +2000,17 @@ export function QueriesPage(){
       if (cid) h['X-Client-Id'] = cid
       let url = ''
       let name = ''
-      const startDoorExportJob = async (p: { start: string, end: string, sourceList?: string, name?: string, documento?: string, filtros?: Record<string,string> }, downloadName: string) => {
-        setExportFmt('csv')
+      const startDoorExportJob = async (p: { start: string, end: string, sourceList?: string, name?: string, documento?: string, filtros?: Record<string,string>, format: string }, downloadName: string) => {
+        setExportFmt(p.format as 'csv'|'pdf')
         setExportFileName(downloadName)
         setExportErr(null)
         setExportStage('generating')
         setExportModal(true)
         setExportMinimized(false)
         setExportMaximized(false)
+        setExportParts([])
+        setExportPartTotal(0)
+        setExportPartDone(0)
         setExportProgress(25) // Checkpoint inicial: 25%
 
         if (exportTimerRef.current) clearInterval(exportTimerRef.current)
@@ -2003,7 +2028,7 @@ export function QueriesPage(){
         const res = await fetch(`/api/reports/door-general/export-jobs${jobQs ? `?${jobQs}` : ''}`, {
           method: 'POST',
           headers: { ...h, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, documento: p.documento, format: 'csv' })
+          body: JSON.stringify({ start: p.start, end: p.end, sourceList: p.sourceList, name: p.name, documento: p.documento, format: p.format })
         })
         if (exportTimerRef.current) clearInterval(exportTimerRef.current)
         exportTimerRef.current = null
@@ -2031,16 +2056,39 @@ export function QueriesPage(){
               else mapped = 65
               setExportProgress(mapped)
             }
-            if (status === 'done' && s?.downloadUrl){
+            const tp = Number(s?.totalParts ?? 0)
+            const pd = Number(s?.partsDone ?? 0)
+            if (tp > 0){
+              setExportPartTotal(tp)
+              setExportPartDone(pd)
+            }
+            if (status === 'done'){
               if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
               exportJobPollRef.current = null
-              setExportUrl(s.downloadUrl)
-              setExportStage('ready')
               setExportProgress(100)
-              const a = document.createElement('a')
-              a.href = s.downloadUrl
-              a.download = downloadName
-              a.click()
+              const partsList: string[] = Array.isArray(s?.parts) ? s.parts : []
+              if (partsList.length > 0){
+                setExportParts(partsList)
+                setExportPartTotal(partsList.length)
+                setExportPartDone(partsList.length)
+                setExportStage('ready')
+                if (partsList.length === 1){
+                  setExportUrl(partsList[0])
+                  setPdfUrl(partsList[0])
+                  setPdfExportedRun(lastSuccessfulRun)
+                  const a = document.createElement('a')
+                  a.href = partsList[0]
+                  a.download = downloadName
+                  a.click()
+                }
+              }else if (s?.downloadUrl){
+                setExportUrl(s.downloadUrl)
+                setExportStage('ready')
+                const a = document.createElement('a')
+                a.href = s.downloadUrl
+                a.download = downloadName
+                a.click()
+              }
             }else if (status === 'error'){
               if (exportJobPollRef.current) clearInterval(exportJobPollRef.current)
               exportJobPollRef.current = null
@@ -2138,14 +2186,14 @@ export function QueriesPage(){
           url = `/api/reports/door-critical/export?${qs}`
           name = `portas-criticas.${format}`
         }else if (doorMode === 'general'){
-          if ((format === 'pdf' || format === 'docx') && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
-          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, filtros: doorFiltrosParams }, `portas-gerais.${format}`); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 90)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, filtros: doorFiltrosParams, format: 'pdf' }, `portas-gerais.pdf`); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, filtros: doorFiltrosParams, format: 'csv' }, `portas-gerais.csv`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, format, ...(src ? { sourceList: src } : {}), ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-general/export?${qs}`
           name = `portas-gerais.${format}`
         }else if (doorMode === 'general-by-name'){
-          if ((format === 'pdf' || format === 'docx') && (doorAllData || daysRange > 31)){ setError('Para períodos grandes, use XLSX.'); return }
-          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: '', filtros: doorFiltrosParams }, `portas-gerais-por-nome.${format}`); return }
+          if (format === 'pdf' && (doorAllData || daysRange > 90)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: '', filtros: doorFiltrosParams, format: 'pdf' }, `portas-gerais-por-nome.pdf`); return }
+          if (format === 'csv' && (doorAllData || daysRange > 31)){ await startDoorExportJob({ start: r0.startIso, end: r0.endIso, sourceList: src, name: '', filtros: doorFiltrosParams, format: 'csv' }, `portas-gerais-por-nome.csv`); return }
           const qs = new URLSearchParams({ start: r0.startIso, end: r0.endIso, name: '', format, ...(src ? { sourceList: src } : {}), ...doorFiltrosParams } as any).toString()
           url = `/api/reports/door-general/by-name/export?${qs}`
           name = `portas-gerais-por-nome.${format}`
@@ -2313,6 +2361,9 @@ export function QueriesPage(){
       setExportModal(true)
       setExportMinimized(false)
       setExportMaximized(false)
+      setExportParts([])
+      setExportPartTotal(0)
+      setExportPartDone(0)
       setExportPos({x:0, y:0})
       if (exportUrl && exportUrl !== pdfUrl) URL.revokeObjectURL(exportUrl)
       setExportUrl(null)
@@ -2431,6 +2482,9 @@ export function QueriesPage(){
         setExportStage('ready')
         setExportProgress(100)
         setExportUrl(pdfUrl)
+        setExportParts([])
+        setExportPartTotal(0)
+        setExportPartDone(0)
         setExportModal(true)
         setExportMinimized(false)
         return
@@ -2504,6 +2558,9 @@ export function QueriesPage(){
         setExportErr(null)
         setExportStage('ready')
         setExportProgress(100)
+        setExportParts([])
+        setExportPartTotal(0)
+        setExportPartDone(0)
         setExportModal(true)
         setExportMinimized(false)
         setExportMaximized(false)
@@ -2525,6 +2582,9 @@ export function QueriesPage(){
       setExportErr(null)
       setExportStage('ready')
       setExportProgress(100)
+      setExportParts([])
+      setExportPartTotal(0)
+      setExportPartDone(0)
       setExportModal(true)
       setExportMinimized(false)
       setExportMaximized(false)
@@ -3173,12 +3233,38 @@ export function QueriesPage(){
                       <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                       Gerando arquivo {exportFmt.toUpperCase()}...
                     </div>
-                    <div className="progress" style={{height:10}}>
-                      <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
-                    </div>
-                    <div className="text-muted mt-1" style={{fontSize:12}}>
-                      Progresso estimado: {exportProgress}%
-                    </div>
+                    {exportPartTotal > 1 ? (
+                      <div className="d-flex flex-column align-items-center py-2">
+                        <svg width="128" height="128" viewBox="0 0 128 128">
+                          <circle cx="64" cy="64" r="54" fill="none" stroke="#e5e7eb" strokeWidth="11" />
+                          <circle
+                            cx="64" cy="64" r="54" fill="none" stroke="#2563eb" strokeWidth="11" strokeLinecap="round"
+                            strokeDasharray={2 * Math.PI * 54}
+                            strokeDashoffset={2 * Math.PI * 54 * (1 - (exportPartDone / exportPartTotal))}
+                            transform="rotate(-90 64 64)"
+                            style={{transition:'stroke-dashoffset 0.4s ease'}}
+                          />
+                          <text x="64" y="60" textAnchor="middle" dominantBaseline="central" fontSize="22" fontWeight="700" fill="#1f2937">
+                            {exportPartDone}/{exportPartTotal}
+                          </text>
+                          <text x="64" y="82" textAnchor="middle" dominantBaseline="central" fontSize="11" fill="#6b7280">
+                            partes
+                          </text>
+                        </svg>
+                        <div className="text-muted mt-2" style={{fontSize:13}}>
+                          Gerando parte {Math.min(exportPartDone + 1, exportPartTotal)} de {exportPartTotal}
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="progress" style={{height:10}}>
+                          <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                        </div>
+                        <div className="text-muted mt-1" style={{fontSize:12}}>
+                          Progresso estimado: {exportProgress}%
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
                 {exportStage === 'error' && (
@@ -3188,20 +3274,43 @@ export function QueriesPage(){
                 )}
                 {exportStage === 'ready' && (
                   <>
-                    <div className="d-flex align-items-center justify-content-between">
-                      <div className="text-muted" style={{fontSize:12}}>
-                        Arquivo pronto: {exportFileName}
-                      </div>
-                      {exportUrl && (
-                        <a className="btn btn-sm btn-primary" href={exportUrl} download={exportFileName}>
-                          Baixar novamente
-                        </a>
-                      )}
-                    </div>
-                    {exportFmt === 'pdf' && pdfUrl && (
-                      <div className="mt-2" style={{border:'1px solid #ddd'}}>
-                        <iframe title="PDF Export" src={pdfUrl} style={{width:'100%', height: exportMaximized ? 'calc(100vh - 220px)' : '60vh', border:0}} />
-                      </div>
+                    {exportParts.length > 1 ? (
+                      <>
+                        <div className="text-muted mb-2" style={{fontSize:12}}>
+                          Relatório dividido em {exportParts.length} partes. Baixe cada arquivo abaixo.
+                        </div>
+                        <div className="d-flex flex-column gap-2" style={{maxHeight: exportMaximized ? 'calc(100vh - 200px)' : '50vh', overflowY:'auto'}}>
+                          {exportParts.map((p, i) => (
+                            <div key={p} className="d-flex align-items-center justify-content-between p-2" style={{border:'1px solid #e5e7eb', borderRadius:8, background:'#f9fafb'}}>
+                              <span style={{fontSize:13, color:'#374151'}}>
+                                <i className="bi bi-file-earmark-pdf me-2 text-danger" />
+                                Parte {i + 1} de {exportParts.length}
+                              </span>
+                              <a className="btn btn-sm btn-primary" href={p} download={`${exportFileName.replace(/\.pdf$/i, '')}-parte${i + 1}.pdf`}>
+                                <i className="bi bi-download me-1" /> Baixar
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="d-flex align-items-center justify-content-between">
+                          <div className="text-muted" style={{fontSize:12}}>
+                            Arquivo pronto: {exportFileName}
+                          </div>
+                          {exportUrl && (
+                            <a className="btn btn-sm btn-primary" href={exportUrl} download={exportFileName}>
+                              Baixar novamente
+                            </a>
+                          )}
+                        </div>
+                        {exportFmt === 'pdf' && pdfUrl && (
+                          <div className="mt-2" style={{border:'1px solid #ddd'}}>
+                            <iframe title="PDF Export" src={pdfUrl} style={{width:'100%', height: exportMaximized ? 'calc(100vh - 220px)' : '60vh', border:0}} />
+                          </div>
+                        )}
+                      </>
                     )}
                   </>
                 )}
@@ -3224,16 +3333,25 @@ export function QueriesPage(){
             </strong>
             <div className="flex-grow-1" style={{maxWidth:400}}>
               {exportStage === 'generating' ? (
-                <div className="d-flex align-items-center gap-3">
-                  <div className="progress flex-grow-1" style={{height:8}}>
-                    <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                exportPartTotal > 1 ? (
+                  <div className="d-flex align-items-center gap-2">
+                    <i className="bi bi-file-earmark-pdf text-danger" />
+                    <span style={{fontSize:12, color:'#374151', fontWeight:500}}>
+                      Parte {Math.min(exportPartDone + 1, exportPartTotal)} de {exportPartTotal}
+                    </span>
                   </div>
-                  <span style={{fontSize:12, color:'#374151', minWidth:36}}>{exportProgress}%</span>
-                </div>
+                ) : (
+                  <div className="d-flex align-items-center gap-3">
+                    <div className="progress flex-grow-1" style={{height:8}}>
+                      <div className="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style={{width: `${exportProgress}%`}} aria-valuenow={exportProgress} aria-valuemin={0} aria-valuemax={100}></div>
+                    </div>
+                    <span style={{fontSize:12, color:'#374151', minWidth:36}}>{exportProgress}%</span>
+                  </div>
+                )
               ) : (
                 <div className="d-flex align-items-center gap-2">
                   <span style={{fontSize:12, color: exportStage === 'error' ? '#dc2626' : '#059669', fontWeight:500}}>
-                    {exportStage === 'ready' ? '✓ Arquivo pronto' : `⚠ ${exportErr || 'Falha ao exportar'}`}
+                    {exportStage === 'ready' ? (exportParts.length > 1 ? `✓ ${exportParts.length} partes prontas` : '✓ Arquivo pronto') : `⚠ ${exportErr || 'Falha ao exportar'}`}
                   </span>
                   {exportStage === 'ready' && exportUrl && (
                     <a className="btn btn-sm btn-link p-0 text-primary" style={{fontSize:12, textDecoration:'none'}} href={exportUrl} download={exportFileName}>

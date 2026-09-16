@@ -4894,6 +4894,14 @@ WHERE
 static bool IsAllDataRange(DateTime start, DateTime end) =>
     start.Date <= new DateTime(1900, 1, 2) && end.Date >= new DateTime(2100, 1, 1);
 
+// Define em quantas partes dividir um PDF gigante, conforme o total de linhas.
+static int DoorPartsForTotal(long total) =>
+    total <= 50_000 ? 1 :
+    total <= 100_000 ? 5 :
+    total <= 250_000 ? 10 :
+    total <= 500_000 ? 15 :
+    total <= 1_000_000 ? 20 : 25;
+
 static int GetDoorProcTimeoutSeconds()
 {
     try
@@ -6411,6 +6419,9 @@ app.MapGet("/api/reports/export-jobs/{id}", (string id) =>
         progress = job.Progress,
         rowsWritten = job.RowsWritten,
         error = job.Error,
+        totalParts = job.TotalParts,
+        partsDone = job.PartsDone,
+        parts = job.Parts == null ? null : job.Parts.Select(p => "/" + p.Replace('\\', '/')).ToList(),
         downloadUrl = job.ReportPath == null ? null : "/" + job.ReportPath
     });
 }).RequireAuthorization();
@@ -6456,20 +6467,20 @@ app.MapGet("/api/reports/download", (HttpContext http, string path) =>
 app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, DoorGeneralExportJobRequest req) =>
 {
     var format = (req.Format ?? "").Trim().ToLowerInvariant();
-    if (format is not ("csv" or "xlsx" or "pdf"))
+    if (format is not ("csv" or "pdf"))
         return Results.BadRequest(new { success = false, error = "Formato inválido" });
-    if (format != "csv")
-        return Results.BadRequest(new { success = false, error = "Para grandes volumes, use CSV (job assíncrono)." });
 
     var startDt = ParseDate(req.Start);
     var endDt = ParseDate(req.End);
 
+    var isByName = !string.IsNullOrWhiteSpace(req.Name);
+    var kind = isByName ? "door-general-by-name" : "door-general";
     var jobId = Guid.NewGuid().ToString("N");
-    var fileName = string.IsNullOrWhiteSpace(req.Name) ? $"door-general-{jobId}.csv" : $"door-general-by-name-{jobId}.csv";
+    var fileName = $"{kind}-{jobId}.{format}";
     var job = new ExportJob
     {
         Id = jobId,
-        Kind = string.IsNullOrWhiteSpace(req.Name) ? "door-general" : "door-general-by-name",
+        Kind = kind,
         Format = format,
         FileName = fileName,
         CreatedAt = DateTime.UtcNow,
@@ -6479,6 +6490,14 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
         Cts = new CancellationTokenSource()
     };
     exportJobs[jobId] = job;
+
+    // Dados de apresentação do PDF: capturados agora, antes do job rodar em background
+    // (o HttpContext não é confiável para ser usado depois dentro do Task.Run).
+    var doorFiltrosJob = ReadDoorFiltros(http.Request);
+    var (clientName, clientLogo) = format == "pdf" ? await GetReportClientInfoAsync(http) : ("Cliente", (byte[]?)null);
+    var generatedBy = GetReportUser(http);
+    var includeCover = ShouldIncludeCover(http);
+    var (coverPortrait, reportPortrait) = GetPdfOrientationFlags(http);
 
     _ = Task.Run(async () =>
     {
@@ -6496,9 +6515,9 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
                 src = BuildSourceListCsv(tags.Select(x => x.Key));
             }
 
-            var proc = string.IsNullOrWhiteSpace(req.Name)
-                ? ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList")
-                : ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name, @Documento");
+            var proc = isByName
+                ? ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral_byName @DataInicio, @DataFim, @SourceList, @Name, @Documento")
+                : ApplyDbObjectMappings("EXEC dbo.jp4_sp_DoorGeneral @DataInicio, @DataFim, @SourceList");
 
             using var cn = new SqlConnection(GetConn("HWR"));
             await cn.OpenAsync(job.Cts!.Token);
@@ -6508,66 +6527,152 @@ app.MapPost("/api/reports/door-general/export-jobs", async (HttpContext http, Do
             cmd.Parameters.Add(new SqlParameter("@DataInicio", SqlDbType.VarChar, 20) { Value = startDt.ToString("yyyy-MM-ddTHH:mm:ss") });
             cmd.Parameters.Add(new SqlParameter("@DataFim", SqlDbType.VarChar, 20) { Value = endDt.ToString("yyyy-MM-ddTHH:mm:ss") });
             cmd.Parameters.Add(new SqlParameter("@SourceList", SqlDbType.VarChar, -1) { Value = src ?? "" });
-            if (!string.IsNullOrWhiteSpace(req.Name))
+            if (isByName)
             {
                 cmd.Parameters.Add(new SqlParameter("@Name", SqlDbType.VarChar, 200) { Value = req.Name ?? "" });
                 cmd.Parameters.Add(new SqlParameter("@Documento", SqlDbType.VarChar, 200) { Value = req.Documento ?? "" });
             }
 
-            var (absPath, relPath) = PrepareReportFilePath("jobs", fileName, app.Environment);
-            await using var fs = new FileStream(absPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-            await using var sw = new StreamWriter(fs, new UTF8Encoding(false));
-            await sw.WriteLineAsync("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+            var criteria = (isByName ? "Escopo: Eventos Gerais por Nome" : "Escopo: Eventos Gerais") + "\n" +
+                BuildPortasCriteria(src ?? BuildSourceListCsv(new[] { "" }));
 
-            using var r = await cmd.ExecuteReaderAsync(job.Cts.Token);
-            var doorFiltrosJob = ReadDoorFiltros(http.Request);
-            while (await r.ReadAsync(job.Cts.Token))
+            if (format == "csv")
             {
-                var row = (
-                    EventID: r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
-                    TimeOrder: r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
-                    DataHora: r.IsDBNull(2) ? null : r.GetString(2),
-                    TAG: r.IsDBNull(3) ? null : r.GetString(3),
-                    Acesso: r.IsDBNull(4) ? null : r.GetString(4),
-                    Evento: r.IsDBNull(5) ? null : r.GetString(5),
-                    NomeCompleto: r.IsDBNull(6) ? null : r.GetString(6),
-                    DocumentoMatricula: r.IsDBNull(7) ? null : r.GetString(7),
-                    Cartao: r.IsDBNull(8) ? null : r.GetString(8),
-                    Tipo: r.IsDBNull(9) ? null : r.GetString(9),
-                    Empresa: r.IsDBNull(10) ? null : r.GetString(10),
-                    StatusAcesso: r.IsDBNull(11) ? null : r.GetString(11),
-                    DetalheStatusAcesso: r.IsDBNull(12) ? null : r.GetString(12)
-                );
-                if (!MatchDoorFiltros(row, doorFiltrosJob)) continue;
-                var line = string.Join(",", new[]
+                var (absPath, relPath) = PrepareReportFilePath("jobs", fileName, app.Environment);
+                await using var fs = new FileStream(absPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                await using var sw = new StreamWriter(fs, new UTF8Encoding(false));
+                await sw.WriteLineAsync("EventID,TimeOrder,DataHora,TAG,Acesso,Evento,NomeCompleto,DocumentoMatricula,Cartao,Tipo,Empresa,StatusAcesso,DetalheStatusAcesso");
+
+                using var r = await cmd.ExecuteReaderAsync(job.Cts.Token);
+                while (await r.ReadAsync(job.Cts.Token))
                 {
-                    r.IsDBNull(0) ? "" : Convert.ToInt64(r.GetValue(0)).ToString(),
-                    r.IsDBNull(1) ? "" : r.GetDateTime(1).ToString("O"),
-                    Escape(r.IsDBNull(2) ? "" : r.GetString(2)),
-                    Escape(r.IsDBNull(3) ? "" : r.GetString(3)),
-                    Escape(r.IsDBNull(4) ? "" : r.GetString(4)),
-                    Escape(r.IsDBNull(5) ? "" : r.GetString(5)),
-                    Escape(r.IsDBNull(6) ? "" : r.GetString(6)),
-                    Escape(r.IsDBNull(7) ? "" : r.GetString(7)),
-                    Escape(r.IsDBNull(8) ? "" : r.GetString(8)),
-                    Escape(r.IsDBNull(9) ? "" : r.GetString(9)),
-                    Escape(r.IsDBNull(10) ? "" : r.GetString(10)),
-                    Escape(r.IsDBNull(11) ? "" : r.GetString(11)),
-                    Escape(r.IsDBNull(12) ? "" : r.GetString(12))
-                });
-                await sw.WriteLineAsync(line);
-                job.RowsWritten++;
-                if (job.RowsWritten % 5000 == 0)
-                {
-                    job.Progress = Math.Min(95, 5 + (int)(job.RowsWritten / 5000));
-                    await sw.FlushAsync();
+                    var row = (
+                        EventID: r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+                        TimeOrder: r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                        DataHora: r.IsDBNull(2) ? null : r.GetString(2),
+                        TAG: r.IsDBNull(3) ? null : r.GetString(3),
+                        Acesso: r.IsDBNull(4) ? null : r.GetString(4),
+                        Evento: r.IsDBNull(5) ? null : r.GetString(5),
+                        NomeCompleto: r.IsDBNull(6) ? null : r.GetString(6),
+                        DocumentoMatricula: r.IsDBNull(7) ? null : r.GetString(7),
+                        Cartao: r.IsDBNull(8) ? null : r.GetString(8),
+                        Tipo: r.IsDBNull(9) ? null : r.GetString(9),
+                        Empresa: r.IsDBNull(10) ? null : r.GetString(10),
+                        StatusAcesso: r.IsDBNull(11) ? null : r.GetString(11),
+                        DetalheStatusAcesso: r.IsDBNull(12) ? null : r.GetString(12)
+                    );
+                    if (!MatchDoorFiltros(row, doorFiltrosJob)) continue;
+                    var line = string.Join(",", new[]
+                    {
+                        r.IsDBNull(0) ? "" : Convert.ToInt64(r.GetValue(0)).ToString(),
+                        r.IsDBNull(1) ? "" : r.GetDateTime(1).ToString("O"),
+                        Escape(r.IsDBNull(2) ? "" : r.GetString(2)),
+                        Escape(r.IsDBNull(3) ? "" : r.GetString(3)),
+                        Escape(r.IsDBNull(4) ? "" : r.GetString(4)),
+                        Escape(r.IsDBNull(5) ? "" : r.GetString(5)),
+                        Escape(r.IsDBNull(6) ? "" : r.GetString(6)),
+                        Escape(r.IsDBNull(7) ? "" : r.GetString(7)),
+                        Escape(r.IsDBNull(8) ? "" : r.GetString(8)),
+                        Escape(r.IsDBNull(9) ? "" : r.GetString(9)),
+                        Escape(r.IsDBNull(10) ? "" : r.GetString(10)),
+                        Escape(r.IsDBNull(11) ? "" : r.GetString(11)),
+                        Escape(r.IsDBNull(12) ? "" : r.GetString(12))
+                    });
+                    await sw.WriteLineAsync(line);
+                    job.RowsWritten++;
+                    if (job.RowsWritten % 5000 == 0)
+                    {
+                        job.Progress = Math.Min(95, 5 + (int)(job.RowsWritten / 5000));
+                        await sw.FlushAsync();
+                    }
                 }
+                await sw.FlushAsync();
+                job.ReportPath = relPath;
+                job.Progress = 100;
+                job.Status = "done";
+                job.FinishedAt = DateTime.UtcNow;
             }
-            await sw.FlushAsync();
-            job.ReportPath = relPath;
-            job.Progress = 100;
-            job.Status = "done";
-            job.FinishedAt = DateTime.UtcNow;
+            else // pdf particionado
+            {
+                // 1) lê tudo aplicando os filtros de porta (mantém na memória só o necessário para particionar)
+                var all = new List<(long EventID, DateTime? TimeOrder, string? DataHora, string? TAG, string? Acesso, string? Evento, string? NomeCompleto, string? DocumentoMatricula, string? Cartao, string? Tipo, string? Empresa, string? StatusAcesso, string? DetalheStatusAcesso)>();
+                using (var r = await cmd.ExecuteReaderAsync(job.Cts.Token))
+                {
+                    while (await r.ReadAsync(job.Cts.Token))
+                    {
+                        var row = (
+                            EventID: r.IsDBNull(0) ? 0L : Convert.ToInt64(r.GetValue(0)),
+                            TimeOrder: r.IsDBNull(1) ? (DateTime?)null : r.GetDateTime(1),
+                            DataHora: r.IsDBNull(2) ? null : r.GetString(2),
+                            TAG: r.IsDBNull(3) ? null : r.GetString(3),
+                            Acesso: r.IsDBNull(4) ? null : r.GetString(4),
+                            Evento: r.IsDBNull(5) ? null : r.GetString(5),
+                            NomeCompleto: r.IsDBNull(6) ? null : r.GetString(6),
+                            DocumentoMatricula: r.IsDBNull(7) ? null : r.GetString(7),
+                            Cartao: r.IsDBNull(8) ? null : r.GetString(8),
+                            Tipo: r.IsDBNull(9) ? null : r.GetString(9),
+                            Empresa: r.IsDBNull(10) ? null : r.GetString(10),
+                            StatusAcesso: r.IsDBNull(11) ? null : r.GetString(11),
+                            DetalheStatusAcesso: r.IsDBNull(12) ? null : r.GetString(12)
+                        );
+                        if (MatchDoorFiltros(row, doorFiltrosJob)) all.Add(row);
+                        job.RowsWritten++;
+                        if (job.RowsWritten % 5000 == 0) job.Progress = Math.Min(20, 5 + (int)(job.RowsWritten / 5000));
+                    }
+                }
+
+                var total = all.Count;
+                var parts = DoorPartsForTotal(total);
+                job.TotalParts = parts;
+                job.Parts = new List<string>();
+
+                if (total == 0)
+                {
+                    job.Progress = 100;
+                    job.Status = "done";
+                    job.FinishedAt = DateTime.UtcNow;
+                    return;
+                }
+
+                var partSize = (int)Math.Ceiling((double)total / parts);
+                var titleBase = isByName ? "Eventos Gerais por Nome" : "Eventos Gerais";
+                for (int i = 0; i < parts; i++)
+                {
+                    job.Cts.Token.ThrowIfCancellationRequested();
+                    var slice = all.Skip(i * partSize).Take(partSize).ToList();
+                    if (slice.Count == 0) continue;
+
+                    var mapped = slice.Select(x => (
+                        Cartao: x.Cartao,
+                        NomeCompleto: x.NomeCompleto,
+                        Tipo: x.Tipo,
+                        DataHora: x.DataHora,
+                        Evento: x.Evento,
+                        Acesso: x.Acesso,
+                        DocumentoMatricula: x.DocumentoMatricula,
+                        StatusDisplay: (string?)NormalizeDoorStatusDisplay(x.StatusAcesso, x.DetalheStatusAcesso),
+                        Empresa: x.Empresa,
+                        TAG: x.TAG
+                    )).ToList();
+
+                    var partTitle = parts == 1 ? titleBase : $"{titleBase} — Parte {i + 1} de {parts}";
+                    var bytes = BuildDoorPdf(clientName, clientLogo, partTitle, startDt, endDt, mapped, generatedBy, i == 0 && includeCover, criteria, coverPortrait, reportPortrait);
+                    var partFileName = $"{kind}-{jobId}-parte{i + 1}.pdf";
+                    var (partAbs, partRel) = PrepareReportFilePath("jobs", partFileName, app.Environment);
+                    await File.WriteAllBytesAsync(partAbs, bytes, job.Cts.Token);
+
+                    lock (job)
+                    {
+                        job.Parts!.Add(partRel);
+                        job.PartsDone = job.Parts.Count;
+                        job.Progress = 20 + (int)(job.PartsDone * 80.0 / parts);
+                    }
+                }
+
+                job.Progress = 100;
+                job.Status = "done";
+                job.FinishedAt = DateTime.UtcNow;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -15442,6 +15547,10 @@ sealed class ExportJob
     public string? Error { get; set; }
     public string? ReportPath { get; set; }
     public CancellationTokenSource? Cts { get; set; }
+    // PDF particionado: total de partes, quantas concluídas e a lista de arquivos gerados.
+    public int TotalParts { get; set; }
+    public int PartsDone { get; set; }
+    public List<string>? Parts { get; set; }
 }
 
 record DoorGeneralExportJobRequest(string Start, string End, string? SourceList, string? Name, string? Documento, string Format);
